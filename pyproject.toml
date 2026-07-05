@@ -4,20 +4,21 @@ version = "0.0.1"
 authors = [{ name = "alan.dennis@covasant.com" }]
 requires-python = ">=3.10,<3.13"
 dependencies = [
-    # Any dependencies for jobs and pipelines in this project can be added here
-    # See also https://docs.databricks.com/dev-tools/bundles/library-dependencies
-    #
-    # LIMITATION: for pipelines, dependencies are cached during development;
-    # add dependencies to the 'environment' section of your pipeline.yml file instead
+    "psycopg[binary]>=3.2",
 ]
 
 [dependency-groups]
 dev = [
     "pytest",
+    "pytest-asyncio",
+    "httpx",
     "ruff",
-    "databricks-dlt",
-    "databricks-connect>=15.4,<15.5",
-    "ipykernel",
+    "psycopg[binary]>=3.2",
+    "fastapi",
+    "uvicorn",
+    "mcp>=1.9",
+    "pydantic>=2.0",
+    "databricks-sdk>=0.81.0",
 ]
 
 [project.scripts]

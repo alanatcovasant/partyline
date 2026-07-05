@@ -31,7 +31,7 @@ def user_token(request: Request) -> str | None:
     return request.headers.get(USER_TOKEN_HEADER)
 
 
-def resolve_author(request: Request) -> str | None:
+async def resolve_author(request: Request) -> str | None:
     """Resolve the OBO user's identity (user_name) for audit, or None if unavailable.
 
     Failures are non-fatal: the bus still records the message, just without an author.
@@ -43,11 +43,14 @@ def resolve_author(request: Request) -> str | None:
         return _identity_cache[token]
     try:
         from databricks.sdk import WorkspaceClient
+        from starlette.concurrency import run_in_threadpool
 
         # The forwarded value is the user's OAuth access token (Databricks Apps do not use
         # PATs). Passing it as `token` sends it as an Authorization: Bearer header, which
         # is what the workspace API expects to resolve the caller's identity.
-        me = WorkspaceClient(token=token).current_user.me()
+        me = await run_in_threadpool(
+            lambda: WorkspaceClient(token=token).current_user.me()
+        )
         author = me.user_name or me.display_name
         if author:
             _identity_cache[token] = author

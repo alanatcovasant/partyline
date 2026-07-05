@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -121,7 +122,7 @@ class ReleaseRequest(BaseModel):
 
 
 class Claim(BaseModel):
-    id: str
+    id: UUID
     agent_id: str
     repo: str
     branch: str | None = None

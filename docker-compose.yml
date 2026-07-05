@@ -1,0 +1,23 @@
+# Local development only — starts a Postgres instance matching the Lakebase schema.
+# Usage: docker compose up -d
+#        Then: set env vars per .env.local and run the app.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: partyline
+      POSTGRES_USER: partyline
+      POSTGRES_PASSWORD: partyline
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U partyline"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+volumes:
+  pgdata:

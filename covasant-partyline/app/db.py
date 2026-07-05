@@ -71,15 +71,22 @@ class OAuthConnection(psycopg.Connection):
 def get_pool() -> ConnectionPool:
     global _pool
     if _pool is None:
-        _pool = ConnectionPool(
-            conninfo=_conninfo(),
-            connection_class=OAuthConnection,
-            min_size=1,
-            max_size=10,
-            max_lifetime=2700,  # 45m: recycle before the ~1h token expiry
-            open=False,
-            kwargs={"row_factory": dict_row},
-        )
+        kwargs: dict = {
+            "conninfo": _conninfo(),
+            "min_size": 1,
+            "max_size": 10,
+            "open": False,
+            "kwargs": {"row_factory": dict_row},
+        }
+        if settings.local:
+            # Local dev: use PGPASSWORD, standard connection class, no token rotation.
+            import os
+            kwargs["kwargs"]["password"] = os.environ.get("PGPASSWORD", "")
+        else:
+            # Deployed: OAuth token rotation via Lakebase credential minting.
+            kwargs["connection_class"] = OAuthConnection
+            kwargs["max_lifetime"] = 2700  # 45m: recycle before the ~1h token expiry
+        _pool = ConnectionPool(**kwargs)
     return _pool
 
 
