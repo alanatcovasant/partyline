@@ -1,0 +1,1 @@
+"""Covasant Partyline app package."""

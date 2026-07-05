@@ -1,0 +1,11 @@
+# Databricks App runtime configuration.
+# Starts the FastAPI process; it binds to the port Databricks injects (DATABRICKS_APP_PORT).
+command: ["python", "-m", "app"]
+
+env:
+  # ENDPOINT_NAME is NOT auto-injected. It is the full Lakebase endpoint resource name
+  # used to mint OAuth database credentials. The bundle wires this to the created
+  # postgres endpoint at deploy time; the value below is a placeholder for reference.
+  # (PGHOST/PGPORT/PGDATABASE/PGUSER/PGSSLMODE are auto-injected for the first DB resource.)
+  - name: ENDPOINT_NAME
+    value: "projects/PLACEHOLDER/branches/production/endpoints/PLACEHOLDER"

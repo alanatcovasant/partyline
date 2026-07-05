@@ -1,0 +1,24 @@
+# The Databricks App for Covasant Partyline (Python FastAPI: MCP + REST + ops SPA).
+# Source lives in ../covasant-partyline; the path is relative to this file.
+resources:
+  apps:
+    covasant_partyline:
+      name: "covasant-partyline"
+      description: "Covasant Partyline — inter-agent coordination line (MCP + Lakebase Postgres)"
+      source_code_path: ../covasant-partyline
+
+      # On-behalf-of (OBO) user authorization: forwards the caller's token so the app can
+      # resolve the authenticated identity for the audit trail (app/auth.py). Requires a
+      # workspace admin to enable user authorization on the app.
+      user_api_scopes:
+        - iam.current-user:read
+
+      # Bind the app to the Lakebase branch created above. This provisions the app's
+      # Postgres role and auto-injects PGHOST/PGPORT/PGDATABASE/PGUSER/PGSSLMODE.
+      # ENDPOINT_NAME (needed to mint OAuth credentials) is set in app.yaml.
+      resources:
+        - name: partyline_db
+          postgres:
+            branch: ${resources.postgres_branches.partyline_branch.name}
+            database: databricks_postgres
+            permission: CAN_CONNECT_AND_CREATE

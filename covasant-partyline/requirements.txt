@@ -1,0 +1,8 @@
+# Databricks Apps runtime does NOT pre-install DB drivers — pin them here or the app
+# crashes on startup (the #1 Lakebase app failure mode).
+fastapi>=0.115
+uvicorn[standard]>=0.34
+mcp>=1.9
+psycopg[binary,pool]>=3.2
+databricks-sdk>=0.81.0
+pydantic>=2.7

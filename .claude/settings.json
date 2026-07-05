@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm \"c:/Users/alana/Code/Repos/covasant-agent-bus/covasant-agent-bus/databricks.yml\" && echo \"deleted nested databricks.yml\")",
+      "Bash(python - C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-agent-bus/f07007e9-1c3b-4d82-a434-a1c9230004a2/scratchpad/schema.json)",
+      "Bash(python -m py_compile app/*.py)",
+      "Bash(python -m py_compile cli/partyline.py)",
+      "Bash(python cli/partyline.py --help)",
+      "Bash(mkdir -p partyline-client)",
+      "Bash(mv covasant_partyline partyline-client/covasant_partyline)",
+      "Bash(mv partyline-client/covasant_partyline/pyproject.toml partyline-client/pyproject.toml)",
+      "Bash(rm -rf cli)",
+      "Bash(python -m py_compile covasant-agent-bus/app/*.py partyline-client/covasant_partyline/*.py)",
+      "Bash(python partyline-client/covasant_partyline/cli.py --help)",
+      "Bash(python partyline-client/covasant_partyline/cli.py claim --help)",
+      "Bash(python partyline-client/covasant_partyline/cli.py post --help)",
+      "Bash(python partyline-client/covasant_partyline/cli.py unread --help)",
+      "WebFetch(domain:docs.databricks.com)",
+      "Bash(command -v mmdc)",
+      "Bash(npx --no-install @mermaid-js/mermaid-cli --version)",
+      "Bash(mmdc -i C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-agent-bus/f07007e9-1c3b-4d82-a434-a1c9230004a2/scratchpad/arch.mmd -o C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-agent-bus/f07007e9-1c3b-4d82-a434-a1c9230004a2/scratchpad/arch.png -b transparent)",
+      "Bash(python partyline-client/covasant_partyline/bridge.py --help)",
+      "Bash(mmdc -i C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-agent-bus/f07007e9-1c3b-4d82-a434-a1c9230004a2/scratchpad/prd_arch.mmd -o C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-agent-bus/f07007e9-1c3b-4d82-a434-a1c9230004a2/scratchpad/prd_arch.png -b transparent)",
+      "Bash(mv covasant-agent-bus *)",
+      "Bash(mv src/covasant_agent_bus src/covasant_partyline_jobs)",
+      "Bash(mv resources/covasant_agent_bus_app.app.yml resources/covasant_partyline_app.app.yml)",
+      "Bash(rm -rf .databricks/bundle)",
+      "Bash(python -m py_compile covasant-partyline/app/*.py partyline-client/covasant_partyline/*.py src/covasant_partyline_jobs/*.py)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\alana\\Code\\Repos\\covasant-agent-bus\\covasant-agent-bus"
+    ]
+  }
+}
