@@ -1,8 +1,8 @@
 """Runtime configuration, sourced entirely from environment variables.
 
 In a deployed Databricks App the Postgres (PG*) variables are auto-injected when a
-Lakebase resource is attached to the app; ``ENDPOINT_NAME`` is *not* auto-injected and
-must be supplied explicitly via app.yaml (see the bundle's postgres resources).
+Lakebase resource is bound to the app; ``ENDPOINT_NAME`` (the autoscale endpoint resource
+name) is *not* auto-injected and is supplied by the bundle's app config.env.
 Locally, populate these via a .env file (see .env.example).
 """
 
@@ -27,7 +27,8 @@ class Settings:
     pg_sslmode: str = os.getenv("PGSSLMODE", "require")
     # Full Lakebase endpoint resource name, e.g.
     #   projects/<project-id>/branches/<branch-id>/endpoints/<endpoint-id>
-    # Used to mint short-lived OAuth database credentials.
+    # Used to mint short-lived OAuth database credentials and to self-provision the
+    # project/branch/endpoint if missing (see app/db.py).
     endpoint_name: str | None = os.getenv("ENDPOINT_NAME")
 
     # --- Behaviour ---

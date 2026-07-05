@@ -2,8 +2,8 @@
 # Starts the FastAPI process; it binds to the port Databricks injects (DATABRICKS_APP_PORT).
 command: ["python", "-m", "app"]
 
-# NOTE: ENDPOINT_NAME (the full Lakebase endpoint resource name used to mint OAuth DB
-# credentials — see app/db.py) is per-target, so it is set by the bundle in
-# resources/covasant_partyline_app.app.yml (config.env), NOT here — app.yaml is not
-# interpolated with ${bundle.target}. PGHOST/PGPORT/PGDATABASE/PGUSER/PGSSLMODE are
-# auto-injected for the first bound DB resource.
+# NOTE: ENDPOINT_NAME (the autoscale Lakebase endpoint resource name — used to mint OAuth DB
+# credentials and self-provision the project/branch/endpoint, see app/db.py) is set by the
+# bundle in resources/covasant_partyline_app.app.yml (config.env), NOT here, so it can use
+# ${bundle.target}; app.yaml is not interpolated. PGHOST/PGPORT/PGDATABASE/PGUSER/PGSSLMODE
+# are auto-injected for the first bound DB resource.

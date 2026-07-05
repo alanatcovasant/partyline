@@ -7,23 +7,22 @@ resources:
       description: "Covasant Partyline — inter-agent coordination line (MCP + Lakebase Postgres)"
       source_code_path: ../covasant-partyline
 
-      # Runtime config lives here (not app.yaml) because ENDPOINT_NAME is per-target and
-      # app.yaml is NOT interpolated with ${bundle.target}. This config block IS, so the
-      # per-target projects (partyline-dev / partyline-prod) resolve correctly at deploy.
+      # Runtime config lives here (not app.yaml) so it can reference ${bundle.target};
+      # app.yaml is synced verbatim and is NOT interpolated.
       config:
         command: ["python", "-m", "app"]
         env:
-          # Full Lakebase endpoint resource name used to mint OAuth DB credentials
-          # (app/db.py). NOT auto-injected — must match the provisioned per-target project.
+          # Full autoscale Lakebase endpoint resource name. Used to mint OAuth DB
+          # credentials and to self-provision the project/branch/endpoint (app/db.py).
           - name: ENDPOINT_NAME
-            value: "projects/partyline-${bundle.target}/branches/production/endpoints/primary"
+            value: "projects/partyline/branches/production/endpoints/primary"
 
-      # Bind the app to the Lakebase branch. The project/branch/endpoint are provisioned
-      # out-of-band (the autoscale postgres_* bundle resources aren't managed by this CLI
-      # version), so we reference them by literal name. Auto-injects PG* connection vars.
+      # Bind the app to the autoscale Lakebase branch. This provisions the app service
+      # principal's Postgres role and auto-injects PGHOST/PGPORT/PGDATABASE/PGUSER/PGSSLMODE.
       resources:
         - name: partyline_db
           postgres:
-            branch: projects/partyline-${bundle.target}/branches/production
-            database: projects/partyline-${bundle.target}/branches/production/databases/databricks-postgres
+            branch: projects/partyline/branches/production
+            # database_id is hyphenated; the underlying PG dbname (PGDATABASE) is databricks_postgres.
+            database: projects/partyline/branches/production/databases/databricks-postgres
             permission: CAN_CONNECT_AND_CREATE

@@ -24,7 +24,7 @@ covasant-partyline/                    # App source (source_code_path)
     notify.py                          #   LISTEN/NOTIFY -> SSE fan-out
     auth.py                            #   OBO user-identity resolution (audit trail)
   client/                              # small React ops dashboard (built to client/dist)
-  app.yaml                             # runtime command + ENDPOINT_NAME
+  app.yaml                             # runtime command (env is set by the bundle)
   requirements.txt
 partyline-client/                      # `pip install`-able client package (covasant-partyline)
   covasant_partyline/
@@ -58,7 +58,8 @@ src/, tests/, fixtures/                # Python wheel from the default-python te
   OAuth credentials per physical connection (`app/db.py`). `max_lifetime=2700` recycles
   before the ~1h token expiry.
 - **OBO (on-behalf-of)** resolves the *calling user* for the audit trail
-  (`messages.author`). Requires a workspace admin to enable user authorization on the app.
+  (`messages.author`). Currently disabled (`user_api_scopes` removed); re-enabling requires
+  restoring the scope and a workspace admin turning on user authorization for the app.
 - The long-lived `LISTEN/NOTIFY` connection runs as the service principal (it outlives any
   request, so it can't be per-user OBO). Instance identity comes from `agent_id`, not OBO.
 
@@ -69,7 +70,7 @@ src/, tests/, fixtures/                # Python wheel from the default-python te
 cd covasant-partyline
 python -m venv .venv && . .venv/Scripts/activate   # (Windows: .venv\Scripts\activate)
 pip install -r requirements.txt
-cp .env.example .env    # fill in PG* + ENDPOINT_NAME from your Lakebase branch
+cp .env.example .env    # fill in PG* + ENDPOINT_NAME for your Lakebase endpoint
 python -m app           # serves on http://localhost:8000
 
 # Frontend (separate terminal; proxies /api + /mcp to :8000)
@@ -80,20 +81,25 @@ Without DB env vars the app still boots and serves `/api/health` (db_configured:
 
 ## Deploy
 
+Fully automated, no manual provisioning steps — one command:
+
 ```bash
-# 1. Build the ops SPA (its dist/ is force-synced by the bundle)
-cd covasant-partyline/client && npm install && npm run build && cd ../..
-
-# 2. Validate + deploy the bundle (creates Lakebase + the app)
-databricks bundle validate --profile dev-alan
-databricks bundle deploy   --profile dev-alan            # dev target (default)
-
-# 3. Start the app
-databricks bundle run covasant_partyline --profile dev-alan
-
-# 4. After first deploy, set app.yaml ENDPOINT_NAME to the created endpoint's full
-#    resource name (`databricks postgres list-endpoints <branch>`), then redeploy.
+./deploy.sh dev-eastus2 dev          # [profile] [target]
+databricks bundle run covasant_partyline -t dev --profile dev-eastus2   # start it
 ```
+
+`deploy.sh` does three things:
+
+1. **Provisions Lakebase** — `scripts/provision_lakebase.py` idempotently creates the
+   autoscale project/branch/endpoint (`projects/partyline/branches/production/endpoints/primary`)
+   if missing, via the `w.postgres` SDK. This runs *before* deploy because the app's bundle
+   binding requires the branch to already exist, and the autoscale resources are not yet
+   bundle-managed in the installed CLI.
+2. **Builds the ops SPA** (its `dist/` is force-synced by the bundle).
+3. **Deploys the bundle** — the app binds to the branch, which provisions the app service
+   principal's Postgres role and injects the `PG*` vars; `ENDPOINT_NAME` is wired via the
+   app config. On first boot the app creates its own `partyline` schema and tables
+   (`app/db.py`) — the SP has CREATE on the database but not on `public`.
 
 ## Client package (`covasant-partyline`)
 
@@ -136,10 +142,10 @@ stdio MCP to the app's `/mcp`:
 
 ## Status / known follow-ups
 
-- Lakebase-as-a-bundle-resource (autoscale `postgres_projects`) is new; the resource
-  names/fields in `resources/lakebase.postgres.yml` pass schema validation but should be
-  confirmed against a real deploy.
-- `ENDPOINT_NAME` in `app.yaml` is a placeholder until the endpoint exists (step 4 above).
-- MCP tool calls don't yet resolve an OBO author (the REST path does); per-user Lakebase
-  credential minting is a deliberate future step.
+- Autoscale Lakebase (`postgres_projects/branches/endpoints`) is not yet a bundle resource
+  in the installed CLI, so `scripts/provision_lakebase.py` creates it (idempotent) as a
+  pre-deploy step in `deploy.sh`. Move provisioning into the bundle when those resources ship.
+- OBO (on-behalf-of) is currently disabled (`user_api_scopes` removed), so `messages.author`
+  is null until it is re-enabled (see `app/auth.py`). Per-user Lakebase credential minting
+  is a deliberate future step.
 - `resources/sample_job.job.yml` and `src/`/`tests/` are default-python template leftovers.

@@ -1,10 +1,10 @@
-"""Lakebase (autoscale Postgres) access: OAuth-authenticated connection pool,
-idempotent schema bootstrap (PRD §10), and the data-access layer for the bus.
+"""Lakebase (autoscale Postgres) access: OAuth-authenticated connection pool, idempotent
+schema bootstrap (PRD §10), and the data-access layer for the bus.
 
-Auth follows the canonical Lakebase Autoscaling pattern: a psycopg ``ConnectionPool``
-whose connection class mints a fresh, short-lived OAuth database credential each time a
-physical connection is opened. ``max_lifetime`` recycles connections before the ~1h token
-expiry, so no background refresh thread is needed.
+Auth follows the canonical Lakebase Autoscaling pattern: a psycopg ``ConnectionPool`` whose
+connection class mints a fresh, short-lived OAuth database credential each time a physical
+connection is opened. ``max_lifetime`` recycles connections before the ~1h token expiry, so
+no background refresh thread is needed.
 
 The connection uses the *app service principal* identity (``PGUSER``). Per-request OBO
 (the calling user's identity) is captured separately at the HTTP layer for audit — see
@@ -26,6 +26,11 @@ log = logging.getLogger("partyline.db")
 
 NOTIFY_CHANNEL = "partyline"
 
+# The app's service principal has CREATE on the database (CAN_CONNECT_AND_CREATE) but not
+# on the pre-owned `public` schema (Postgres 15+ default). So the bus owns its own schema;
+# every connection sets search_path to it, and init_schema creates it first.
+APP_SCHEMA = "partyline"
+
 _pool: ConnectionPool | None = None
 _workspace_client = None
 
@@ -43,7 +48,8 @@ def _mint_token() -> str:
     """Mint a short-lived, Lakebase-scoped OAuth credential for Postgres login.
 
     A workspace-scoped OAuth token would be rejected at Postgres login — this must be a
-    database credential from ``postgres.generate_database_credential``.
+    database credential from ``postgres.generate_database_credential``, scoped to the
+    autoscale endpoint.
     """
     cred = _ws().postgres.generate_database_credential(endpoint=settings.endpoint_name)
     return cred.token
@@ -76,7 +82,8 @@ def get_pool() -> ConnectionPool:
             "min_size": 1,
             "max_size": 10,
             "open": False,
-            "kwargs": {"row_factory": dict_row},
+            # search_path pins all statements to the app's own schema (see APP_SCHEMA).
+            "kwargs": {"row_factory": dict_row, "options": f"-c search_path={APP_SCHEMA}"},
         }
         if settings.local:
             # Local dev: use PGPASSWORD, standard connection class, no token rotation.
@@ -104,6 +111,8 @@ def close_pool() -> None:
 # --------------------------------------------------------------------------- #
 
 _SCHEMA = """
+CREATE SCHEMA IF NOT EXISTS partyline;
+
 CREATE TABLE IF NOT EXISTS agents (
     agent_id       TEXT PRIMARY KEY,
     owner          TEXT NOT NULL,
