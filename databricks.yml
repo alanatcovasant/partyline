@@ -34,7 +34,7 @@ targets:
     mode: development
     default: true
     workspace:
-      host: https://adb-7405613581513114.14.azuredatabricks.net
+      host: https://adb-7405607474919121.1.azuredatabricks.net
     variables:
       catalog: covasant
       schema: dev

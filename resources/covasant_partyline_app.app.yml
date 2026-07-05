@@ -7,18 +7,23 @@ resources:
       description: "Covasant Partyline — inter-agent coordination line (MCP + Lakebase Postgres)"
       source_code_path: ../covasant-partyline
 
-      # On-behalf-of (OBO) user authorization: forwards the caller's token so the app can
-      # resolve the authenticated identity for the audit trail (app/auth.py). Requires a
-      # workspace admin to enable user authorization on the app.
-      user_api_scopes:
-        - iam.current-user:read
+      # Runtime config lives here (not app.yaml) because ENDPOINT_NAME is per-target and
+      # app.yaml is NOT interpolated with ${bundle.target}. This config block IS, so the
+      # per-target projects (partyline-dev / partyline-prod) resolve correctly at deploy.
+      config:
+        command: ["python", "-m", "app"]
+        env:
+          # Full Lakebase endpoint resource name used to mint OAuth DB credentials
+          # (app/db.py). NOT auto-injected — must match the provisioned per-target project.
+          - name: ENDPOINT_NAME
+            value: "projects/partyline-${bundle.target}/branches/production/endpoints/primary"
 
-      # Bind the app to the Lakebase branch created above. This provisions the app's
-      # Postgres role and auto-injects PGHOST/PGPORT/PGDATABASE/PGUSER/PGSSLMODE.
-      # ENDPOINT_NAME (needed to mint OAuth credentials) is set in app.yaml.
+      # Bind the app to the Lakebase branch. The project/branch/endpoint are provisioned
+      # out-of-band (the autoscale postgres_* bundle resources aren't managed by this CLI
+      # version), so we reference them by literal name. Auto-injects PG* connection vars.
       resources:
         - name: partyline_db
           postgres:
-            branch: ${resources.postgres_branches.partyline_branch.name}
-            database: databricks_postgres
+            branch: projects/partyline-${bundle.target}/branches/production
+            database: projects/partyline-${bundle.target}/branches/production/databases/databricks-postgres
             permission: CAN_CONNECT_AND_CREATE

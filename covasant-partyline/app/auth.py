@@ -8,8 +8,12 @@ bundle). We use it to resolve the authenticated identity for the audit trail
 may all run as the same human. Instance identity comes from the caller-supplied
 ``agent_id``; OBO answers "which principal authorized this call".
 
-The database connection itself uses the app service principal (see db.py). Minting
-per-user Lakebase credentials from this token is a deliberate future step.
+NOTE: OBO is currently NOT configured — ``user_api_scopes`` was removed from the app
+bundle (resources/covasant_partyline_app.app.yml), so the header is never forwarded and
+``resolve_author`` always returns None. Messages are recorded with a null ``author`` until
+OBO is re-enabled (restore ``user_api_scopes`` AND have a workspace admin turn on user
+authorization for the app). This is unrelated to the database connection, which uses the
+app service principal (see db.py). Minting per-user Lakebase credentials is a future step.
 """
 
 from __future__ import annotations
