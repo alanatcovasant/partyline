@@ -57,7 +57,9 @@
       "Bash(docker version *)",
       "mcp__plugin_playwright_playwright__browser_fill_form",
       "mcp__plugin_playwright_playwright__browser_click",
-      "Bash(rm -f \"C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-partyline/69ea35a4-b948-4a03-998b-d1be264d672c/scratchpad/local.env\")"
+      "Bash(rm -f \"C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-partyline/69ea35a4-b948-4a03-998b-d1be264d672c/scratchpad/local.env\")",
+      "Bash(rm -f nul)",
+      "Bash(cmd //c \"del \\\\\\\\\\\\\\\\.\\\\\\\\%CD:/=\\\\\\\\%\\\\\\\\nul\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\alana\\Code\\Repos\\covasant-agent-bus\\covasant-agent-bus",
