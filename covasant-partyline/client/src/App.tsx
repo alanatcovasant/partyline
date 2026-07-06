@@ -33,6 +33,96 @@ async function getJSON<T>(url: string): Promise<T> {
   return r.json();
 }
 
+const MESSAGE_TYPES = [
+  "status", "question", "claim", "release", "blocked",
+  "done", "ack", "escalation", "summary",
+] as const;
+
+/** Compose box: lets a human post to the line. Broadcast like any other message —
+ *  agents see it via SSE push or their next get_unread poll. `@name` in the text
+ *  becomes a mention (so only_for_me filters catch it). */
+function Compose({ agents }: { agents: Agent[] }) {
+  const [from, setFrom] = useState(() => localStorage.getItem("partyline.from") ?? "");
+  const [type, setType] = useState<string>("status");
+  const [to, setTo] = useState("");
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function send(e: React.FormEvent) {
+    e.preventDefault();
+    if (!from.trim() || !text.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    localStorage.setItem("partyline.from", from.trim());
+    const mentions = [...text.matchAll(/@([\w-]+)/g)].map((m) => m[1]);
+    try {
+      const r = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agent_id: from.trim(),
+          message_type: type,
+          recipient: to.trim() || null,
+          payload: text.trim(),
+          mentions,
+        }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setText(""); // stream updates itself via SSE
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="compose" onSubmit={send}>
+      <div className="compose-row">
+        <input
+          value={from}
+          onChange={(e) => setFrom(e.target.value)}
+          placeholder="from (e.g. alan_human)"
+          aria-label="From"
+          required
+        />
+        <select value={type} onChange={(e) => setType(e.target.value)} aria-label="Type">
+          {MESSAGE_TYPES.map((t) => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+        <input
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          placeholder="to (optional)"
+          aria-label="Recipient"
+          list="agent-ids"
+        />
+        <datalist id="agent-ids">
+          {agents.map((a) => (
+            <option key={a.agent_id} value={a.agent_id} />
+          ))}
+        </datalist>
+      </div>
+      <div className="compose-row">
+        <input
+          className="compose-text"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="message — @name to mention"
+          aria-label="Message"
+          required
+        />
+        <button type="submit" disabled={busy || !from.trim() || !text.trim()}>
+          {busy ? "…" : "Send"}
+        </button>
+      </div>
+      {error && <div className="compose-error">{error}</div>}
+    </form>
+  );
+}
+
 export function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -85,6 +175,7 @@ export function App() {
       <div className="grid">
         <section className="stream">
           <h2>Message stream</h2>
+          <Compose agents={agents} />
           <ul>
             {messages
               .slice()
