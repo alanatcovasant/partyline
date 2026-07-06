@@ -58,6 +58,16 @@ app = FastAPI(title="Covasant Partyline", version="0.1.0", lifespan=lifespan)
 app.include_router(rest_router)
 app.mount("/mcp", mcp_app)
 
+
+@app.middleware("http")
+async def _mcp_trailing_slash(request, call_next):
+    # The Starlette mount serves the MCP endpoint at /mcp/ only; a bare POST /mcp would
+    # 405 (and a 307 redirect wouldn't replay the POST body in most clients). Rewrite so
+    # the documented URL <app>/mcp works for every MCP client.
+    if request.scope["path"] == "/mcp":
+        request.scope["path"] = "/mcp/"
+    return await call_next(request)
+
 # Static SPA (built into client/dist). Mounted last so /api and /mcp win.
 _spa = Path(__file__).resolve().parent.parent / "client" / "dist"
 if _spa.is_dir():
