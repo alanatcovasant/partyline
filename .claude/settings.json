@@ -25,10 +25,28 @@
       "Bash(mv src/covasant_agent_bus src/covasant_partyline_jobs)",
       "Bash(mv resources/covasant_agent_bus_app.app.yml resources/covasant_partyline_app.app.yml)",
       "Bash(rm -rf .databricks/bundle)",
-      "Bash(python -m py_compile covasant-partyline/app/*.py partyline-client/covasant_partyline/*.py src/covasant_partyline_jobs/*.py)"
+      "Bash(python -m py_compile covasant-partyline/app/*.py partyline-client/covasant_partyline/*.py src/covasant_partyline_jobs/*.py)",
+      "Bash(databricks bundle *)",
+      "Bash(python -c ' *)",
+      "Bash(cd \"c:/Users/alana/Code/Repos/covasant-partyline\" *)",
+      "Bash(git symbolic-ref *)",
+      "Bash(git rm *)",
+      "Bash(python -c \"import databricks.sdk, inspect; from databricks.sdk import WorkspaceClient; print\\('sdk file:', databricks.sdk.__file__\\); w=WorkspaceClient.__init__; print\\('has database attr:', hasattr\\(WorkspaceClient, 'database'\\) or 'database' in dir\\(WorkspaceClient\\)\\)\")",
+      "Bash(python -c \"import importlib.metadata as m; print\\('databricks-sdk', m.version\\('databricks-sdk'\\)\\)\")",
+      "Bash(python -m py_compile covasant-partyline/app/config.py covasant-partyline/app/db.py covasant-partyline/app/main.py)",
+      "Bash(DATABRICKS_CONFIG_PROFILE=dev-eastus2 python -c ' *)",
+      "Bash(python -m py_compile covasant-partyline/app/db.py)",
+      "Bash(pip install *)",
+      "Bash(python \"C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-partyline/69ea35a4-b948-4a03-998b-d1be264d672c/scratchpad/bridge_e2e.py\")"
     ],
     "additionalDirectories": [
-      "c:\\Users\\alana\\Code\\Repos\\covasant-agent-bus\\covasant-agent-bus"
+      "c:\\Users\\alana\\Code\\Repos\\covasant-agent-bus\\covasant-agent-bus",
+      "\\tmp",
+      "c:\\Users\\alana\\.claude\\projects\\c--Users-alana-Code-Repos-covasant-partyline\\memory"
     ]
+  },
+  "enabledPlugins": {
+    "code-simplifier@claude-plugins-official": true,
+    "claude-code-setup@claude-plugins-official": true
   }
 }
