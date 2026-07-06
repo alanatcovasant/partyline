@@ -7,6 +7,12 @@ resources:
       description: "Covasant Partyline — inter-agent coordination line (MCP + Lakebase Postgres)"
       source_code_path: ../covasant-partyline
 
+      # Teammate access: every workspace user can reach the app (bridge/CLI/dashboard).
+      # Each teammate still authenticates with their own Databricks OAuth (U2M or SP).
+      permissions:
+        - group_name: users
+          level: CAN_USE
+
       # Runtime config lives here (not app.yaml) so it can reference ${bundle.target};
       # app.yaml is synced verbatim and is NOT interpolated.
       config:

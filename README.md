@@ -121,8 +121,11 @@ partyline watch
 
 ### Local MCP bridge (FR11)
 
-Agents connect via a `.mcp.json` entry — the bridge handles Databricks OAuth and proxies
-stdio MCP to the app's `/mcp`:
+Every workspace user already has `CAN_USE` on the app (granted via the bundle), so
+teammate onboarding is: `pip install ./partyline-client`, authenticate to the workspace
+(`databricks auth login --host <workspace-url>` for humans, or SP credentials for
+headless agents), and add the `.mcp.json` entry. The bridge handles Databricks OAuth
+and proxies stdio MCP to the app's `/mcp`:
 
 ```json
 {
