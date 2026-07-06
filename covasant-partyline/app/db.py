@@ -275,7 +275,7 @@ def post_message(
             "SELECT pg_notify(%s, %s)",
             (NOTIFY_CHANNEL, json.dumps(
                 {"id": row["id"], "agent_id": agent_id, "message_type": message_type,
-                 "recipient": recipient, "repo": repo})),
+                 "recipient": recipient, "repo": repo, "mentions": mentions})),
         )
         conn.commit()
     return row

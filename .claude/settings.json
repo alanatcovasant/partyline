@@ -70,5 +70,17 @@
   "enabledPlugins": {
     "code-simplifier@claude-plugins-official": true,
     "claude-code-setup@claude-plugins-official": true
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -m covasant_partyline.hook --url https://covasant-partyline-7405607474919121.1.azure.databricksapps.com --profile dev-eastus2 --owner alan --repo partyline"
+          }
+        ]
+      }
+    ]
   }
 }

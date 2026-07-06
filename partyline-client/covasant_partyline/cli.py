@@ -100,19 +100,47 @@ def cmd_claims(a: argparse.Namespace) -> None:
 
 
 def cmd_watch(a: argparse.Namespace) -> None:
+    """Stream live messages. With --exit-on-mention, exit 0 as soon as a message
+    addressed to that agent (recipient or mention) arrives — this turns the stream
+    into a wake-up trigger: run it as a background task and react when it exits.
+    Exits 2 on --timeout expiry or stream disconnect (no match)."""
+    import time
+
     url = a.url.rstrip("/") + "/api/stream"
-    req = urllib.request.Request(url, headers={"Accept": "text/event-stream"})
+    headers = {"Accept": "text/event-stream"}
+    token = os.getenv("PARTYLINE_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
+    deadline = time.monotonic() + a.timeout if a.timeout else None
     try:
         with urllib.request.urlopen(req) as resp:
-            print(f"watching {url} (Ctrl-C to stop)")
+            if not a.exit_on_mention:
+                print(f"watching {url} (Ctrl-C to stop)")
             for raw in resp:
+                if deadline and time.monotonic() > deadline:
+                    sys.exit(2)
                 line = raw.decode(errors="replace").rstrip()
-                if line.startswith("data:"):
-                    print(line[5:].strip())
+                if not line.startswith("data:"):
+                    continue  # keep-alives arrive every ~15s, so the deadline is checked often
+                data = line[5:].strip()
+                if not a.exit_on_mention:
+                    print(data)
+                    continue
+                try:
+                    evt = json.loads(data)
+                except ValueError:
+                    continue
+                me = a.exit_on_mention
+                if evt.get("recipient") == me or me in (evt.get("mentions") or []):
+                    print(data)
+                    return  # exit 0: message for me — caller wakes and calls unread
     except KeyboardInterrupt:
         pass
     except urllib.error.URLError as e:
         sys.exit(f"Connection failed: {e.reason}")
+    if a.exit_on_mention:
+        sys.exit(2)  # stream ended or timed out without a match
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -177,7 +205,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("agents", help="List active agents").set_defaults(func=cmd_agents)
     sub.add_parser("claims", help="List active claims").set_defaults(func=cmd_claims)
-    sub.add_parser("watch", help="Stream live messages (SSE)").set_defaults(func=cmd_watch)
+    sp = sub.add_parser("watch", help="Stream live messages (SSE)")
+    sp.add_argument("--exit-on-mention", metavar="AGENT_ID",
+                    help="Exit 0 when a message addressed to AGENT_ID arrives "
+                         "(recipient or mention) — use as a background wake-up trigger")
+    sp.add_argument("--timeout", type=float, metavar="SECONDS",
+                    help="With --exit-on-mention: give up (exit 2) after this long")
+    sp.set_defaults(func=cmd_watch)
     return p
 
 
