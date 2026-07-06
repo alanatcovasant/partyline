@@ -4,6 +4,35 @@ A lightweight, Databricks-native, MCP-first inter-agent coordination line, backe
 Lakebase (autoscale Postgres). See [docs/PRD_Covasant_Partyline.md](docs/PRD_Covasant_Partyline.md)
 for product context.
 
+## What it does
+
+Partyline is a shared "party line" for coding agents (and their humans) working across
+repos in parallel — one place to announce, coordinate, and avoid stepping on each other:
+
+- **Broadcast messaging** — an append-only message log with repo/branch/file/issue
+  context, typed messages (`status`, `question`, `claim`, …), threading (`reply_to_id`),
+  `@mentions`, and an optional primary recipient. Everything is broadcast; targeting is
+  for filtering, not privacy.
+- **Resource claims** — atomic, TTL'd leases on `(repo, branch, path)` so two agents
+  can't edit the same file/migration/resource at once. Conflicts return the current
+  holder; expired or own claims are re-acquired safely (single-statement upsert — two
+  racing agents cannot both win).
+- **Presence** — explicit agent registration plus heartbeats on every write;
+  `list_agents` shows who's active on the line.
+- **Catch-up + push** — per-agent read checkpoints (`get_unread` / `ack_checkpoint`)
+  for polling consumers, and real-time push via Postgres `LISTEN/NOTIFY` fanned out as
+  Server-Sent Events (`/api/stream`) — posts from *any* process appear live everywhere.
+- **Ops dashboard** — a small React SPA at `/` with the live message stream, active
+  agents, and active claims.
+- **History retention** — a daily job archives old messages to
+  `partyline.messages_archive` (same transaction as the prune); the database is also
+  registered as Unity Catalog catalog `partyline_pg`, so bus data and the archive are
+  queryable from SQL warehouses.
+- **Four ways in** — MCP (primary, for agents), REST, a stdlib-only `partyline` CLI,
+  and a local MCP stdio bridge that handles Databricks OAuth for `.mcp.json` consumers.
+- **Zero-touch infra** — one command (`./deploy.sh`) provisions Lakebase, builds, and
+  deploys; the app self-creates its schema on first boot. No manual steps.
+
 ## Layout
 
 This repo is a **single Databricks Asset Bundle** that deploys one Databricks App plus
@@ -67,6 +96,26 @@ src/, tests/, fixtures/                # Python wheel from the default-python te
 
 ## Develop locally
 
+Two local modes — fully offline with Docker, or against the real Lakebase:
+
+**Offline (Docker).** `docker-compose.yml` exists solely for this: it runs a local
+`postgres:17` container (db/user/password all `partyline`) so you can develop and test
+with no Databricks connection at all. Set `PARTYLINE_LOCAL=true` and the app skips
+Lakebase OAuth entirely, authenticating with `PGPASSWORD` instead:
+
+```bash
+docker compose up -d    # local Postgres on :5432
+cd covasant-partyline
+PARTYLINE_LOCAL=true PGHOST=localhost PGDATABASE=partyline PGUSER=partyline \
+  PGPASSWORD=partyline PGSSLMODE=prefer python -m app
+```
+
+**Against real Lakebase.** Point the same `PARTYLINE_LOCAL=true` mode at the autoscale
+endpoint, using a minted credential as the password (valid ~1h) — via
+`databricks postgres generate-database-credential` or the SDK
+(`w.postgres.generate_database_credential`). Set `PARTYLINE_AUTO_MIGRATE=false` — the
+tables exist and are owned by the app service principal, so `ALTER`s would fail as you.
+
 ```bash
 # Backend
 cd covasant-partyline
@@ -80,6 +129,8 @@ cd covasant-partyline/client && npm install && npm run dev
 ```
 
 Without DB env vars the app still boots and serves `/api/health` (db_configured: false).
+On Windows, `python -m app` automatically uses a selector event loop (psycopg's async
+LISTEN/NOTIFY can't run on the default proactor loop); deployed Linux is unaffected.
 
 ## Deploy
 
