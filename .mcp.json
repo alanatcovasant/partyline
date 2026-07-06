@@ -1,5 +1,10 @@
 {
   "mcpServers": {
+    "partyline": {
+      "command": "python",
+      "args": ["-m", "covasant_partyline.bridge", "--app-name", "covasant-partyline"],
+      "env": { "DATABRICKS_CONFIG_PROFILE": "dev-eastus2" }
+    },
     "browsermcp": {
       "command": "npx",
       "args": ["@browsermcp/mcp@latest"]
