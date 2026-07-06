@@ -7,14 +7,32 @@ app.yaml.
 
 from __future__ import annotations
 
+import sys
+
 import uvicorn
 
 from .config import settings
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "app.main:app",
-        host=settings.host,
-        port=settings.port,
-        log_level="info",
-    )
+    if sys.platform == "win32":
+        # psycopg's async connections (the LISTEN/NOTIFY hub) can't run on Windows'
+        # default ProactorEventLoop, and uvicorn.run ignores the ambient loop policy —
+        # so drive the server on an explicit selector loop. Local-dev only; deployed
+        # apps run on Linux and take the plain uvicorn.run path below.
+        import asyncio
+        import selectors
+
+        config = uvicorn.Config(
+            "app.main:app", host=settings.host, port=settings.port, log_level="info"
+        )
+        asyncio.run(
+            uvicorn.Server(config).serve(),
+            loop_factory=lambda: asyncio.SelectorEventLoop(selectors.SelectSelector()),
+        )
+    else:
+        uvicorn.run(
+            "app.main:app",
+            host=settings.host,
+            port=settings.port,
+            log_level="info",
+        )

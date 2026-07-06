@@ -65,8 +65,16 @@ class NotifyHub:
         )
         while not self._stop.is_set():
             try:
+                # Local dev uses PGPASSWORD (like the pool in db.py); deployed mints a
+                # fresh Lakebase OAuth credential per (re)connect.
+                if settings.local:
+                    import os
+
+                    password = os.environ.get("PGPASSWORD", "")
+                else:
+                    password = _mint_token()
                 async with await psycopg.AsyncConnection.connect(
-                    conninfo, password=_mint_token(), autocommit=True
+                    conninfo, password=password, autocommit=True
                 ) as conn:
                     await conn.execute(f"LISTEN {NOTIFY_CHANNEL}")
                     log.info("LISTEN %s established", NOTIFY_CHANNEL)
