@@ -141,6 +141,13 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_issue_ref ON messages (issue_ref);
 
+-- Retention archive: the retention job moves (not deletes) old messages here, in the
+-- same transaction as the prune, so history survives OLTP pruning. Queryable from
+-- Unity Catalog via the registered `partyline_pg` catalog. No FK: archived rows keep
+-- their original reply_to_id values even when the referenced row is archived too.
+-- (Interim for PRD §7.10 until the Lakehouse Sync API is available programmatically.)
+CREATE TABLE IF NOT EXISTS messages_archive (LIKE messages INCLUDING ALL);
+
 CREATE TABLE IF NOT EXISTS checkpoints (
     agent_id             TEXT PRIMARY KEY,
     last_read_message_id BIGINT NOT NULL DEFAULT 0,

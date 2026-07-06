@@ -1,8 +1,10 @@
-"""Partyline retention job — prunes old messages from Lakebase Postgres.
+"""Partyline retention job — archives then prunes old messages in Lakebase Postgres.
 
-Native Lakehouse Sync (wal2delta) mirrors rows to Delta SCD2 history *before*
-they're deleted, so the archive persists in Unity Catalog while the OLTP tier
-stays small.  See PRD §7.10.
+History is preserved by MOVING old rows to partyline.messages_archive in the same
+transaction as the prune, so the OLTP `messages` table stays small while the archive
+survives — queryable from Unity Catalog via the registered `partyline_pg` catalog.
+(PRD §7.10 prefers Native Lakehouse Sync (wal2delta -> Delta SCD2); its API is not
+yet exposed in this workspace, so this is the automated interim. Swap when it ships.)
 
 Connection: unlike the app (which gets PG* auto-injected by its bound database
 resource), a job gets nothing injected. So we resolve everything from the autoscale
@@ -78,8 +80,20 @@ def main():
                 logger.info("Dry run: %d messages older than %d days", count, args.retention_days)
                 print(f"Would delete {count} messages older than {args.retention_days} days")
             else:
-                # reply_to_id is a self-FK: detach replies that point at rows about to
-                # be pruned, or the DELETE would fail once threads span the boundary.
+                # Archive first — same transaction as the prune, so a failure rolls
+                # back both and no history is ever lost. Idempotent on re-run
+                # (ON CONFLICT skips rows already archived).
+                cur.execute(
+                    f"INSERT INTO {SCHEMA}.messages_archive "
+                    f"SELECT * FROM {SCHEMA}.messages "
+                    "WHERE created_at < now() - make_interval(days => %s) "
+                    "ON CONFLICT (id) DO NOTHING",
+                    (args.retention_days,),
+                )
+                archived = cur.rowcount
+                # reply_to_id is a self-FK: detach surviving replies that point at rows
+                # about to be pruned, or the DELETE would fail once threads span the
+                # boundary. (Archived rows keep their original reply_to_id.)
                 cur.execute(
                     f"UPDATE {SCHEMA}.messages SET reply_to_id = NULL "
                     f"WHERE reply_to_id IN (SELECT id FROM {SCHEMA}.messages "
@@ -93,8 +107,14 @@ def main():
                 )
                 deleted = cur.rowcount
                 conn.commit()
-                logger.info("Deleted %d messages older than %d days", deleted, args.retention_days)
-                print(f"Deleted {deleted} messages older than {args.retention_days} days")
+                logger.info(
+                    "Archived %d and deleted %d messages older than %d days",
+                    archived, deleted, args.retention_days,
+                )
+                print(
+                    f"Archived {archived} and deleted {deleted} messages "
+                    f"older than {args.retention_days} days"
+                )
 
 
 if __name__ == "__main__":

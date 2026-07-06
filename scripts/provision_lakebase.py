@@ -83,7 +83,23 @@ def main() -> None:
             endpoint_id=endpoint_id,
         )
 
-    print(f"[ok] Lakebase ready: {ENDPOINT_NAME}")
+    # Register the Postgres database as a Unity Catalog catalog so the bus tables —
+    # including the retention archive (partyline.messages_archive) — are queryable
+    # from UC/warehouses. (Not yet in the installed SDK; use the REST API directly.)
+    catalog_id = f"{project_id.replace('-', '_')}_pg"
+    try:
+        w.api_client.do("GET", f"/api/2.0/postgres/catalogs/{catalog_id}")
+        print(f"[ok] UC catalog {catalog_id} exists")
+    except NotFound:
+        print(f"[+] registering UC catalog {catalog_id}")
+        w.api_client.do(
+            "POST",
+            "/api/2.0/postgres/catalogs",
+            query={"catalog_id": catalog_id},
+            body={"spec": {"postgres_database": "databricks_postgres", "branch": branch}},
+        )
+
+    print(f"[ok] Lakebase ready: {ENDPOINT_NAME} (UC catalog: {catalog_id})")
 
 
 if __name__ == "__main__":

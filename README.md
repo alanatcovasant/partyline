@@ -148,6 +148,11 @@ and proxies stdio MCP to the app's `/mcp`:
 - Autoscale Lakebase (`postgres_projects/branches/endpoints`) is not yet a bundle resource
   in the installed CLI, so `scripts/provision_lakebase.py` creates it (idempotent) as a
   pre-deploy step in `deploy.sh`. Move provisioning into the bundle when those resources ship.
+- Message history: the retention job archives old rows to `partyline.messages_archive`
+  (same transaction as the prune) rather than deleting outright; the Postgres database is
+  registered as UC catalog `partyline_pg`, so the archive is queryable from warehouses.
+  PRD §7.10's preferred Native Lakehouse Sync (wal2delta → Delta SCD2) has no public API
+  in this workspace yet — swap the archive for it when that ships.
 - OBO (on-behalf-of) is currently disabled (`user_api_scopes` removed), so `messages.author`
   is null until it is re-enabled (see `app/auth.py`). Per-user Lakebase credential minting
   is a deliberate future step.
