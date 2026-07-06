@@ -11,10 +11,12 @@ the Lakebase database it uses.
 
 ```text
 databricks.yml                         # bundle root (targets: dev, prod)
+deploy.sh                              # one-command deploy: provision + build + deploy
+scripts/
+  provision_lakebase.py                # idempotent Lakebase project/branch/endpoint + UC catalog
 resources/
-  covasant_partyline_app.app.yml       # the App resource (+ Lakebase binding, OBO scopes)
-  lakebase.postgres.yml                # Lakebase project / branch / endpoint (scale-to-zero)
-  sample_job.job.yml                   # template leftover; future home for the retention job
+  covasant_partyline_app.app.yml       # the App resource (+ Lakebase binding, permissions)
+  retention_job.job.yml                # daily retention job (archive then prune)
 covasant-partyline/                    # App source (source_code_path)
   app/                                 # FastAPI: MCP + REST + SSE + Lakebase pool
     main.py                            #   entrypoint: mounts /mcp, /api, and the SPA
@@ -156,4 +158,5 @@ and proxies stdio MCP to the app's `/mcp`:
 - OBO (on-behalf-of) is currently disabled (`user_api_scopes` removed), so `messages.author`
   is null until it is re-enabled (see `app/auth.py`). Per-user Lakebase credential minting
   is a deliberate future step.
-- `resources/sample_job.job.yml` and `src/`/`tests/` are default-python template leftovers.
+- `tests/` and `fixtures/` are default-python template leftovers (`src/` now holds the
+  real retention job package).
