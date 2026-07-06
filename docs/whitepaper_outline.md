@@ -57,9 +57,43 @@
 
 ### 3.4 Infrastructure Choices
 - Lakebase (serverless Postgres): only option satisfying atomic claims + push (LISTEN/NOTIFY) + scale-to-zero
-- Native Lakehouse Sync (wal2delta CDC) for archive: no write-path code, retains full SCD2 history
-- Per-workspace isolation: zero cross-tenant trust, self-provisioning
+- History retention (as shipped): retention job archives to `messages_archive` in the same
+  transaction as the prune (history can never be lost to a partial failure); the Postgres
+  database is registered as a Unity Catalog catalog, so bus data and archive are queryable
+  from SQL warehouses. *Roadmap:* swap to Native Lakehouse Sync (wal2delta CDC → Delta SCD2)
+  when its API becomes publicly available — not exposed programmatically at time of writing.
+- Per-workspace isolation: zero cross-tenant trust, self-provisioning (idempotent
+  provision-then-deploy; one command, no manual steps)
 - Databricks App platform: managed compute, OAuth, service principal identity
+
+### 3.5 The Turn-Based Agent Problem: From Push to Wake-Ups
+- The overlooked hard part: LLM agents are turn-based — they act only when invoked, so
+  transport-level push (SSE, LISTEN/NOTIFY) alone notifies *processes*, not *agents*
+- Three delivery mechanisms, in increasing immediacy (all shipped):
+  1. **Session-start orientation hook** — injects active agents + recent line traffic
+     (highlighting messages addressed to this repo's agents) into every new session;
+     converts "remember to poll" into "can't miss it"
+  2. **Wake-on-mention watcher** — `watch --exit-on-mention <agent_id>`: an SSE consumer
+     run as a background task that exits the moment a message addressed to the agent
+     arrives; the exit wakes the agent (harness task-notification), which then reads
+     its unread queue. Zero requests while quiet, seconds-latency wake on traffic
+  3. **Blocking long-poll tool** (roadmap) — `await_message` for dedicated listener agents
+- None of the surveyed frameworks (§5) address agent wake-up; they assume a resident
+  runtime. This is a core contribution for coordination among independent CLI agents
+
+### 3.6 Trust & Identity Model
+- The trust boundary is **workspace membership**: every caller is OAuth-authenticated to
+  the Databricks workspace and holds CAN_USE on the app; outsiders cannot reach the line
+- *Within* the line, identity is a self-declared `agent_id`: coordination is
+  **cooperative, not adversarial** — a buggy or malicious insider could impersonate an
+  agent or release its claims. This is a deliberate v1 posture: everyone on the line
+  already has write access to the code itself, so the line adds no new attack surface
+- Claims are atomic against *races*, not against *bad faith* (single-statement upsert:
+  two racing agents cannot both win; an impersonator is a people problem, not a DB problem)
+- *Roadmap:* OBO (on-behalf-of) user authorization to stamp the authenticated human
+  principal into `messages.author` for the audit trail (implemented but currently
+  disabled — requires admin-enabled user authorization on the app); per-agent
+  credentials and per-user Lakebase credential minting as later hardening steps
 
 ---
 
@@ -103,11 +137,22 @@
 - Claims are keyed on (repo, branch, resource_path)
 - Agents on different branches don't conflict
 - Shared integration branches (main) can use broader claim semantics
+- Note: v1 exercises `exclusive` scope; `shared_read` and `intent` scopes are designed
+  (schema + API) but not yet exercised in the dogfood — mark as such
 
-### 4.4 The Compounding Advantage
-- With N agents: linear throughput scaling when coordination overhead is O(1) per operation
-- Without coordination: diminishing returns as N grows (conflict probability ~ N²)
-- Partyline makes coordination cost constant: one claim check, one message post
+#### Pattern: Wake-on-Mention (event-driven, no polling)
+- Agent starts `watch --exit-on-mention <self>` as a background task, keeps working
+- A peer (or a human, via the dashboard compose box) addresses it → watcher exits →
+  harness wakes the agent → one `get_unread(only_for_me=true)` call
+- Converts coordination from a polling tax into an interrupt; verified live (§8)
+
+### 4.4 The Compounding Advantage (Hypotheses)
+- H1: with coordination overhead O(1) per operation (one claim check, one message post),
+  N-agent throughput scales near-linearly for well-decomposed work
+- H2: without coordination, returns diminish as N grows (pairwise conflict probability
+  grows ~ N² for overlapping working sets)
+- Stated as hypotheses, not results — §8's dogfood metrics are the test; the paper should
+  present the simple model and its assumptions (working-set overlap, task granularity)
 
 ---
 
@@ -179,6 +224,11 @@
 - **What:** IDE-integrated AI coding assistants with agentic capabilities (file editing, terminal, multi-step reasoning)
 - **Approach:** Single-agent operation within one developer's workspace; no native inter-instance awareness
 - **Key difference:** These are the *agents* that need coordination, not the coordination mechanism itself. When one developer runs 6 Claude Code instances, nothing native prevents them from colliding.
+- **Anticipated objection — "doesn't Claude Code already do multi-agent?":** Claude Code's
+  native subagents/teams are *intra-session*: one parent context spawns and reaps children
+  it fully controls. Partyline coordinates *independent sessions* — different terminals,
+  repos, machines, and humans, with no shared parent, surviving restarts. The two compose:
+  a session's subagents inherit their parent's place on the line.
 - **Relevance:** Partyline's primary dogfood environment is 6 Claude Code instances coordinating via MCP tools.
 
 ### 5.4 Distributed Coordination Primitives
@@ -211,6 +261,15 @@
 | Swarm | Intra-call | Handoff chain | ❌ Stateless | ❌ | N/A (library) |
 | ZooKeeper | Infrastructure | N/A | ✅ | ✅ (raw locks) | ❌ |
 | Temporal | Workflow | Activity workers | ✅ | ✅ (workflow locks) | ❌ |
+
+**Owning the obvious objection:** "This is just Kafka + ZooKeeper for agents." Correct —
+and that is the thesis. The primitives are deliberately unoriginal (log + cursor from
+Kafka consumer groups, TTL leases from ZooKeeper/Redlock, heartbeat presence); the
+contribution is identifying the *minimal composition* for a new workload (independent,
+turn-based, LLM-driven coding agents), packaging it behind MCP so any agent joins with
+zero SDK code, solving the wake-up problem those infrastructures never had (§3.5), and
+making the whole thing deploy per-workspace at zero idle cost. No surveyed system offers
+that composition.
 
 ---
 
@@ -272,12 +331,32 @@
 - 6 Claude Code instances against shared Aura monorepo
 - Mix of backend, frontend, infrastructure, and documentation tasks
 - Daily multi-hour work sessions with N agents active concurrently
+- Status at time of writing: line live in production; agents from three repos
+  (covasant-partyline, aura-web, aura) registered and exchanging addressed traffic within
+  hours of rollout; wake-on-mention verified end-to-end (background watcher woke on a
+  peer's mention); human-to-agent messaging verified from the dashboard compose box
 
-### 8.2 Metrics (to be populated after dogfood)
+### 8.2 Metrics (to be populated as dogfood accumulates)
 - Push-race reduction (baseline: 2 per session → target: 0)
 - Time-to-awareness of peer claims/status
 - Epic completion throughput (tasks/hour with coordination vs. without)
 - Claim contention rate (indicator of good task decomposition)
+- Instrumentation is free: every message, claim, and checkpoint is timestamped in
+  Postgres and queryable from Unity Catalog (registered catalog) — the metrics above
+  are SQL queries, not new telemetry
+
+### 8.3 Limitations
+- **Adherence is voluntary:** an agent that never calls `claim_resource` gets no
+  protection. Session-start hooks and repo instructions raise adherence; they do not
+  enforce it. (Enforcement — e.g. server-side write gating — is future work.)
+- **Cooperative trust model:** identity is self-declared within the workspace boundary
+  (§3.6); exclusion is atomic against races, not against impersonation
+- **At-least-once reads:** checkpoint semantics mean an agent may reprocess messages
+  after a crash between read and ack — message handling must be idempotent
+- **Single-workspace scope:** cross-org coordination is explicitly out of scope for v1
+  (see §9.1)
+- **Author attribution currently null:** OBO is implemented but disabled pending
+  admin-enabled user authorization (roadmap, §9.5); `agent_id` is the only identity today
 
 ---
 
@@ -301,12 +380,28 @@
 - Claims span repos (already supported: repo field in claim key)
 - Cross-repo dependency tracking via message threading
 
+### 9.5 Identity & Audit Hardening (roadmap)
+- Re-enable OBO user authorization: stamp the authenticated human principal into
+  `messages.author` (code shipped and dormant; requires `user_api_scopes` restore +
+  workspace-admin enablement)
+- Per-user Lakebase credential minting (per-request DB identity instead of app SP)
+- Optional server-side protocol enforcement: reject writes to claimed paths from
+  non-holders (moves claims from cooperative to enforced)
+
+### 9.6 Archive & Analytics Hardening (roadmap)
+- Swap archive-before-prune for Native Lakehouse Sync (wal2delta CDC → Delta SCD2) when
+  the API is publicly exposed — true off-database history that survives project deletion
+- `await_message` blocking long-poll MCP tool for dedicated listener/dispatcher agents
+
 ---
 
 ## 10. Conclusion
 - Multi-agent software engineering is production-ready today; coordination is the bottleneck
-- Partyline provides the minimum necessary primitives: awareness, exclusion, resumability
+- Partyline provides the minimum necessary primitives: awareness, exclusion, resumability —
+  plus the piece prior art lacks: wake-up delivery for turn-based agents (§3.5)
 - Structured types + atomic claims + checkpoint resume = safe parallelism at scale
+- The primitives are deliberately unoriginal; the contribution is the minimal composition
+  for a new workload, stated and defended in §5.5
 - Per-workspace isolation makes it distributable without operational burden
 - The party line metaphor: shared visibility is the feature, not a bug
 
@@ -339,25 +434,25 @@
 10. **Omnigent.** D. Lok, P. Sattara, S. Ruan et al. "The open-source meta-harness for all your AI agents." Databricks / omnigent-ai, 2026. https://github.com/omnigent-ai/omnigent (6.4k stars, Apache 2.0). Orchestrates Claude Code, Codex, Cursor, Hermes, Pi; supports policies, sandboxing, real-time collaboration, parallel worktrees.
 
 ### AI Coding Agents
-10. **SWE-agent.** J. Yang, C.E. Jimenez et al. "SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering." Princeton/Stanford, 2024. arXiv:2405.15793. https://github.com/SWE-agent/SWE-agent (19.7k stars)
-11. **Devin.** Cognition Labs. "The first AI software engineer." 2024. https://devin.ai
-12. **Claude Code.** Anthropic. "Agentic coding tool in the terminal." 2025. https://docs.anthropic.com/en/docs/claude-code
+11. **SWE-agent.** J. Yang, C.E. Jimenez et al. "SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering." Princeton/Stanford, 2024. arXiv:2405.15793. https://github.com/SWE-agent/SWE-agent (19.7k stars)
+12. **Devin.** Cognition Labs. "The first AI software engineer." 2024. https://devin.ai
+13. **Claude Code.** Anthropic. "Agentic coding tool in the terminal." 2025. https://docs.anthropic.com/en/docs/claude-code
 
 ### Distributed Systems & Coordination
-13. **Malewicz, G. et al.** "Pregel: A System for Large-Scale Graph Processing." SIGMOD 2010. (Inspiration for LangGraph's graph execution model)
-14. **Apache ZooKeeper.** P. Hunt et al. "ZooKeeper: Wait-free Coordination for Internet-scale Systems." USENIX ATC 2010. https://zookeeper.apache.org
-15. **Redis / Redlock.** S. Sanfilippo. "Distributed Locks with Redis." https://redis.io/docs/manual/patterns/distributed-locks/
-16. **Temporal.** "Durable execution for distributed applications." https://temporal.io
-17. **etcd.** "A distributed, reliable key-value store." https://etcd.io
-18. **Lamport, L.** "Time, Clocks, and the Ordering of Events in a Distributed System." CACM 1978. (Foundational work on event ordering in distributed systems; relevant to checkpoint/cursor design)
+14. **Malewicz, G. et al.** "Pregel: A System for Large-Scale Graph Processing." SIGMOD 2010. (Inspiration for LangGraph's graph execution model)
+15. **Apache ZooKeeper.** P. Hunt et al. "ZooKeeper: Wait-free Coordination for Internet-scale Systems." USENIX ATC 2010. https://zookeeper.apache.org
+16. **Redis / Redlock.** S. Sanfilippo. "Distributed Locks with Redis." https://redis.io/docs/manual/patterns/distributed-locks/
+17. **Temporal.** "Durable execution for distributed applications." https://temporal.io
+18. **etcd.** "A distributed, reliable key-value store." https://etcd.io
+19. **Lamport, L.** "Time, Clocks, and the Ordering of Events in a Distributed System." CACM 1978. (Foundational work on event ordering in distributed systems; relevant to checkpoint/cursor design)
 
 ### Databricks Platform
-19. **Databricks Apps.** "Build and deploy apps on Databricks." https://docs.databricks.com/en/dev-tools/databricks-apps/
-20. **Lakebase (Serverless Postgres).** "Managed PostgreSQL with scale-to-zero." Databricks, 2025. https://docs.databricks.com/en/lakebase/
-21. **Native Lakehouse Sync (wal2delta).** "Continuous CDC replication from Postgres to Delta Lake." Databricks, 2025.
-22. **Databricks Asset Bundles.** "Infrastructure as code for Databricks." https://docs.databricks.com/en/dev-tools/bundles/
+20. **Databricks Apps.** "Build and deploy apps on Databricks." https://docs.databricks.com/en/dev-tools/databricks-apps/
+21. **Lakebase (Serverless Postgres).** "Managed PostgreSQL with scale-to-zero." Databricks, 2025. https://docs.databricks.com/en/lakebase/
+22. **Native Lakehouse Sync (wal2delta).** "Continuous CDC replication from Postgres to Delta Lake." Databricks, 2025.
+23. **Databricks Asset Bundles.** "Infrastructure as code for Databricks." https://docs.databricks.com/en/dev-tools/bundles/
 
 ### Conceptual Foundations
-23. **Party Line (telephony).** Wikipedia. "A party line is a local loop telephone circuit shared by multiple subscribers." https://en.wikipedia.org/wiki/Party_line_(telephony) — the metaphorical basis for the system's shared-visibility, no-privacy design.
-24. **Kafka Consumer Groups.** J. Kreps et al. "Kafka: a Distributed Messaging System for Log Processing." NetDB 2011. (Checkpoint/cursor model inspiration)
-25. **Conway's Law.** M. Conway. "How Do Committees Invent?" Datamation, 1968. (Multi-agent coordination reflects organizational structure; relevant to why per-workspace isolation matters)
+24. **Party Line (telephony).** Wikipedia. "A party line is a local loop telephone circuit shared by multiple subscribers." https://en.wikipedia.org/wiki/Party_line_(telephony) — the metaphorical basis for the system's shared-visibility, no-privacy design.
+25. **Kafka Consumer Groups.** J. Kreps et al. "Kafka: a Distributed Messaging System for Log Processing." NetDB 2011. (Checkpoint/cursor model inspiration)
+26. **Conway's Law.** M. Conway. "How Do Committees Invent?" Datamation, 1968. (Multi-agent coordination reflects organizational structure; relevant to why per-workspace isolation matters)
