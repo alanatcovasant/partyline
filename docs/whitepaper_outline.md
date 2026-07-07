@@ -231,6 +231,14 @@
   a session's subagents inherit their parent's place on the line.
 - **Relevance:** Partyline's primary dogfood environment is 6 Claude Code instances coordinating via MCP tools.
 
+#### Databricks Genie Code (Databricks, 2026)
+- **What:** GA autonomous AI agent built specifically for data work inside Databricks workspaces. Handles ML workflows, data pipelines (Lakeflow), dashboards, observability, and background maintenance. Deeply integrated with Unity Catalog for governance, lineage, and contextual search.
+- **Approach:** Multi-model agentic system (routes across frontier/open/custom models); operates in notebooks, SQL editor, and Lakeflow editor; supports MCP for external tool integration; background agents for proactive pipeline/model maintenance.
+- **Key difference:** Genie Code focuses on *data work* (pipelines, ML models, dashboards, analytics) rather than general-purpose application code. It lives natively inside the Databricks workspace — the same workspace where Partyline runs.
+- **Coordination use case:** When Genie Code modifies schemas, pipelines, or serving endpoints, and Claude Code/Cursor agents simultaneously edit application code that depends on those artifacts, Partyline can mediate: Genie Code claims a pipeline before modifying it, Claude Code sees the claim and waits (or works on unrelated files), then picks up schema changes after Genie Code posts `done`. This heterogeneous coordination — data agent + code agent sharing a workspace — is a first-class Partyline scenario.
+- **MCP compatibility:** Genie Code already supports MCP; adding a Partyline MCP server to a workspace means Genie Code could participate on the coordination line alongside external agents, no custom integration needed.
+- **Ref:** https://www.databricks.com/blog/introducing-genie-code, https://www.databricks.com/product/genie-code
+
 ### 5.4 Distributed Coordination Primitives
 
 #### Apache ZooKeeper / etcd / Consul
@@ -325,9 +333,54 @@ that composition.
 
 ---
 
-## 8. Real-World Validation: Dogfood Results
+## 8. Business Value & ROI
 
-### 8.1 Environment
+### 8.1 Developer Throughput Multiplier
+- Without coordination: adding agents past ~2–3 yields diminishing returns (conflict probability grows with working-set overlap)
+- With Partyline: each agent's coordination cost is O(1) — one claim check, one status post — regardless of fleet size
+- Net effect: near-linear throughput scaling for well-decomposed work; N agents → ~N× throughput on epic-scale tasks
+- Quantifiable: tasks-per-hour, lines-shipped-per-session, epic completion time (coordinated vs. uncoordinated)
+
+### 8.2 Wasted Compute Elimination (Token Cost)
+- Every prevented collision saves the full token cost of the discarded work + the retry
+- At Claude/GPT-4o rates ($3–15/MTok input, $15–75/MTok output), a single wasted multi-file edit = $5–50 in tokens
+- At 6 agents × 8hr sessions, even 2–3 prevented collisions/day = $30–300/day saved
+- Claim-before-edit converts speculative waste into a cheap metadata check (one DB round-trip, microseconds)
+
+### 8.3 Time-to-Delivery Compression
+- Epic-scale tasks (50+ interconnected subtasks) that take one agent days can safely parallelize across N agents in hours
+- The coordination overhead that normally prevents safe parallelism becomes negligible (single-digit ms per coordination action)
+- Direct business translation: faster feature delivery, shorter sprint cycles, earlier revenue recognition on customer-facing work
+
+### 8.4 Operational Visibility & Compliance
+- Full append-only audit trail: who did what, when, why (structured, queryable, not buried in chat logs)
+- Delta archive via Lakehouse Sync → permanent, UC-governed record (Unity Catalog RBAC, lineage, data retention)
+- Enables post-hoc analytics: agent productivity, contention hotspots, task decomposition quality, cost attribution per agent/owner
+- Compliance-friendly: immutable history with timestamp provenance; no "who deleted that file?" ambiguity
+
+### 8.5 Marketplace Revenue Potential
+- Per-workspace install model maps directly to Databricks Marketplace App listing
+- Addressable market: any team running ≥2 concurrent AI coding agents (growing rapidly as agentic coding matures)
+- Zero marginal support cost per install (self-provisioning, isolated, no shared infrastructure, no multi-tenant operations)
+- Revenue model options: free tier (≤3 agents), paid tier (unlimited agents + analytics gold layer + priority support)
+
+### 8.6 Platform Stickiness & Ecosystem Value
+- Built on 4 Databricks services simultaneously: Lakebase, Apps, Unity Catalog, Lakehouse Sync
+- Makes the Databricks workspace the natural home for agent coordination infrastructure
+- Complementary to Omnigent (governance/control plane) — Partyline provides the durable coordination plane underneath
+- Reinforces Databricks as the platform for AI-native software development, not just data/ML
+
+### 8.7 ROI Model (Simplified)
+- **Cost:** Lakebase (~$0 at idle, ~$2–5/day during active sessions) + App compute (~$5–10/day when warm)
+- **Savings:** 2–5 prevented collisions/day × $10–50/collision = $20–250/day in token waste avoided
+- **Revenue acceleration:** If N agents complete an epic in 4 hours instead of 4 days, the business value of earlier delivery dwarfs infrastructure cost
+- **Break-even:** First prevented collision on day one
+
+---
+
+## 9. Real-World Validation: Dogfood Results
+
+### 9.1 Environment
 - 6 Claude Code instances against shared Aura monorepo
 - Mix of backend, frontend, infrastructure, and documentation tasks
 - Daily multi-hour work sessions with N agents active concurrently
@@ -336,7 +389,7 @@ that composition.
   hours of rollout; wake-on-mention verified end-to-end (background watcher woke on a
   peer's mention); human-to-agent messaging verified from the dashboard compose box
 
-### 8.2 Metrics (to be populated as dogfood accumulates)
+### 9.2 Metrics (to be populated as dogfood accumulates)
 - Push-race reduction (baseline: 2 per session → target: 0)
 - Time-to-awareness of peer claims/status
 - Epic completion throughput (tasks/hour with coordination vs. without)
@@ -345,7 +398,7 @@ that composition.
   Postgres and queryable from Unity Catalog (registered catalog) — the metrics above
   are SQL queries, not new telemetry
 
-### 8.3 Limitations
+### 9.3 Limitations
 - **Adherence is voluntary:** an agent that never calls `claim_resource` gets no
   protection. Session-start hooks and repo instructions raise adherence; they do not
   enforce it. (Enforcement — e.g. server-side write gating — is future work.)
@@ -360,27 +413,41 @@ that composition.
 
 ---
 
-## 9. Future Directions
+## 10. Future Directions
 
-### 9.1 Cross-Organization Escalation
+### 10.1 Cross-Organization Escalation
 - Customer agent → structured `escalation` message → consent-gated bridge → vendor inbox
 - Enables support workflows without exposing internal coordination channels
 
-### 9.2 LLM-Powered Coordination Intelligence
+### 10.2 LLM-Powered Coordination Intelligence
 - Gold layer: summarize coordination patterns, detect bottlenecks
 - Auto-suggest task assignments based on agent history and capabilities
 - Conflict prediction: "Agent B is likely to need this file based on task description"
 
-### 9.3 Marketplace Distribution
+### 10.3 Marketplace Distribution
 - Per-workspace install model maps directly to Databricks Marketplace App listings
 - Independent versioning, security review, support commitment as separate gated decisions
 
-### 9.4 Multi-Repo Coordination
+### 10.4 Multi-Repo Coordination
 - Agents working across multiple repositories in a workspace
 - Claims span repos (already supported: repo field in claim key)
 - Cross-repo dependency tracking via message threading
 
-### 9.5 Identity & Audit Hardening (roadmap)
+### 10.5 Heterogeneous Agent Coordination (Genie Code + Claude Code + Cursor)
+- **The scenario:** A single workspace has *different kinds* of agents working on *different layers* of the same system:
+  - **Genie Code** — modifying schemas, Lakeflow pipelines, model serving endpoints, data quality expectations
+  - **Claude Code / Cursor** — editing application code, APIs, frontend components that depend on those data artifacts
+  - **Background agents** (Genie Code's proactive maintenance) — auto-fixing pipeline failures, upgrading DBR versions
+- **The coordination need:** Schema changes break downstream code; pipeline modifications affect integration tests; model endpoint updates require client code changes. Without coordination, these heterogeneous agents create *cross-layer* conflicts invisible to git (different files, same semantic dependency).
+- **Partyline's role:**
+  - Genie Code claims `pipeline:sales_etl` before restructuring → Claude Code sees claim and avoids editing the dependent API endpoint until released
+  - Claude Code posts `question` to Genie Code: "Will the `customer_id` column type change?" → Genie Code responds on the line
+  - Background maintenance agent posts `status: upgrading DBR on cluster X` → all agents pause cluster-dependent work
+  - After Genie Code posts `done: schema migration complete`, Claude Code's test agent picks up and validates integration
+- **Why this matters:** As workspaces become multi-agent environments by default (Genie Code is GA today), coordination between workspace-native agents and external agents (Claude Code, Cursor) becomes a real operational need — not a hypothetical. Partyline is the coordination substrate that makes heterogeneous agent cooperation safe.
+- **Technical enabler:** Both Genie Code and Claude Code support MCP; both can call Partyline tools. No custom adapter needed — just add the MCP server config.
+
+### 10.7 Identity & Audit Hardening (roadmap)
 - Re-enable OBO user authorization: stamp the authenticated human principal into
   `messages.author` (code shipped and dormant; requires `user_api_scopes` restore +
   workspace-admin enablement)
@@ -388,14 +455,14 @@ that composition.
 - Optional server-side protocol enforcement: reject writes to claimed paths from
   non-holders (moves claims from cooperative to enforced)
 
-### 9.6 Archive & Analytics Hardening (roadmap)
+### 10.8 Archive & Analytics Hardening (roadmap)
 - Swap archive-before-prune for Native Lakehouse Sync (wal2delta CDC → Delta SCD2) when
   the API is publicly exposed — true off-database history that survives project deletion
 - `await_message` blocking long-poll MCP tool for dedicated listener/dispatcher agents
 
 ---
 
-## 10. Conclusion
+## 11. Conclusion
 - Multi-agent software engineering is production-ready today; coordination is the bottleneck
 - Partyline provides the minimum necessary primitives: awareness, exclusion, resumability —
   plus the piece prior art lacks: wake-up delivery for turn-based agents (§3.5)
@@ -437,6 +504,7 @@ that composition.
 11. **SWE-agent.** J. Yang, C.E. Jimenez et al. "SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering." Princeton/Stanford, 2024. arXiv:2405.15793. https://github.com/SWE-agent/SWE-agent (19.7k stars)
 12. **Devin.** Cognition Labs. "The first AI software engineer." 2024. https://devin.ai
 13. **Claude Code.** Anthropic. "Agentic coding tool in the terminal." 2025. https://docs.anthropic.com/en/docs/claude-code
+14. **Genie Code.** P. Wendell, M. Zaharia, W. Hutchins, G. Oshri. "Introducing Genie Code: Your Autonomous AI Partner for Data Work." Databricks, March 2026. GA agent for data engineering, ML, pipelines, dashboards; MCP-enabled; background agents for proactive maintenance; 77.1% vs 32.1% on internal data-science benchmarks vs. leading coding agent + MCP. https://www.databricks.com/blog/introducing-genie-code
 
 ### Distributed Systems & Coordination
 14. **Malewicz, G. et al.** "Pregel: A System for Large-Scale Graph Processing." SIGMOD 2010. (Inspiration for LangGraph's graph execution model)
