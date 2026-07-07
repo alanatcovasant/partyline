@@ -179,12 +179,16 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
     evaluated and rejected as the *primary* store: Delta's optimistic concurrency is a
     poor fit for a lock table, there is no push (polling burns warehouse compute and
     defeats scale-to-zero), and per-query latency is seconds. **Delta's role is the
-    downstream archive/analytics tier**, reached via **Native Lakehouse Sync** (`wal2delta`
-    logical-decoding CDC, managed, no pipeline) which mirrors Postgres into UC Delta as
-    SCD2 history (`lb_*_history`). Because deletes are captured as history events (the
-    Delta table is *not* pruned when the source row is), a Postgres retention job can
-    delete old rows to keep the OLTP tier small while the full history persists in Delta —
-    so the sync doubles as the durable archive. **Zerobus was considered and dropped**:
+    downstream archive/analytics tier** — preferred mechanism: **Native Lakehouse Sync**
+    (`wal2delta` logical-decoding CDC, managed, no pipeline) mirroring Postgres into UC
+    Delta as SCD2 history (`lb_*_history`). Because deletes are captured as history
+    events, a Postgres retention job can prune old rows while full history persists in
+    Delta. *Status: roadmap — the sync has no public API in this workspace yet. As
+    shipped, the retention job instead archives to `partyline.messages_archive` in the
+    same transaction as the prune (no history can be lost), and the Postgres database is
+    registered as UC catalog `partyline_pg`, making bus data and archive queryable from
+    SQL warehouses (federated, not a Delta copy). Swap to Lakehouse Sync when its API
+    ships.* **Zerobus was considered and dropped**:
     it's a write-only ingest producer we'd have to build and call per-post; Lakehouse Sync
     supersedes it with zero write-path code. A transformed **gold/summary** layer (e.g.
     claim-contention analytics, LLM thread summaries) is deferred — a plain silver *copy*
@@ -227,33 +231,37 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
 ```mermaid
 flowchart TB
     subgraph Agents["Agent instances (per developer / repo / branch)"]
-        A1["alan_aura_3"]
-        A2["rahul_x"]
-        A3["...aura_1-6"]
+        A1["alan_partyline_1"]
+        A2["alan_aura-web_1"]
+        A3["...alan_aura_1-6"]
     end
 
     subgraph Client["covasant-partyline (pip-installed client)"]
-        Bridge["Local MCP bridge<br/>stdio &lt;-&gt; HTTP, OAuth M2M"]
+        Bridge["Local MCP bridge<br/>stdio &lt;-&gt; HTTP, OAuth M2M/U2M"]
         CLI["partyline CLI"]
+        WATCH["wake-on-mention watcher<br/>watch --exit-on-mention"]
+        HOOK["SessionStart hook<br/>(recent-traffic orientation)"]
     end
 
-    subgraph App["Databricks App (single, per-workspace) - Python FastAPI"]
+    subgraph App["Databricks App mcp-covasant-partyline (per-workspace) - Python FastAPI"]
         MCP["MCP server /mcp<br/>register - post - claim - checkpoint"]
         REST["REST + SSE /api"]
-        SPA["Ops SPA /"]
-        OBO["OBO: resolve user (audit)"]
+        SPA["Ops SPA / (stream + compose)"]
+        OBO["OBO: resolve user (audit)<br/>(roadmap - currently disabled)"]
     end
 
-    subgraph LB["Lakebase Postgres (autoscale, scale-to-zero)"]
+    subgraph LB["Lakebase Postgres (autoscale) - schema partyline"]
         MSG["messages (append-only)"]
+        ARC["messages_archive (retention archive)"]
         CHK["checkpoints"]
         CLM["claims (atomic lease)"]
         AGT["agents (presence)"]
         NOTE["LISTEN/NOTIFY"]
     end
 
-    subgraph Lake["Unity Catalog / Delta"]
-        HIST["lb_*_history (SCD2 bronze archive)"]
+    subgraph Lake["Unity Catalog"]
+        FED["partyline_pg catalog<br/>(federated - queryable from warehouses)"]
+        HIST["lb_*_history Delta SCD2<br/>(roadmap: Native Lakehouse Sync)"]
         GOLD["gold / summaries (deferred)"]
     end
 
@@ -262,14 +270,19 @@ flowchart TB
     A3 --> Bridge
     Bridge -->|"HTTPS + Bearer (OAuth)"| MCP
     CLI -->|"REST"| REST
-    MCP --> OBO
-    REST --> OBO
+    REST -.-> OBO
     MCP -->|"app SP: OAuth DB token"| LB
     REST --> LB
     NOTE -.->|"push"| REST
     REST -.->|"SSE"| SPA
-    LB ==>|"wal2delta CDC (managed)"| HIST
-    RET["retention: DELETE old rows"] --> MSG
+    SPA -->|"compose: POST /api/messages"| REST
+    REST -.->|"SSE"| WATCH
+    WATCH -.->|"exit wakes agent"| A1
+    HOOK -->|"inject at session start"| A1
+    LB ---|"registered as"| FED
+    RET["retention job (daily):<br/>archive then prune, one txn"] --> MSG
+    RET --> ARC
+    LB -.->|"wal2delta CDC (when API ships)"| HIST
     HIST -.->|"transform (later)"| GOLD
 
     classDef agent fill:#87CEEB,stroke:#333,stroke-width:2px,color:black
@@ -280,19 +293,25 @@ flowchart TB
     classDef defer fill:#eeeeee,stroke:#999,stroke-dasharray:4 3,color:#555
 
     class A1,A2,A3 agent
-    class Bridge,CLI client
-    class MCP,REST,SPA,OBO app
-    class MSG,CHK,CLM,AGT,NOTE db
-    class HIST lake
-    class GOLD,RET defer
+    class Bridge,CLI,WATCH,HOOK client
+    class MCP,REST,SPA app
+    class MSG,ARC,CHK,CLM,AGT,NOTE db
+    class FED lake
+    class OBO,GOLD,HIST defer
+    class RET app
 ```
 
-**Legend.** Solid = request path; dashed = push (LISTEN/NOTIFY → SSE); thick = managed
-CDC. Agents never handle Databricks auth — the bundled bridge does (OAuth M2M/U2M; PAT is
-**not** accepted by Databricks Apps). The DB connection is the app service principal;
-OBO resolves the calling user only for the message audit trail. Lakebase is the live OLTP
-core; Native Lakehouse Sync (`wal2delta`) continuously mirrors it to Delta SCD2 history,
-which doubles as the durable archive (see §7.10). Gold/summaries are deferred (§13).
+**Legend.** Solid = request path; dashed = push/deferred. Agents never handle Databricks
+auth — the bundled bridge does (OAuth M2M/U2M; PAT is **not** accepted by Databricks
+Apps). The DB connection is the app service principal. Grey/dashed nodes are roadmap:
+OBO user-attribution is implemented but disabled (requires admin-enabled user
+authorization); Native Lakehouse Sync (`wal2delta` → Delta SCD2) has no public API yet.
+As shipped, history is preserved by the retention job (archive-then-prune in one
+transaction into `messages_archive`) and the whole Postgres database is registered as
+UC catalog `partyline_pg`, so bus data and archive are queryable from SQL warehouses.
+Wake-up delivery: the watcher exits when a message addressed to the agent arrives
+(background-task exit wakes the agent); the SessionStart hook injects recent line
+traffic so sessions start oriented. Gold/summaries are deferred (§13).
 
 ### Client Access: Local MCP Bridge
 
