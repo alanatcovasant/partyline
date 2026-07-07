@@ -61,7 +61,8 @@ partyline-client/                      # `pip install`-able client package (cova
   covasant_partyline/
     bridge.py                          #   FR11 local MCP stdio<->HTTP bridge (Databricks auth)
     cli.py                             #   `partyline` CLI (stdlib-only)
-src/, tests/, fixtures/                # Python wheel from the default-python template
+src/covasant_partyline_jobs/           # retention job wheel
+tests/                                 # pytest suite (unit + DB-backed API tests)
 ```
 
 ## Surfaces
@@ -209,5 +210,5 @@ and proxies stdio MCP to the app's `/mcp`:
 - OBO (on-behalf-of) is currently disabled (`user_api_scopes` removed), so `messages.author`
   is null until it is re-enabled (see `app/auth.py`). Per-user Lakebase credential minting
   is a deliberate future step.
-- `tests/` and `fixtures/` are default-python template leftovers (`src/` now holds the
-  real retention job package).
+- `tests/` holds real coverage now: unit tests run standalone; the REST API suite
+  requires a local Postgres (`docker compose up -d`).

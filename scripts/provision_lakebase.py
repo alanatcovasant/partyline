@@ -25,6 +25,9 @@ from databricks.sdk.service import postgres as pg
 # Autoscale endpoint capacity (CU). Small floor for scale-to-zero; modest ceiling for bursts.
 MIN_CU = 0.5
 MAX_CU = 2.0
+# Suspend after 15 min idle (PRD G5/NFR4 cheap-at-rest). The protocol is fail-open, so a
+# cold start only delays awareness, never blocks work; agents warm it on first call.
+SUSPEND_SECONDS = 900
 PG_VERSION = 17
 
 ENDPOINT_NAME = os.getenv(
@@ -67,21 +70,77 @@ def main() -> None:
             branch_id=branch_id,
         )
 
+    desired = pg.EndpointSpec(
+        endpoint_type=pg.EndpointType.ENDPOINT_TYPE_READ_WRITE,
+        autoscaling_limit_min_cu=MIN_CU,
+        autoscaling_limit_max_cu=MAX_CU,
+        suspend_timeout_duration=pg.Duration(seconds=SUSPEND_SECONDS),
+    )
     try:
-        w.postgres.get_endpoint(name=ENDPOINT_NAME)
-        print(f"[ok] endpoint {endpoint_id} exists")
+        ep = w.postgres.get_endpoint(name=ENDPOINT_NAME)
+        # Reconcile, don't just create-if-missing: endpoints provisioned out-of-band
+        # (or by older script versions) drift from the PRD's scale-to-zero posture.
+        st = ep.status
+        cu_drift = (
+            getattr(st, "autoscaling_limit_min_cu", None) != MIN_CU
+            or getattr(st, "autoscaling_limit_max_cu", None) != MAX_CU
+        )
+        if cu_drift:
+            print(
+                f"[~] reconciling endpoint {endpoint_id} CU: "
+                f"{getattr(st, 'autoscaling_limit_min_cu', '?')}-"
+                f"{getattr(st, 'autoscaling_limit_max_cu', '?')} -> {MIN_CU}-{MAX_CU}"
+            )
+            mask = pg.FieldMask()
+            mask.paths = [
+                "spec.autoscaling_limit_min_cu",
+                "spec.autoscaling_limit_max_cu",
+            ]
+            w.postgres.update_endpoint(
+                name=ENDPOINT_NAME,
+                endpoint=pg.Endpoint(spec=desired),
+                update_mask=mask,
+            )
+        else:
+            print(f"[ok] endpoint {endpoint_id} exists (CU limits match)")
+        current_suspend = getattr(
+            getattr(st, "suspend_timeout_duration", None), "seconds", None
+        )
+        if current_suspend != SUSPEND_SECONDS:
+            # The endpoint-level suspend timeout is not updatable via PATCH in this API
+            # version (no accepted update_mask path); only new endpoints inherit the
+            # project default set below. Flag it rather than silently ignoring.
+            print(
+                f"[!] endpoint {endpoint_id} suspend timeout is {current_suspend}s "
+                f"(want {SUSPEND_SECONDS}s) — not updatable in place; will apply on "
+                f"endpoint recreation"
+            )
     except NotFound:
         print(f"[+] creating endpoint {endpoint_id}")
         w.postgres.create_endpoint(
             parent=branch,
-            endpoint=pg.Endpoint(
-                spec=pg.EndpointSpec(
-                    autoscaling_limit_min_cu=MIN_CU,
-                    autoscaling_limit_max_cu=MAX_CU,
-                )
-            ),
+            endpoint=pg.Endpoint(spec=desired),
             endpoint_id=endpoint_id,
         )
+
+    # Project-level default endpoint settings: new endpoints inherit these (the
+    # existing endpoint's suspend timeout cannot be patched — see note above).
+    proj = w.postgres.get_project(name=project)
+    des = getattr(proj.status, "default_endpoint_settings", None)
+    if getattr(getattr(des, "suspend_timeout_duration", None), "seconds", None) != SUSPEND_SECONDS:
+        print(f"[~] setting project default endpoint settings (suspend {SUSPEND_SECONDS}s)")
+        w.api_client.do(
+            "PATCH",
+            f"/api/2.0/postgres/{project}",
+            query={"update_mask": "spec.default_endpoint_settings"},
+            body={"spec": {"default_endpoint_settings": {
+                "autoscaling_limit_min_cu": MIN_CU,
+                "autoscaling_limit_max_cu": MAX_CU,
+                "suspend_timeout_duration": f"{SUSPEND_SECONDS}s",
+            }}},
+        )
+    else:
+        print("[ok] project default endpoint settings match")
 
     # Register the Postgres database as a Unity Catalog catalog so the bus tables —
     # including the retention archive (partyline.messages_archive) — are queryable

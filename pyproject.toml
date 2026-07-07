@@ -11,6 +11,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest",
+    "asgi-lifespan",
     "pytest-asyncio",
     "httpx",
     "ruff",
