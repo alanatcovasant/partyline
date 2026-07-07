@@ -434,16 +434,20 @@ that composition.
 
 ## 8. Business Value & ROI
 
-### 8.1 Developer Throughput Multiplier
-- Without coordination: adding agents past ~2–3 yields diminishing returns (conflict probability grows with working-set overlap)
-- With Partyline: each agent's coordination cost is O(1) — one claim check, one status post — regardless of fleet size
-- Net effect: near-linear throughput scaling for well-decomposed work; N agents → ~N× throughput on epic-scale tasks
-- Quantifiable: tasks-per-hour, lines-shipped-per-session, epic completion time (coordinated vs. uncoordinated)
+*Framing note: §8 is the business translation of §4.4's hypotheses (H1/H2). Scaling and
+savings figures below are modeled/illustrative until §9.2's dogfood metrics land —
+present them as the model, not as measured results.*
 
-### 8.2 Wasted Compute Elimination (Token Cost)
+### 8.1 Developer Throughput Multiplier (modeled, per H1/H2)
+- Without coordination: adding agents past ~2–3 yields diminishing returns (H2: conflict probability grows with working-set overlap)
+- With Partyline: each agent's coordination cost is O(1) — one claim check, one status post — regardless of fleet size
+- Modeled effect (H1): near-linear throughput scaling for well-decomposed work; N agents → ~N× throughput on epic-scale tasks
+- Measured by §9.2: tasks-per-hour, lines-shipped-per-session, epic completion time (coordinated vs. uncoordinated)
+
+### 8.2 Wasted Compute Elimination (Token Cost — illustrative)
 - Every prevented collision saves the full token cost of the discarded work + the retry
-- At Claude/GPT-4o rates ($3–15/MTok input, $15–75/MTok output), a single wasted multi-file edit = $5–50 in tokens
-- At 6 agents × 8hr sessions, even 2–3 prevented collisions/day = $30–300/day saved
+- Illustrative at current frontier-model rates: a single wasted multi-file edit = $5–50 in tokens (verify rates at publication)
+- Illustrative at 6 agents × 8hr sessions: even 2–3 prevented collisions/day = $30–300/day saved; §9.2's collision counts make this measurable
 - Claim-before-edit converts speculative waste into a cheap metadata check (one DB round-trip, microseconds)
 
 ### 8.3 Time-to-Delivery Compression
@@ -453,7 +457,11 @@ that composition.
 
 ### 8.4 Operational Visibility & Compliance
 - Full append-only audit trail: who did what, when, why (structured, queryable, not buried in chat logs)
-- Delta archive via Lakehouse Sync → permanent, UC-governed record (Unity Catalog RBAC, lineage, data retention)
+- As shipped: bus data + retention archive queryable from UC via the registered
+  `partyline_pg` catalog (federated). *Roadmap:* Delta archive via Lakehouse Sync →
+  permanent UC-governed record with RBAC/lineage/retention (§10.7)
+- Caveat while OBO is disabled (§3.6): "who" is the self-declared `agent_id`, not an
+  authenticated principal — full compliance-grade attribution lands with §10.6
 - Enables post-hoc analytics: agent productivity, contention hotspots, task decomposition quality, cost attribution per agent/owner
 - Compliance-friendly: immutable history with timestamp provenance; no "who deleted that file?" ambiguity
 
@@ -464,16 +472,17 @@ that composition.
 - Revenue model options: free tier (≤3 agents), paid tier (unlimited agents + analytics gold layer + priority support)
 
 ### 8.6 Platform Stickiness & Ecosystem Value
-- Built on 4 Databricks services simultaneously: Lakebase, Apps, Unity Catalog, Lakehouse Sync
+- Built on 3 Databricks services today (Lakebase, Apps, Unity Catalog) with a 4th
+  (Lakehouse Sync) on the roadmap
 - Makes the Databricks workspace the natural home for agent coordination infrastructure
 - Complementary to Omnigent (governance/control plane) — Partyline provides the durable coordination plane underneath
 - Reinforces Databricks as the platform for AI-native software development, not just data/ML
 
-### 8.7 ROI Model (Simplified)
-- **Cost:** Lakebase (~$0 at idle, ~$2–5/day during active sessions) + App compute (~$5–10/day when warm)
-- **Savings:** 2–5 prevented collisions/day × $10–50/collision = $20–250/day in token waste avoided
-- **Revenue acceleration:** If N agents complete an epic in 4 hours instead of 4 days, the business value of earlier delivery dwarfs infrastructure cost
-- **Break-even:** First prevented collision on day one
+### 8.7 ROI Model (Simplified — illustrative; replace inputs with §9.2 measurements)
+- **Cost (illustrative):** Lakebase (~$0 at idle, ~$2–5/day during active sessions) + App compute (~$5–10/day when warm)
+- **Savings (modeled):** 2–5 prevented collisions/day × $10–50/collision = $20–250/day in token waste avoided
+- **Revenue acceleration (per H1):** if N agents complete an epic in 4 hours instead of 4 days, the business value of earlier delivery dwarfs infrastructure cost
+- **Break-even:** first prevented collision on day one — the one claim here that needs no model, only one observed collision
 
 ---
 
