@@ -6,3 +6,13 @@ mcp>=1.9
 psycopg[binary,pool]>=3.2
 databricks-sdk>=0.81.0
 pydantic>=2.7
+
+# OpenTelemetry — measure latency, trace blocking operations
+opentelemetry-api>=1.27
+opentelemetry-sdk>=1.27
+opentelemetry-instrumentation-fastapi>=0.48b0
+opentelemetry-instrumentation-psycopg2>=0.48b0
+opentelemetry-instrumentation-httpx>=0.48b0
+opentelemetry-exporter-otlp-proto-http>=0.48b0
+opentelemetry-exporter-jaeger-thrift>=1.27  # for local dev (jaeger backend)
+

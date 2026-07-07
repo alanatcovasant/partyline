@@ -18,13 +18,16 @@ async def test_health(client):
 
 @pytest.mark.anyio
 async def test_register_agent(client):
-    resp = await client.post("/api/agents", json={
-        "agent_id": "test_agent_1",
-        "owner": "alan",
-        "repo": "covasant-partyline",
-        "branch": "main",
-        "display_name": "Test Agent 1",
-    })
+    resp = await client.post(
+        "/api/agents",
+        json={
+            "agent_id": "test_agent_1",
+            "owner": "alan",
+            "repo": "covasant-partyline",
+            "branch": "main",
+            "display_name": "Test Agent 1",
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["agent_id"] == "test_agent_1"
@@ -52,11 +55,14 @@ async def test_register_agent_idempotent(client):
 
 @pytest.mark.anyio
 async def test_list_agents(client):
-    await client.post("/api/agents", json={
-        "agent_id": "test_list_agent",
-        "owner": "alan",
-        "repo": "partyline",
-    })
+    await client.post(
+        "/api/agents",
+        json={
+            "agent_id": "test_list_agent",
+            "owner": "alan",
+            "repo": "partyline",
+        },
+    )
     resp = await client.get("/api/agents")
     assert resp.status_code == 200
     agents = resp.json()
@@ -64,20 +70,46 @@ async def test_list_agents(client):
 
 
 @pytest.mark.anyio
+async def test_agent_presence_diagnostics(client):
+    await client.post(
+        "/api/agents",
+        json={
+            "agent_id": "diag_agent",
+            "owner": "alan",
+            "repo": "partyline",
+        },
+    )
+
+    resp = await client.get("/api/diagnostics/agents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "total_agents" in data
+    assert "active_agents" in data
+    assert "sampled_agents" in data
+    assert any(a["agent_id"] == "diag_agent" for a in data["sampled_agents"])
+
+
+@pytest.mark.anyio
 async def test_post_message(client):
     # Register first (FK requirement)
-    await client.post("/api/agents", json={
-        "agent_id": "msg_agent",
-        "owner": "alan",
-        "repo": "partyline",
-    })
-    resp = await client.post("/api/messages", json={
-        "agent_id": "msg_agent",
-        "message_type": "status",
-        "payload": "Starting work on auth module",
-        "repo": "partyline",
-        "branch": "main",
-    })
+    await client.post(
+        "/api/agents",
+        json={
+            "agent_id": "msg_agent",
+            "owner": "alan",
+            "repo": "partyline",
+        },
+    )
+    resp = await client.post(
+        "/api/messages",
+        json={
+            "agent_id": "msg_agent",
+            "message_type": "status",
+            "payload": "Starting work on auth module",
+            "repo": "partyline",
+            "branch": "main",
+        },
+    )
     assert resp.status_code == 200
     msg = resp.json()
     assert msg["agent_id"] == "msg_agent"
@@ -88,16 +120,22 @@ async def test_post_message(client):
 
 @pytest.mark.anyio
 async def test_get_messages(client):
-    await client.post("/api/agents", json={
-        "agent_id": "reader_agent",
-        "owner": "alan",
-        "repo": "partyline",
-    })
-    await client.post("/api/messages", json={
-        "agent_id": "reader_agent",
-        "message_type": "done",
-        "payload": "Finished task X",
-    })
+    await client.post(
+        "/api/agents",
+        json={
+            "agent_id": "reader_agent",
+            "owner": "alan",
+            "repo": "partyline",
+        },
+    )
+    await client.post(
+        "/api/messages",
+        json={
+            "agent_id": "reader_agent",
+            "message_type": "done",
+            "payload": "Finished task X",
+        },
+    )
     resp = await client.get("/api/messages", params={"after_id": 0})
     assert resp.status_code == 200
     messages = resp.json()
@@ -106,17 +144,23 @@ async def test_get_messages(client):
 
 @pytest.mark.anyio
 async def test_unread_messages(client):
-    await client.post("/api/agents", json={
-        "agent_id": "unread_agent",
-        "owner": "alan",
-        "repo": "partyline",
-    })
+    await client.post(
+        "/api/agents",
+        json={
+            "agent_id": "unread_agent",
+            "owner": "alan",
+            "repo": "partyline",
+        },
+    )
     # Post a message
-    post_resp = await client.post("/api/messages", json={
-        "agent_id": "unread_agent",
-        "message_type": "status",
-        "payload": "working",
-    })
+    post_resp = await client.post(
+        "/api/messages",
+        json={
+            "agent_id": "unread_agent",
+            "message_type": "status",
+            "payload": "working",
+        },
+    )
     msg_id = post_resp.json()["id"]
 
     # Get unread (checkpoint starts at 0, so should see everything)
@@ -126,10 +170,13 @@ async def test_unread_messages(client):
     assert len(messages) > 0
 
     # Ack checkpoint
-    ack_resp = await client.post("/api/checkpoints", json={
-        "agent_id": "unread_agent",
-        "last_read_message_id": msg_id,
-    })
+    ack_resp = await client.post(
+        "/api/checkpoints",
+        json={
+            "agent_id": "unread_agent",
+            "last_read_message_id": msg_id,
+        },
+    )
     assert ack_resp.status_code == 200
 
     # Now unread should be empty (no newer messages)
@@ -141,22 +188,28 @@ async def test_unread_messages(client):
 
 @pytest.mark.anyio
 async def test_claim_and_release(client):
-    await client.post("/api/agents", json={
-        "agent_id": "claim_agent",
-        "owner": "alan",
-        "repo": "partyline",
-    })
+    await client.post(
+        "/api/agents",
+        json={
+            "agent_id": "claim_agent",
+            "owner": "alan",
+            "repo": "partyline",
+        },
+    )
     # Claim a resource
-    resp = await client.post("/api/claims", json={
-        "agent_id": "claim_agent",
-        "repo": "partyline",
-        "branch": "main",
-        "resource_path": "src/auth.py",
-        "resource_type": "file",
-        "claim_scope": "exclusive",
-        "reason": "Refactoring auth",
-        "ttl_seconds": 300,
-    })
+    resp = await client.post(
+        "/api/claims",
+        json={
+            "agent_id": "claim_agent",
+            "repo": "partyline",
+            "branch": "main",
+            "resource_path": "src/auth.py",
+            "resource_type": "file",
+            "claim_scope": "exclusive",
+            "reason": "Refactoring auth",
+            "ttl_seconds": 300,
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["acquired"] is True
@@ -170,12 +223,15 @@ async def test_claim_and_release(client):
     assert any(c["resource_path"] == "src/auth.py" for c in claims)
 
     # Release
-    rel_resp = await client.post("/api/claims/release", json={
-        "agent_id": "claim_agent",
-        "repo": "partyline",
-        "branch": "main",
-        "resource_path": "src/auth.py",
-    })
+    rel_resp = await client.post(
+        "/api/claims/release",
+        json={
+            "agent_id": "claim_agent",
+            "repo": "partyline",
+            "branch": "main",
+            "resource_path": "src/auth.py",
+        },
+    )
     assert rel_resp.status_code == 200
     assert rel_resp.json()["released"] is True
 
@@ -183,65 +239,96 @@ async def test_claim_and_release(client):
 @pytest.mark.anyio
 async def test_claim_conflict(client):
     """Two agents cannot hold the same exclusive claim."""
-    await client.post("/api/agents", json={
-        "agent_id": "agent_a", "owner": "alan", "repo": "partyline",
-    })
-    await client.post("/api/agents", json={
-        "agent_id": "agent_b", "owner": "rahul", "repo": "partyline",
-    })
+    await client.post(
+        "/api/agents",
+        json={
+            "agent_id": "agent_a",
+            "owner": "alan",
+            "repo": "partyline",
+        },
+    )
+    await client.post(
+        "/api/agents",
+        json={
+            "agent_id": "agent_b",
+            "owner": "rahul",
+            "repo": "partyline",
+        },
+    )
 
     # Agent A claims
-    resp_a = await client.post("/api/claims", json={
-        "agent_id": "agent_a",
-        "repo": "partyline",
-        "branch": "develop",
-        "resource_path": "models.py",
-        "claim_scope": "exclusive",
-        "ttl_seconds": 600,
-    })
+    resp_a = await client.post(
+        "/api/claims",
+        json={
+            "agent_id": "agent_a",
+            "repo": "partyline",
+            "branch": "develop",
+            "resource_path": "models.py",
+            "claim_scope": "exclusive",
+            "ttl_seconds": 600,
+        },
+    )
     assert resp_a.json()["acquired"] is True
 
     # Agent B tries to claim the same resource
-    resp_b = await client.post("/api/claims", json={
-        "agent_id": "agent_b",
-        "repo": "partyline",
-        "branch": "develop",
-        "resource_path": "models.py",
-        "claim_scope": "exclusive",
-        "ttl_seconds": 600,
-    })
+    resp_b = await client.post(
+        "/api/claims",
+        json={
+            "agent_id": "agent_b",
+            "repo": "partyline",
+            "branch": "develop",
+            "resource_path": "models.py",
+            "claim_scope": "exclusive",
+            "ttl_seconds": 600,
+        },
+    )
     assert resp_b.json()["acquired"] is False
 
     # Cleanup
-    await client.post("/api/claims/release", json={
-        "agent_id": "agent_a",
-        "repo": "partyline",
-        "branch": "develop",
-        "resource_path": "models.py",
-    })
+    await client.post(
+        "/api/claims/release",
+        json={
+            "agent_id": "agent_a",
+            "repo": "partyline",
+            "branch": "develop",
+            "resource_path": "models.py",
+        },
+    )
 
 
 @pytest.mark.anyio
 async def test_message_with_mentions_and_recipient(client):
-    await client.post("/api/agents", json={
-        "agent_id": "sender_agent", "owner": "alan", "repo": "aura",
-    })
-    await client.post("/api/agents", json={
-        "agent_id": "target_agent", "owner": "rahul", "repo": "aura",
-    })
+    await client.post(
+        "/api/agents",
+        json={
+            "agent_id": "sender_agent",
+            "owner": "alan",
+            "repo": "aura",
+        },
+    )
+    await client.post(
+        "/api/agents",
+        json={
+            "agent_id": "target_agent",
+            "owner": "rahul",
+            "repo": "aura",
+        },
+    )
 
-    resp = await client.post("/api/messages", json={
-        "agent_id": "sender_agent",
-        "message_type": "question",
-        "recipient": "target_agent",
-        "mentions": ["target_agent"],
-        "payload": "Can you review my changes to db.py?",
-        "repo": "aura",
-        "branch": "develop",
-        "resource_path": "src/db.py",
-    })
+    resp = await client.post(
+        "/api/messages",
+        json={
+            "agent_id": "sender_agent",
+            "message_type": "question",
+            "recipient": "target_agent",
+            "mentions": ["target_agent"],
+            "payload": "Can you review my changes to db.py?",
+            "repo": "aura",
+            "branch": "develop",
+            "resource_path": "src/db.py",
+        },
+    )
     assert resp.status_code == 200
     msg = resp.json()
     assert msg["recipient"] == "target_agent"
     assert "target_agent" in msg["mentions"]
-

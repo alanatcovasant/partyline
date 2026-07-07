@@ -4,6 +4,11 @@ dist/
 __pycache__/
 *.egg-info
 .venv/
+node_modules/
+**/node_modules/
+editors/vscode/out/
+editors/vscode/*.vsix
+*.tsbuildinfo
 scratch/**
 !scratch/README.md
 **/explorations/**

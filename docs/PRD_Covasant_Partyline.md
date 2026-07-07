@@ -213,6 +213,7 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
 | FR9 | Idempotent self-provisioning on first run (schema/table creation) |
 | FR10 | Auth via the installing workspace's own Databricks identity — no bespoke credentials |
 | FR11 | Ship a local MCP bridge (stdio↔HTTP proxy) that handles Databricks OAuth transparently, so agents connect via a simple `.mcp.json` config with zero auth code on their side |
+| FR12 | VS Code extension: real-time notifications (toast + status bar badge), sidebar TreeViews (messages, agents, claims), and dynamic MCP server registration for any LM chat participant (Copilot, Claude). Connects via SSE to `/api/stream`; auto-connects when `partyline.url` and `partyline.agentId` are configured in workspace settings. |
 
 ## 9. Non-Functional Requirements
 

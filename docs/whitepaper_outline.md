@@ -159,6 +159,31 @@ sequenceDiagram
   disabled — requires admin-enabled user authorization on the app); per-agent
   credentials and per-user Lakebase credential minting as later hardening steps
 
+### 3.7 VS Code Extension: Developer-Facing Integration Layer
+- **Problem it solves:** Humans supervising agent fleets need visibility into coordination
+  activity without tailing logs or polling the CLI. LMs inside VS Code (Copilot, Claude)
+  need direct access to Partyline tools without manual MCP config.
+- **Architecture:** Lightweight TypeScript extension (~17KB packaged) connecting to the
+  same `/api/stream` SSE endpoint and `/api/*` REST surface the agents use.
+- **Capabilities:**
+  - **Real-time notifications:** toast popups when a message targets you (recipient or mention)
+  - **Status bar badge:** persistent unread count with warning color; connected/disconnected state
+  - **Sidebar TreeViews:** live Messages feed, Active Agents, Active Claims — visible in
+    the Activity Bar as a dedicated "Partyline" panel
+  - **Dynamic MCP server registration:** `lm.registerMcpServerDefinitionProvider` exposes
+    Partyline tools (claim, post, get_unread, etc.) to **any LM chat participant** —
+    GitHub Copilot and Claude alike. No `.mcp.json` needed; the extension handles auth.
+  - **Auto-connect:** activates on startup when `partyline.url` and `partyline.agentId` are
+    set in workspace settings
+- **Three audiences served simultaneously:**
+  - *Humans* — notifications, status bar, sidebar (which agents are active? what's claimed?)
+  - *LMs in VS Code chat* — MCP tools registered dynamically; the model can `claim_resource`
+    or `post_message` without the user configuring a bridge
+  - *Claude Code in terminal* — already has MCP via `.mcp.json`; the extension adds human
+    visibility into what the terminal agent is doing on the line
+- **Installation:** `.vsix` package, installable via Extensions panel or CLI; future: VS
+  Code Marketplace listing
+
 ---
 
 ## 4. Addressing Epic-Scale Efforts

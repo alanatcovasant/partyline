@@ -88,6 +88,7 @@ def get_pool() -> ConnectionPool:
         if settings.local:
             # Local dev: use PGPASSWORD, standard connection class, no token rotation.
             import os
+
             kwargs["kwargs"]["password"] = os.environ.get("PGPASSWORD", "")
         else:
             # Deployed: OAuth token rotation via Lakebase credential minting.
@@ -210,9 +211,7 @@ def init_schema() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def register_agent(
-    agent_id: str, owner: str, repo: str, branch: str | None, display_name: str | None
-) -> dict:
+def register_agent(agent_id: str, owner: str, repo: str, branch: str | None, display_name: str | None) -> dict:
     with get_pool().connection() as conn:
         row = conn.execute(
             """INSERT INTO agents (agent_id, owner, repo, branch, display_name)
@@ -226,14 +225,13 @@ def register_agent(
             (agent_id, owner, repo, branch, display_name),
         ).fetchone()
         conn.commit()
+    log.info("Agent registered/refreshed: agent_id=%s repo=%s branch=%s", agent_id, repo, branch)
     return row
 
 
 def _heartbeat(conn, agent_id: str) -> None:
     """Refresh presence for an already-registered agent (no-op if unregistered)."""
-    conn.execute(
-        "UPDATE agents SET last_heartbeat = now() WHERE agent_id = %s", (agent_id,)
-    )
+    conn.execute("UPDATE agents SET last_heartbeat = now() WHERE agent_id = %s", (agent_id,))
 
 
 def list_agents(active_within_seconds: int = 3600) -> list[dict]:
@@ -246,6 +244,53 @@ def list_agents(active_within_seconds: int = 3600) -> list[dict]:
                ORDER BY last_heartbeat DESC""",
             (active_within_seconds,),
         ).fetchall()
+
+
+def get_agent_presence_diagnostics(active_within_seconds: int = 3600, sample_size: int = 50) -> dict:
+    """Return a snapshot explaining why agents are considered active/stale.
+
+    Useful when clients report "0 connected" while operators believe agents are alive.
+    """
+    with get_pool().connection() as conn:
+        summary = conn.execute(
+            """SELECT
+                     count(*) AS total_agents,
+                     count(*) FILTER (
+                       WHERE last_heartbeat > now() - make_interval(secs => %s)
+                     ) AS active_agents,
+                     min(last_heartbeat) AS oldest_heartbeat,
+                     max(last_heartbeat) AS newest_heartbeat
+               FROM agents""",
+            (active_within_seconds,),
+        ).fetchone()
+
+        rows = conn.execute(
+            """SELECT
+                     agent_id,
+                     owner,
+                     repo,
+                     branch,
+                     display_name,
+                     registered_at,
+                     last_heartbeat,
+                     EXTRACT(EPOCH FROM (now() - last_heartbeat))::BIGINT AS heartbeat_age_seconds,
+                     (last_heartbeat > now() - make_interval(secs => %s)) AS is_active
+               FROM agents
+               ORDER BY last_heartbeat DESC
+               LIMIT %s""",
+            (active_within_seconds, sample_size),
+        ).fetchall()
+
+    return {
+        "active_within_seconds": active_within_seconds,
+        "total_agents": int(summary["total_agents"] or 0),
+        "active_agents": int(summary["active_agents"] or 0),
+        "stale_agents": int((summary["total_agents"] or 0) - (summary["active_agents"] or 0)),
+        "oldest_heartbeat": summary["oldest_heartbeat"],
+        "newest_heartbeat": summary["newest_heartbeat"],
+        "sample_size": sample_size,
+        "sampled_agents": rows,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -284,15 +329,37 @@ def post_message(
                   resource_path, issue_ref, payload, metadata, mentions, reply_to_id)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                RETURNING {_MSG_COLS}""",
-            (agent_id, author, message_type, recipient, repo, branch, resource_path,
-             issue_ref, payload, json.dumps(metadata), mentions, reply_to_id),
+            (
+                agent_id,
+                author,
+                message_type,
+                recipient,
+                repo,
+                branch,
+                resource_path,
+                issue_ref,
+                payload,
+                json.dumps(metadata),
+                mentions,
+                reply_to_id,
+            ),
         ).fetchone()
         _heartbeat(conn, agent_id)
         conn.execute(
             "SELECT pg_notify(%s, %s)",
-            (NOTIFY_CHANNEL, json.dumps(
-                {"id": row["id"], "agent_id": agent_id, "message_type": message_type,
-                 "recipient": recipient, "repo": repo, "mentions": mentions})),
+            (
+                NOTIFY_CHANNEL,
+                json.dumps(
+                    {
+                        "id": row["id"],
+                        "agent_id": agent_id,
+                        "message_type": message_type,
+                        "recipient": recipient,
+                        "repo": repo,
+                        "mentions": mentions,
+                    }
+                ),
+            ),
         )
         conn.commit()
     return row
@@ -353,10 +420,7 @@ def ack_checkpoint(agent_id: str, last_read_message_id: int) -> dict:
 # Claims — keyed on (repo, branch, resource_path); FR5
 # --------------------------------------------------------------------------- #
 
-_CLAIM_COLS = (
-    "id, agent_id, repo, branch, resource_path, resource_type, "
-    "claim_scope, reason, created_at, expires_at"
-)
+_CLAIM_COLS = "id, agent_id, repo, branch, resource_path, resource_type, claim_scope, reason, created_at, expires_at"
 
 
 def claim_resource(
@@ -393,8 +457,7 @@ def claim_resource(
                  WHERE claims.expires_at < now()
                     OR claims.agent_id = EXCLUDED.agent_id
                RETURNING {_CLAIM_COLS}""",
-            (agent_id, repo, branch, resource_path, resource_type,
-             claim_scope, reason, ttl_seconds),
+            (agent_id, repo, branch, resource_path, resource_type, claim_scope, reason, ttl_seconds),
         ).fetchone()
         _heartbeat(conn, agent_id)
         conn.commit()
@@ -409,9 +472,7 @@ def claim_resource(
     return False, holder
 
 
-def release_resource(
-    agent_id: str, repo: str, branch: str | None, resource_path: str
-) -> bool:
+def release_resource(agent_id: str, repo: str, branch: str | None, resource_path: str) -> bool:
     """Release a claim, only if held by the caller (FR6). Returns True if released."""
     with get_pool().connection() as conn:
         row = conn.execute(
@@ -428,6 +489,5 @@ def release_resource(
 def list_claims() -> list[dict]:
     with get_pool().connection() as conn:
         return conn.execute(
-            f"SELECT {_CLAIM_COLS} FROM claims WHERE expires_at > now() "
-            "ORDER BY repo, resource_path"
+            f"SELECT {_CLAIM_COLS} FROM claims WHERE expires_at > now() ORDER BY repo, resource_path"
         ).fetchall()
