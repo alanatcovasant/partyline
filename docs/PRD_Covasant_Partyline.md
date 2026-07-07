@@ -463,13 +463,21 @@ in a way that forecloses it later.
   with several workspaces wanting one bus across them)? Deferred — not a v1 need.
 - Databricks Marketplace App listing certification requirements — unresearched,
   flagged as a Phase 4 dependency, not a v1 blocker.
-- Do claims conflict across branches? **Current implementation:** branch is part of the
-  claim key (`UNIQUE(repo, COALESCE(branch,''), resource_path)`), so a claim on
-  `alan_develop` does *not* block `rahul_develop` — matching the "likely not" leaning.
-  **Still open:** whether claims on `main`/shared integration branches (or a null branch)
-  should conflict more broadly, and how `claim_scope` (`exclusive`/`shared_read`/`intent`)
-  interacts with the single-row-per-key uniqueness (today it stores scope but still allows
-  only one row per key). Policy TBD.
+- ~~Do claims conflict across branches?~~ **Decided 2026-07-07** (backlog item B3):
+  - **Branch scoping stays as implemented:** branch is part of the claim key
+    (`UNIQUE(repo, COALESCE(branch,''), resource_path)`), so a claim on `alan_develop`
+    does not block `rahul_develop`. Simple, predictable, matches worktree isolation.
+  - **Cross-branch resources use `branch=NULL` by convention:** migrations, schema,
+    CI/deploy config — anything where the conflict is semantic rather than textual —
+    should be claimed with a null branch (its own key). Agents editing such surfaces
+    should also check `list_claims` for a NULL-branch claim on their path. Documented
+    convention, not enforced in v1 (enforcement is roadmap with server-side gating).
+  - **`claim_scope` is advisory metadata in v1:** the single-row-per-key uniqueness means
+    every scope behaves exclusively at the key level. True `shared_read` coexistence
+    would require multi-row claims plus race-safe conflict logic — deferred until a real
+    consumer demands it rather than speculatively complicating the one primitive whose
+    simplicity is the point. The field stays (it is useful context for other agents and
+    forward-compatible), and the protocol reference documents these exact semantics.
 - ~~Final naming (§1).~~ Decided: Covasant Partyline.
 
 ## 15. Risks

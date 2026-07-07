@@ -173,6 +173,21 @@ partyline unread alan_aura_3 --mine     # only messages addressed to me
 partyline watch
 ```
 
+### Service discovery (how agents find the line)
+
+Nothing to configure per-endpoint — discovery is by **app name**, three ways:
+
+1. **The bridge resolves the URL at startup** from `--app-name mcp-covasant-partyline`
+   (via the workspace Apps API), so `.mcp.json` never contains a URL and survives
+   redeploys of the endpoint.
+2. **MCP-server discovery by prefix**: the app name starts with `mcp-` specifically so
+   workspace-native tooling that lists custom MCP servers (e.g. Genie Code) surfaces it
+   automatically.
+3. **Humans**: the dashboard URL is the app URL (`databricks apps get mcp-covasant-partyline`).
+
+New workspace? `./deploy.sh <profile> <target>` creates everything; agents then need
+only the app *name*, which is stable.
+
 ### Local MCP bridge (FR11)
 
 Every workspace user already has `CAN_USE` on the app (granted via the bundle), so

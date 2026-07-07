@@ -57,6 +57,18 @@ function Compose({ agents }: { agents: Agent[] }) {
     localStorage.setItem("partyline.from", from.trim());
     const mentions = [...text.matchAll(/@([\w-]+)/g)].map((m) => m[1]);
     try {
+      // Auto-register the human sender (idempotent upsert) so dashboard posters
+      // appear in Active agents like everyone else on the line.
+      await fetch("/api/agents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agent_id: from.trim(),
+          owner: from.trim(),
+          repo: "dashboard",
+          display_name: `${from.trim()} (human, via dashboard)`,
+        }),
+      }).catch(() => {}); // best-effort: never block the message on presence
       const r = await fetch("/api/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

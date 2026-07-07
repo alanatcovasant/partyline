@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from contextlib import AsyncExitStack
 
 from databricks.sdk.core import Config
 
@@ -73,25 +74,76 @@ def _resolve_mcp_url(cfg: Config, url: str | None, app_name: str | None) -> str:
     return app.url.rstrip("/") + "/mcp"
 
 
-async def _serve(mcp_url: str, headers: dict[str, str]) -> None:
-    async with streamablehttp_client(mcp_url, headers=headers) as (read, write, _):
-        async with ClientSession(read, write) as remote:
-            await remote.initialize()
-            proxy = Server("covasant-partyline-bridge")
+class _Remote:
+    """Lazily-connected remote MCP session that reconnects with fresh credentials.
 
-            @proxy.list_tools()
-            async def list_tools():
-                return (await remote.list_tools()).tools
+    The workspace OAuth token expires after ~1h, so a session opened once at bridge
+    start silently dies mid-session (observed in the field). Every proxied call goes
+    through ``call()``, which (re)connects on demand and retries once on failure —
+    minting fresh auth headers from the SDK ``Config`` on each (re)connect.
+    """
 
-            @proxy.call_tool()
-            async def call_tool(name: str, arguments: dict):
-                result = await remote.call_tool(name, arguments)
-                # Forward content plus any structured payload the tool returned.
-                return result.content, getattr(result, "structuredContent", None)
+    def __init__(self, cfg: Config, mcp_url: str) -> None:
+        self._cfg = cfg
+        self._url = mcp_url
+        self._stack: AsyncExitStack | None = None
+        self._session: ClientSession | None = None
+        self._lock = asyncio.Lock()
 
-            opts = proxy.create_initialization_options()
-            async with stdio_server() as (r, w):
-                await proxy.run(r, w, opts)
+    async def _connect(self) -> ClientSession:
+        await self.close()
+        stack = AsyncExitStack()
+        headers = _auth_headers(self._cfg)  # fresh token every (re)connect
+        read, write, _ = await stack.enter_async_context(
+            streamablehttp_client(self._url, headers=headers)
+        )
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        self._stack, self._session = stack, session
+        return session
+
+    async def close(self) -> None:
+        if self._stack is not None:
+            try:
+                await self._stack.aclose()
+            except Exception:
+                pass
+        self._stack = self._session = None
+
+    async def call(self, op):
+        """Run ``op(session)``, reconnecting with fresh credentials on failure."""
+        async with self._lock:
+            try:
+                session = self._session or await self._connect()
+                return await op(session)
+            except Exception as exc:
+                print(f"partyline bridge: reconnecting ({exc})", file=sys.stderr)
+                session = await self._connect()
+                return await op(session)
+
+
+async def _serve(cfg: Config, mcp_url: str) -> None:
+    remote = _Remote(cfg, mcp_url)
+    # Connect eagerly so misconfiguration fails at startup, not at the first tool call.
+    await remote.call(lambda s: s.list_tools())
+    proxy = Server("covasant-partyline-bridge")
+
+    @proxy.list_tools()
+    async def list_tools():
+        return (await remote.call(lambda s: s.list_tools())).tools
+
+    @proxy.call_tool()
+    async def call_tool(name: str, arguments: dict):
+        result = await remote.call(lambda s: s.call_tool(name, arguments))
+        # Forward content plus any structured payload the tool returned.
+        return result.content, getattr(result, "structuredContent", None)
+
+    opts = proxy.create_initialization_options()
+    try:
+        async with stdio_server() as (r, w):
+            await proxy.run(r, w, opts)
+    finally:
+        await remote.close()
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -102,10 +154,10 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
 
     cfg = Config(host=args.host) if args.host else Config()
-    headers = _auth_headers(cfg)
+    _auth_headers(cfg)  # fail fast on PAT/missing credentials before serving
     mcp_url = _resolve_mcp_url(cfg, args.url, args.app_name)
     print(f"partyline bridge -> {mcp_url}", file=sys.stderr)
-    asyncio.run(_serve(mcp_url, headers))
+    asyncio.run(_serve(cfg, mcp_url))
 
 
 if __name__ == "__main__":
