@@ -169,22 +169,39 @@ CREATE TABLE IF NOT EXISTS claims (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_claims_key
     ON claims (repo, (COALESCE(branch, '')), resource_path);
 
--- Native Lakehouse Sync (wal2delta CDC -> UC Delta SCD2 history) requires REPLICA
--- IDENTITY FULL so deletes/updates carry the full old row into the WAL. Cheap for the
--- append-only `messages`; minor extra WAL for `claims` updates/deletes. Idempotent.
--- NOTE: the sync uses a logical replication slot that pins WAL. Validate that long
--- scale-to-zero suspensions don't stall the slot or accumulate WAL (see PRD §14).
-ALTER TABLE messages    REPLICA IDENTITY FULL;
-ALTER TABLE checkpoints REPLICA IDENTITY FULL;
-ALTER TABLE claims      REPLICA IDENTITY FULL;
-ALTER TABLE agents      REPLICA IDENTITY FULL;
 """
+
+# Native Lakehouse Sync (wal2delta CDC -> UC Delta SCD2 history) requires REPLICA
+# IDENTITY FULL so deletes/updates carry the full old row into the WAL. These ALTERs
+# require table *ownership* — after an app rename/replace the tables may be owned by a
+# prior identity (access via GRANTs), so run them best-effort: they only matter for the
+# future wal2delta sync (PRD §14), never for correctness of the bus itself.
+_REPLICA_IDENTITY = [
+    "ALTER TABLE messages    REPLICA IDENTITY FULL",
+    "ALTER TABLE checkpoints REPLICA IDENTITY FULL",
+    "ALTER TABLE claims      REPLICA IDENTITY FULL",
+    "ALTER TABLE agents      REPLICA IDENTITY FULL",
+]
 
 
 def init_schema() -> None:
+    """Idempotent bootstrap, statement by statement.
+
+    Privilege errors are non-fatal: after an app rename/replace, objects may be owned
+    by a prior identity (this SP has access via GRANTs). Everything here is CREATE IF
+    NOT EXISTS or optional (REPLICA IDENTITY), so on an already-provisioned database a
+    skipped statement is safe — log it and continue rather than crash the app.
+    """
+    statements = [s.strip() for s in _SCHEMA.split(";") if s.strip()]
+    statements += _REPLICA_IDENTITY
     with get_pool().connection() as conn:
-        conn.execute(_SCHEMA)
-        conn.commit()
+        for stmt in statements:
+            try:
+                conn.execute(stmt)
+                conn.commit()
+            except psycopg.errors.InsufficientPrivilege as exc:
+                conn.rollback()
+                log.warning("Schema statement skipped (%s): %.80s", exc, stmt)
     log.info("Schema ensured (agents, messages, checkpoints, claims).")
 
 

@@ -185,7 +185,7 @@ and proxies stdio MCP to the app's `/mcp`:
   "mcpServers": {
     "partyline": {
       "command": "partyline-bridge",
-      "args": ["--app-name", "covasant-partyline"],
+      "args": ["--app-name", "mcp-covasant-partyline"],
       "env": {
         "DATABRICKS_HOST": "https://<workspace>.databricks.net",
         "DATABRICKS_CLIENT_ID": "...",

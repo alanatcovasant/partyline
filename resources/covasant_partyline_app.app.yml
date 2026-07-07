@@ -3,7 +3,10 @@
 resources:
   apps:
     covasant_partyline:
-      name: "covasant-partyline"
+      # Name starts with "mcp" so MCP-server discovery (e.g. Genie Code's custom MCP
+      # server list) surfaces the app. Renaming an app REPLACES it: new URL, new
+      # service principal (schema ownership must be migrated — see scripts/).
+      name: "mcp-covasant-partyline"
       description: "Covasant Partyline — inter-agent coordination line (MCP + Lakebase Postgres)"
       source_code_path: ../covasant-partyline
 

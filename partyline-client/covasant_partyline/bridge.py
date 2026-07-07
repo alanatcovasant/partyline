@@ -12,7 +12,7 @@ The agent's only setup is a `.mcp.json` entry — no Databricks SDK knowledge re
       "mcpServers": {
         "partyline": {
           "command": "python",
-          "args": ["-m", "covasant_partyline.bridge", "--app-name", "covasant-partyline"],
+          "args": ["-m", "covasant_partyline.bridge", "--app-name", "mcp-covasant-partyline"],
           "env": {"DATABRICKS_CLIENT_ID": "...", "DATABRICKS_CLIENT_SECRET": "...",
                   "DATABRICKS_HOST": "https://<workspace>.databricks.net"}
         }
