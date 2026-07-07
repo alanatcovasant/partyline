@@ -231,12 +231,14 @@ def register_agent(agent_id: str, owner: str, repo: str, branch: str | None, dis
 
 def _heartbeat(conn, agent_id: str) -> None:
     """Refresh presence for an already-registered agent (no-op if unregistered)."""
-    conn.execute("UPDATE agents SET last_heartbeat = now() WHERE agent_id = %s", (agent_id,))
+    cur = conn.execute("UPDATE agents SET last_heartbeat = now() WHERE agent_id = %s", (agent_id,))
+    if cur.rowcount == 0:
+        log.warning("Heartbeat ignored for unregistered agent_id=%s", agent_id)
 
 
 def list_agents(active_within_seconds: int = 3600) -> list[dict]:
     with get_pool().connection() as conn:
-        return conn.execute(
+        rows = conn.execute(
             """SELECT agent_id, owner, repo, branch, display_name,
                       registered_at, last_heartbeat
                FROM agents
@@ -244,6 +246,8 @@ def list_agents(active_within_seconds: int = 3600) -> list[dict]:
                ORDER BY last_heartbeat DESC""",
             (active_within_seconds,),
         ).fetchall()
+    log.info("list_agents returned count=%s active_within_seconds=%s", len(rows), active_within_seconds)
+    return rows
 
 
 def get_agent_presence_diagnostics(active_within_seconds: int = 3600, sample_size: int = 50) -> dict:

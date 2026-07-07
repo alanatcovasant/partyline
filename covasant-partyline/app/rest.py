@@ -40,7 +40,7 @@ async def health() -> dict:
 
 @router.post("/agents", response_model=Agent)
 async def register_agent(body: RegisterAgent) -> dict:
-    return await run_in_threadpool(
+    row = await run_in_threadpool(
         db.register_agent,
         body.agent_id,
         body.owner,
@@ -48,6 +48,14 @@ async def register_agent(body: RegisterAgent) -> dict:
         body.branch,
         body.display_name,
     )
+    log.info(
+        "register_agent ok agent_id=%s owner=%s repo=%s branch=%s",
+        body.agent_id,
+        body.owner,
+        body.repo,
+        body.branch,
+    )
+    return row
 
 
 @router.get("/agents", response_model=list[Agent])
@@ -66,6 +74,13 @@ async def list_agents(active_within_seconds: int = 3600) -> list[dict]:
             diag.get("active_agents"),
             diag.get("stale_agents"),
         )
+    else:
+        log.info(
+            "Active agents returned count=%s active_within_seconds=%s elapsed_ms=%.1f",
+            len(agents),
+            active_within_seconds,
+            elapsed_ms,
+        )
 
     return agents
 
@@ -75,13 +90,22 @@ async def agent_presence_diagnostics(
     active_within_seconds: int = 3600,
     sample_size: int = 50,
 ) -> dict:
-    return await run_in_threadpool(db.get_agent_presence_diagnostics, active_within_seconds, sample_size)
+    diag = await run_in_threadpool(db.get_agent_presence_diagnostics, active_within_seconds, sample_size)
+    log.info(
+        "agent_presence_diagnostics requested active_within_seconds=%s sample_size=%s total=%s active=%s stale=%s",
+        active_within_seconds,
+        sample_size,
+        diag.get("total_agents"),
+        diag.get("active_agents"),
+        diag.get("stale_agents"),
+    )
+    return diag
 
 
 @router.post("/messages", response_model=Message)
 async def post_message(body: PostMessage, request: Request) -> dict:
     author = await resolve_author(request)
-    return await run_in_threadpool(
+    row = await run_in_threadpool(
         db.post_message,
         body.agent_id,
         body.message_type.value,
@@ -96,6 +120,17 @@ async def post_message(body: PostMessage, request: Request) -> dict:
         body.reply_to_id,
         author,
     )
+    log.info(
+        "post_message ok id=%s agent_id=%s type=%s recipient=%s mentions=%s repo=%s branch=%s",
+        row.get("id"),
+        body.agent_id,
+        body.message_type.value,
+        body.recipient,
+        len(body.mentions),
+        body.repo,
+        body.branch,
+    )
+    return row
 
 
 @router.get("/messages", response_model=list[Message])
@@ -106,12 +141,27 @@ async def get_messages(after_id: int = 0, limit: int = 500) -> list[dict]:
 @router.get("/agents/{agent_id}/unread", response_model=list[Message])
 async def get_unread(agent_id: str, limit: int = 500, only_for_me: bool = False) -> list[dict]:
     after = await run_in_threadpool(db.get_checkpoint, agent_id)
-    return await run_in_threadpool(db.get_since, after, limit, agent_id if only_for_me else None)
+    rows = await run_in_threadpool(db.get_since, after, limit, agent_id if only_for_me else None)
+    log.info(
+        "get_unread agent_id=%s checkpoint=%s only_for_me=%s limit=%s returned=%s",
+        agent_id,
+        after,
+        only_for_me,
+        limit,
+        len(rows),
+    )
+    return rows
 
 
 @router.post("/checkpoints", response_model=Checkpoint)
 async def ack_checkpoint(body: Checkpoint) -> dict:
-    return await run_in_threadpool(db.ack_checkpoint, body.agent_id, body.last_read_message_id)
+    row = await run_in_threadpool(db.ack_checkpoint, body.agent_id, body.last_read_message_id)
+    log.info(
+        "ack_checkpoint agent_id=%s last_read_message_id=%s",
+        body.agent_id,
+        body.last_read_message_id,
+    )
+    return row
 
 
 @router.post("/claims")
@@ -128,18 +178,37 @@ async def claim_resource(body: ClaimRequest) -> dict:
         body.reason,
         ttl,
     )
+    log.info(
+        "claim_resource agent_id=%s repo=%s branch=%s resource=%s acquired=%s ttl=%s",
+        body.agent_id,
+        body.repo,
+        body.branch,
+        body.resource_path,
+        acquired,
+        ttl,
+    )
     return {"acquired": acquired, "claim": claim}
 
 
 @router.post("/claims/release")
 async def release_resource(body: ReleaseRequest) -> dict:
     released = await run_in_threadpool(db.release_resource, body.agent_id, body.repo, body.branch, body.resource_path)
+    log.info(
+        "release_resource agent_id=%s repo=%s branch=%s resource=%s released=%s",
+        body.agent_id,
+        body.repo,
+        body.branch,
+        body.resource_path,
+        released,
+    )
     return {"released": released}
 
 
 @router.get("/claims", response_model=list[Claim])
 async def list_claims() -> list[dict]:
-    return await run_in_threadpool(db.list_claims)
+    rows = await run_in_threadpool(db.list_claims)
+    log.info("list_claims returned=%s", len(rows))
+    return rows
 
 
 @router.get("/stream")
@@ -148,10 +217,13 @@ async def stream(request: Request) -> StreamingResponse:
 
     async def event_gen():
         q = hub.subscribe()
+        client_host = request.client.host if request.client else "unknown"
+        log.info("SSE stream connected client=%s subscribers=%s", client_host, hub.subscriber_count())
         try:
             yield "event: hello\ndata: {}\n\n"
             while True:
                 if await request.is_disconnected():
+                    log.info("SSE stream disconnected client=%s", client_host)
                     break
                 try:
                     payload = await asyncio.wait_for(q.get(), timeout=15.0)
@@ -160,5 +232,6 @@ async def stream(request: Request) -> StreamingResponse:
                     yield ": keep-alive\n\n"
         finally:
             hub.unsubscribe(q)
+            log.info("SSE stream cleanup client=%s subscribers=%s", client_host, hub.subscriber_count())
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")

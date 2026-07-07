@@ -30,18 +30,27 @@ class NotifyHub:
     def subscribe(self) -> asyncio.Queue[str]:
         q: asyncio.Queue[str] = asyncio.Queue(maxsize=1000)
         self._subscribers.add(q)
+        log.info("SSE subscriber added count=%s", len(self._subscribers))
         return q
 
     def unsubscribe(self, q: asyncio.Queue[str]) -> None:
         self._subscribers.discard(q)
+        log.info("SSE subscriber removed count=%s", len(self._subscribers))
+
+    def subscriber_count(self) -> int:
+        return len(self._subscribers)
 
     def _broadcast(self, payload: str) -> None:
+        dropped = 0
         for q in list(self._subscribers):
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
                 # Slow consumer: drop it rather than block the listener.
                 self._subscribers.discard(q)
+                dropped += 1
+        if dropped:
+            log.warning("Dropped %s slow SSE subscribers; remaining=%s", dropped, len(self._subscribers))
 
     # --- lifecycle ---
     def start(self) -> None:
@@ -73,9 +82,7 @@ class NotifyHub:
                     password = os.environ.get("PGPASSWORD", "")
                 else:
                     password = _mint_token()
-                async with await psycopg.AsyncConnection.connect(
-                    conninfo, password=password, autocommit=True
-                ) as conn:
+                async with await psycopg.AsyncConnection.connect(conninfo, password=password, autocommit=True) as conn:
                     await conn.execute(f"LISTEN {NOTIFY_CHANNEL}")
                     log.info("LISTEN %s established", NOTIFY_CHANNEL)
                     backoff = 1.0

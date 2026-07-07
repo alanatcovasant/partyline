@@ -1,7 +1,7 @@
 """OpenTelemetry instrumentation for Partyline.
 
 Sets up tracing to measure method latency, identify blocking operations, and surface
-performance issues. Exports to OTLP (http) or Jaeger (dev-local).
+performance issues. Exports to OTLP (http); local mode uses console span output.
 """
 
 import os
@@ -13,12 +13,11 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
-from opentelemetry.exporter.jaeger.thrift import JaegerExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
 
 
 def init_telemetry(service_name: str = "covasant-partyline", local: bool = False) -> None:
@@ -26,7 +25,7 @@ def init_telemetry(service_name: str = "covasant-partyline", local: bool = False
 
     Args:
         service_name: Service name for traces/metrics
-        local: If True, use Jaeger dev exporter (http://localhost:16686); else OTLP
+        local: If True, emit spans to console; else export via OTLP HTTP
     """
     # Resource labels
     resource = Resource.create(
@@ -38,13 +37,9 @@ def init_telemetry(service_name: str = "covasant-partyline", local: bool = False
 
     # Tracer setup
     if local:
-        # Dev mode: Jaeger (http://localhost:16686)
-        jaeger_exporter = JaegerExporter(
-            agent_host_name="localhost",
-            agent_port=6831,
-        )
+        # Dev mode: write spans to app logs/stdout for quick diagnosis.
         trace_provider = TracerProvider(resource=resource)
-        trace_provider.add_span_processor(SimpleSpanProcessor(jaeger_exporter))
+        trace_provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
     else:
         # Prod mode: OTLP (http exporter, endpoint from env or default)
         otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")

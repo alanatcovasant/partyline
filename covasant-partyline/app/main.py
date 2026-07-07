@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
+from uuid import uuid4
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -26,7 +29,12 @@ from .mcp_server import mcp
 from .notify import hub
 from .rest import router as rest_router
 
-logging.basicConfig(level=logging.INFO)
+_log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+_log_level = getattr(logging, _log_level_name, logging.INFO)
+logging.basicConfig(
+    level=_log_level,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 log = logging.getLogger("partyline")
 
 # Serve the MCP endpoint exactly at /mcp (not /mcp/mcp).
@@ -60,6 +68,39 @@ app.mount("/mcp", mcp_app)
 
 
 @app.middleware("http")
+async def _request_logging(request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid4().hex[:12]
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        log.exception(
+            "request failed request_id=%s method=%s path=%s elapsed_ms=%.1f",
+            request_id,
+            request.method,
+            request.url.path,
+            elapsed_ms,
+        )
+        raise
+
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    status = response.status_code
+    level = logging.INFO if status < 500 else logging.ERROR
+    log.log(
+        level,
+        "request completed request_id=%s method=%s path=%s status=%s elapsed_ms=%.1f",
+        request_id,
+        request.method,
+        request.url.path,
+        status,
+        elapsed_ms,
+    )
+    response.headers["x-request-id"] = request_id
+    return response
+
+
+@app.middleware("http")
 async def _mcp_trailing_slash(request, call_next):
     # The Starlette mount serves the MCP endpoint at /mcp/ only; a bare POST /mcp would
     # 405 (and a 307 redirect wouldn't replay the POST body in most clients). Rewrite so
@@ -67,6 +108,7 @@ async def _mcp_trailing_slash(request, call_next):
     if request.scope["path"] == "/mcp":
         request.scope["path"] = "/mcp/"
     return await call_next(request)
+
 
 # Static SPA (built into client/dist). Mounted last so /api and /mcp win.
 _spa = Path(__file__).resolve().parent.parent / "client" / "dist"
