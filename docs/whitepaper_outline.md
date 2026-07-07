@@ -94,6 +94,10 @@ flowchart TB
 - Per-workspace isolation: zero cross-tenant trust, self-provisioning (idempotent
   provision-then-deploy; one command, no manual steps)
 - Databricks App platform: managed compute, OAuth, service principal identity
+- **Fail-open availability**: the protocol is voluntary, so an unreachable line (outage,
+  scale-to-zero cold start) degrades to the uncoordinated status quo — agents keep
+  working, never block on coordination. Availability affects awareness quality, not
+  delivery. Cold-start latency vs the §2.3 single-digit-second target is measured in §8.2
 
 ### 3.5 The Turn-Based Agent Problem: From Push to Wake-Ups
 - The overlooked hard part: LLM agents are turn-based — they act only when invoked, so
@@ -201,10 +205,17 @@ sequenceDiagram
   (schema + API) but not yet exercised in the dogfood — mark as such
 
 #### Pattern: Wake-on-Mention (event-driven, no polling)
-- Agent starts `watch --exit-on-mention <self>` as a background task, keeps working
-- A peer (or a human, via the dashboard compose box) addresses it → watcher exits →
-  harness wakes the agent → one `get_unread(only_for_me=true)` call
+- When to use: any agent expecting addressed traffic mid-task
 - Converts coordination from a polling tax into an interrupt; verified live (§8)
+- Mechanics and sequence: §3.5 and Figure 2 (not repeated here)
+
+#### Pattern: Human Referee
+- Humans are first-class line participants: the dashboard compose box and the CLI post
+  through the same `/api/messages` as agents, `@mention` targeting included
+- Typical moves: redirect a stuck agent (reply to its `question`/`escalation`), broadcast
+  priorities (`status`), answer an agent's question without leaving the browser
+- Verified live: a dashboard-composed `@mention` was delivered to a polling agent's
+  `get_unread(only_for_me=true)` (§8.1)
 
 ### 4.4 The Compounding Advantage (Hypotheses)
 - H1: with coordination overhead O(1) per operation (one claim check, one message post),
@@ -295,7 +306,8 @@ sequenceDiagram
 - **What:** GA autonomous AI agent built specifically for data work inside Databricks workspaces. Handles ML workflows, data pipelines (Lakeflow), dashboards, observability, and background maintenance. Deeply integrated with Unity Catalog for governance, lineage, and contextual search.
 - **Approach:** Multi-model agentic system (routes across frontier/open/custom models); operates in notebooks, SQL editor, and Lakeflow editor; supports MCP for external tool integration; background agents for proactive pipeline/model maintenance.
 - **Key difference:** Genie Code focuses on *data work* (pipelines, ML models, dashboards, analytics) rather than general-purpose application code. It lives natively inside the Databricks workspace — the same workspace where Partyline runs.
-- **Coordination use case:** When Genie Code modifies schemas, pipelines, or serving endpoints, and Claude Code/Cursor agents simultaneously edit application code that depends on those artifacts, Partyline can mediate: Genie Code claims a pipeline before modifying it, Claude Code sees the claim and waits (or works on unrelated files), then picks up schema changes after Genie Code posts `done`. This heterogeneous coordination — data agent + code agent sharing a workspace — is a first-class Partyline scenario.
+- **Coordination use case:** the data-agent + code-agent scenario is the flagship
+  cross-layer use case — full treatment in §9.4 (heterogeneous agent coordination).
 - **MCP compatibility:** Genie Code already supports MCP; adding a Partyline MCP server to a workspace means Genie Code could participate on the coordination line alongside external agents, no custom integration needed.
 - **Ref:** https://www.databricks.com/blog/introducing-genie-code, https://www.databricks.com/product/genie-code
 
@@ -316,11 +328,41 @@ sequenceDiagram
 - **Key difference:** Designed for workflow orchestration (sequences of activities with durability), not peer-to-peer agent coordination. Temporal schedules and retries tasks; Partyline gives agents shared awareness to self-coordinate.
 - **Ref:** https://temporal.io
 
-### 5.5 Positioning Summary
+#### Blackboard Architectures & Tuple Spaces (classic shared-medium coordination)
+- **Blackboard systems** (Hearsay-II, Erman et al. 1980): independent knowledge sources
+  cooperate by reading/writing a shared blackboard — the direct intellectual ancestor of
+  coordination-through-a-shared-medium. Partyline is, in that lineage, a *durable
+  blackboard with leases and per-reader cursors*
+- **Linda tuple spaces** (Gelernter 1985; JavaSpaces lineage): generative communication —
+  decoupled processes coordinate via `out`/`rd`/`in` on a shared space. Partyline claims
+  map to destructive `in`; broadcast messages to `out`/`rd`
+- **FIPA-ACL / KQML** (1990s multi-agent systems): performative-typed agent messages
+  (inform, request, ...) — direct ancestry of Partyline's typed vocabulary (`status`,
+  `question`, `done`)
+- **Key difference:** none are durable, checkpointed, or deployable as a zero-ops
+  workspace service, and none address turn-based wake-up (§3.5). Owning this lineage
+  strengthens the minimal-composition thesis (§5.6) the same way Kafka/ZooKeeper do
+
+### 5.5 Practitioner Baselines: Chat and Git
+
+What teams actually use today — and why both fail as agent coordination:
+
+#### Chat-based coordination (Slack, Teams, Discord)
+- Ephemeral: no durable cursor, no structured replay
+- No mutual exclusion: "I'm working on X" is advisory, not atomic
+- Rate limits, polling overhead, OAuth app complexity; NLP parsing to extract semantics from prose
+- The §2.2 "Slack experiment" is the lived version of this row
+
+#### Git-based coordination (branch protection, CODEOWNERS)
+- Post-hoc: conflicts discovered at push/merge time, not prevented
+- No awareness: agents don't know what others are doing until PR stage
+- Branch locks are coarse-grained (whole branch, not file-level)
+
+### 5.6 Positioning Summary
 
 | System | Scope | Agent Model | Durability | Mutual Exclusion | Scale-to-Zero |
 |--------|-------|-------------|------------|------------------|---------------|
-| **Partyline** | Intra-workspace, homogeneous | Independent processes, self-directed | ✅ Append-only + checkpoint | ✅ Atomic TTL'd claims | ✅ Lakebase |
+| **Partyline** | Intra-workspace, heterogeneous harnesses | Independent processes, self-directed | ✅ Append-only + checkpoint | ✅ Atomic TTL'd claims | ✅ Lakebase |
 | CrewAI | Intra-process | Orchestrated roles | ❌ Per-run only | ❌ | N/A (library) |
 | AutoGen/MAF | Intra-runtime | Group chat, delegation | ❌ Runtime-only | ❌ | ❌ |
 | LangGraph | Intra-graph | Graph nodes | ✅ Workflow checkpoint | ❌ | ❌ |
@@ -380,105 +422,74 @@ that composition.
 
 ---
 
-## 6. Comparison to Alternatives (Condensed)
+## 6. Operational Model & Economics
 
-### 6.1 Chat-Based Coordination (Slack, Teams, Discord)
-- Ephemeral: no durable cursor, no structured replay
-- No mutual exclusion: "I'm working on X" is advisory, not atomic
-- Rate limits, polling overhead, OAuth app complexity
-- Requires NLP parsing to extract semantics from prose
-
-### 6.2 Git-Based Coordination (branch protection, CODEOWNERS)
-- Post-hoc: conflicts discovered at push/merge time, not prevented
-- No awareness: agents don't know what others are doing until PR stage
-- Branch locks are coarse-grained (whole branch, not file-level)
-
-### 6.3 Queue/Task Systems (Celery, Airflow, Temporal)
-- Designed for task distribution, not coordination awareness
-- No shared visibility into peer state
-- No mutual exclusion on arbitrary resources
-- Heavyweight infrastructure for what's fundamentally a coordination signal
-
-### 6.4 A2A Protocol (Google Agent2Agent)
-- Designed for cross-organization, heterogeneous agent interop
-- Heavier contract: agent cards, capability negotiation, task lifecycle
-- Right for cross-org escalation; overkill for homogeneous team coordination
-- Partyline could bridge to A2A for cross-org use cases (future, PRD §11)
-
-### 6.5 Shared Databases / Distributed Locks (Redis, ZooKeeper)
-- Raw primitives, not coordination-aware
-- No message history, no checkpoint resume, no agent presence
-- Operational burden: Redis clusters, ZK quorum management
-- No scale-to-zero
-
----
-
-## 7. Operational Model & Economics
-
-### 7.1 Cost at Idle
+### 6.1 Cost at Idle
 - Lakebase: scale-to-zero when no agents active
 - App: Databricks App managed compute (future: native scale-to-zero)
 - Zero cost between work sessions (bursty usage pattern)
 
-### 7.2 Per-Workspace Isolation
+### 6.2 Per-Workspace Isolation
 - Every install is independent: own database, own app, own history
 - No centrally-hosted service, no cross-tenant data exposure
 - Marketplace-distributable as an installable app listing
 
-### 7.3 Self-Provisioning
+### 6.3 Self-Provisioning
 - First-run: `CREATE TABLE IF NOT EXISTS` (idempotent schema bootstrap)
 - No DBA, no infrastructure team, no manual setup
 - Agent onboarding: `pip install covasant-partyline` + paste `.mcp.json` config
 
 ---
 
-## 8. Business Value & ROI
+## 7. Business Value & ROI
 
 *Framing note: §8 is the business translation of §4.4's hypotheses (H1/H2). Scaling and
-savings figures below are modeled/illustrative until §9.2's dogfood metrics land —
+savings figures below are modeled/illustrative until §8.2's dogfood metrics land —
 present them as the model, not as measured results.*
 
-### 8.1 Developer Throughput Multiplier (modeled, per H1/H2)
+### 7.1 Developer Throughput Multiplier (modeled, per H1/H2)
 - Without coordination: adding agents past ~2–3 yields diminishing returns (H2: conflict probability grows with working-set overlap)
 - With Partyline: each agent's coordination cost is O(1) — one claim check, one status post — regardless of fleet size
 - Modeled effect (H1): near-linear throughput scaling for well-decomposed work; N agents → ~N× throughput on epic-scale tasks
-- Measured by §9.2: tasks-per-hour, lines-shipped-per-session, epic completion time (coordinated vs. uncoordinated)
+- Measured by §8.2: tasks-per-hour, lines-shipped-per-session, epic completion time (coordinated vs. uncoordinated)
 
-### 8.2 Wasted Compute Elimination (Token Cost — illustrative)
+### 7.2 Wasted Compute Elimination (Token Cost — illustrative)
 - Every prevented collision saves the full token cost of the discarded work + the retry
 - Illustrative at current frontier-model rates: a single wasted multi-file edit = $5–50 in tokens (verify rates at publication)
-- Illustrative at 6 agents × 8hr sessions: even 2–3 prevented collisions/day = $30–300/day saved; §9.2's collision counts make this measurable
+- Illustrative at 6 agents × 8hr sessions: even 2–3 prevented collisions/day = $30–300/day saved; §8.2's collision counts make this measurable
 - Claim-before-edit converts speculative waste into a cheap metadata check (one DB round-trip, microseconds)
 
-### 8.3 Time-to-Delivery Compression
+### 7.3 Time-to-Delivery Compression
 - Epic-scale tasks (50+ interconnected subtasks) that take one agent days can safely parallelize across N agents in hours
 - The coordination overhead that normally prevents safe parallelism becomes negligible (single-digit ms per coordination action)
 - Direct business translation: faster feature delivery, shorter sprint cycles, earlier revenue recognition on customer-facing work
 
-### 8.4 Operational Visibility & Compliance
+### 7.4 Operational Visibility & Compliance
 - Full append-only audit trail: who did what, when, why (structured, queryable, not buried in chat logs)
 - As shipped: bus data + retention archive queryable from UC via the registered
   `partyline_pg` catalog (federated). *Roadmap:* Delta archive via Lakehouse Sync →
-  permanent UC-governed record with RBAC/lineage/retention (§10.7)
+  permanent UC-governed record with RBAC/lineage/retention (§9.6)
 - Caveat while OBO is disabled (§3.6): "who" is the self-declared `agent_id`, not an
-  authenticated principal — full compliance-grade attribution lands with §10.6
+  authenticated principal — full compliance-grade attribution lands with §9.5
 - Enables post-hoc analytics: agent productivity, contention hotspots, task decomposition quality, cost attribution per agent/owner
 - Compliance-friendly: immutable history with timestamp provenance; no "who deleted that file?" ambiguity
 
-### 8.5 Marketplace Revenue Potential
+### 7.5 Marketplace Revenue Potential
 - Per-workspace install model maps directly to Databricks Marketplace App listing
 - Addressable market: any team running ≥2 concurrent AI coding agents (growing rapidly as agentic coding matures)
 - Zero marginal support cost per install (self-provisioning, isolated, no shared infrastructure, no multi-tenant operations)
 - Revenue model options: free tier (≤3 agents), paid tier (unlimited agents + analytics gold layer + priority support)
+- Productization gates: independent versioning, security review, and support commitment
+  are separately gated decisions (formerly its own future-work item)
 
-### 8.6 Platform Stickiness & Ecosystem Value
+### 7.6 Platform Stickiness & Ecosystem Value
 - Built on 3 Databricks services today (Lakebase, Apps, Unity Catalog) with a 4th
   (Lakehouse Sync) on the roadmap
 - Makes the Databricks workspace the natural home for agent coordination infrastructure
 - Complementary to Omnigent (governance/control plane) — Partyline provides the durable coordination plane underneath
 - Reinforces Databricks as the platform for AI-native software development, not just data/ML
 
-### 8.7 ROI Model (Simplified — illustrative; replace inputs with §9.2 measurements)
+### 7.7 ROI Model (Simplified — illustrative; replace inputs with §8.2 measurements)
 - **Cost (illustrative):** Lakebase (~$0 at idle, ~$2–5/day during active sessions) + App compute (~$5–10/day when warm)
 - **Savings (modeled):** 2–5 prevented collisions/day × $10–50/collision = $20–250/day in token waste avoided
 - **Revenue acceleration (per H1):** if N agents complete an epic in 4 hours instead of 4 days, the business value of earlier delivery dwarfs infrastructure cost
@@ -486,9 +497,9 @@ present them as the model, not as measured results.*
 
 ---
 
-## 9. Real-World Validation: Dogfood Results
+## 8. Real-World Validation: Dogfood Results
 
-### 9.1 Environment
+### 8.1 Environment
 - 6 Claude Code instances against shared Aura monorepo
 - Mix of backend, frontend, infrastructure, and documentation tasks
 - Daily multi-hour work sessions with N agents active concurrently
@@ -497,16 +508,18 @@ present them as the model, not as measured results.*
   hours of rollout; wake-on-mention verified end-to-end (background watcher woke on a
   peer's mention); human-to-agent messaging verified from the dashboard compose box
 
-### 9.2 Metrics (to be populated as dogfood accumulates)
+### 8.2 Metrics (to be populated as dogfood accumulates)
 - Push-race reduction (baseline: 2 per session → target: 0)
-- Time-to-awareness of peer claims/status
+- Time-to-awareness of peer claims/status (push p95 vs the §2.3 single-digit-second requirement, including scale-to-zero cold start)
 - Epic completion throughput (tasks/hour with coordination vs. without)
 - Claim contention rate (indicator of good task decomposition)
 - Instrumentation is free: every message, claim, and checkpoint is timestamped in
   Postgres and queryable from Unity Catalog (registered catalog) — the metrics above
   are SQL queries, not new telemetry
+- Counterfactual methodology: historical baseline (pre-Partyline session logs) plus
+  alternating coordinated/uncoordinated sessions on comparable task sets
 
-### 9.3 Limitations
+### 8.3 Limitations
 - **Adherence is voluntary:** an agent that never calls `claim_resource` gets no
   protection. Session-start hooks and repo instructions raise adherence; they do not
   enforce it. (Enforcement — e.g. server-side write gating — is future work.)
@@ -515,33 +528,31 @@ present them as the model, not as measured results.*
 - **At-least-once reads:** checkpoint semantics mean an agent may reprocess messages
   after a crash between read and ack — message handling must be idempotent
 - **Single-workspace scope:** cross-org coordination is explicitly out of scope for v1
-  (see §10.1)
+  (see §9.1)
 - **Author attribution currently null:** OBO is implemented but disabled pending
-  admin-enabled user authorization (roadmap, §10.6); `agent_id` is the only identity today
+  admin-enabled user authorization (roadmap, §9.5); `agent_id` is the only identity today
+- **Line unavailability = no coordination, not no work:** fail-open by design (§3.4); an
+  outage silently returns the fleet to the uncoordinated baseline until reconnected
 
 ---
 
-## 10. Future Directions
+## 9. Future Directions
 
-### 10.1 Cross-Organization Escalation
+### 9.1 Cross-Organization Escalation
 - Customer agent → structured `escalation` message → consent-gated bridge → vendor inbox
 - Enables support workflows without exposing internal coordination channels
 
-### 10.2 LLM-Powered Coordination Intelligence
+### 9.2 LLM-Powered Coordination Intelligence
 - Gold layer: summarize coordination patterns, detect bottlenecks
 - Auto-suggest task assignments based on agent history and capabilities
 - Conflict prediction: "Agent B is likely to need this file based on task description"
 
-### 10.3 Marketplace Distribution
-- Per-workspace install model maps directly to Databricks Marketplace App listings
-- Independent versioning, security review, support commitment as separate gated decisions
-
-### 10.4 Multi-Repo Coordination
+### 9.3 Multi-Repo Coordination
 - Agents working across multiple repositories in a workspace
 - Claims span repos (already supported: repo field in claim key)
 - Cross-repo dependency tracking via message threading
 
-### 10.5 Heterogeneous Agent Coordination (Genie Code + Claude Code + Cursor)
+### 9.4 Heterogeneous Agent Coordination (Genie Code + Claude Code + Cursor)
 - **The scenario:** A single workspace has *different kinds* of agents working on *different layers* of the same system:
   - **Genie Code** — modifying schemas, Lakeflow pipelines, model serving endpoints, data quality expectations
   - **Claude Code / Cursor** — editing application code, APIs, frontend components that depend on those data artifacts
@@ -555,7 +566,7 @@ present them as the model, not as measured results.*
 - **Why this matters:** As workspaces become multi-agent environments by default (Genie Code is GA today), coordination between workspace-native agents and external agents (Claude Code, Cursor) becomes a real operational need — not a hypothetical. Partyline is the coordination substrate that makes heterogeneous agent cooperation safe.
 - **Technical enabler:** Both Genie Code and Claude Code support MCP; both can call Partyline tools. No custom adapter needed — just add the MCP server config.
 
-### 10.6 Identity & Audit Hardening (roadmap)
+### 9.5 Identity & Audit Hardening (roadmap)
 - Re-enable OBO user authorization: stamp the authenticated human principal into
   `messages.author` (code shipped and dormant; requires `user_api_scopes` restore +
   workspace-admin enablement)
@@ -563,20 +574,20 @@ present them as the model, not as measured results.*
 - Optional server-side protocol enforcement: reject writes to claimed paths from
   non-holders (moves claims from cooperative to enforced)
 
-### 10.7 Archive & Analytics Hardening (roadmap)
+### 9.6 Archive & Analytics Hardening (roadmap)
 - Swap archive-before-prune for Native Lakehouse Sync (wal2delta CDC → Delta SCD2) when
   the API is publicly exposed — true off-database history that survives project deletion
 - `await_message` blocking long-poll MCP tool for dedicated listener/dispatcher agents
 
 ---
 
-## 11. Conclusion
+## 10. Conclusion
 - Multi-agent software engineering is production-ready today; coordination is the bottleneck
 - Partyline provides the minimum necessary primitives: awareness, exclusion, resumability —
   plus the piece prior art lacks: wake-up delivery for turn-based agents (§3.5)
 - Structured types + atomic claims + checkpoint resume = safe parallelism at scale
 - The primitives are deliberately unoriginal; the contribution is the minimal composition
-  for a new workload, stated and defended in §5.5
+  for a new workload, stated and defended in §5.6
 - Per-workspace isolation makes it distributable without operational burden
 - The party line metaphor: shared visibility is the feature, not a bug
 
@@ -585,9 +596,12 @@ present them as the model, not as measured results.*
 ## Appendices
 
 ### A. MCP Tool Reference (complete API surface)
-### B. Schema DDL (4 tables, indexes, constraints)
+### B. Schema DDL (5 tables — agents, messages, messages_archive, checkpoints, claims — indexes, constraints)
 ### C. Deployment Guide (bundle + app deploy steps)
 ### D. Coordination Protocol Reference (message types, claim semantics, checkpoint behavior)
+- Must cover: claim renewal (a holder re-claiming extends its TTL), message-id total
+  ordering, at-least-once read/ack semantics (handlers must be idempotent), agent-id
+  naming convention (`owner_repo_instance`)
 ### E. Reference Implementation Architecture (Mermaid)
 - Reuse the deployment diagram from PRD §10 verbatim (single source of truth — note the
   source commit when copying). Body figures 1–3 argue the *idea*; this appendix
@@ -635,3 +649,6 @@ present them as the model, not as measured results.*
 25. **Party Line (telephony).** Wikipedia. "A party line is a local loop telephone circuit shared by multiple subscribers." https://en.wikipedia.org/wiki/Party_line_(telephony) — the metaphorical basis for the system's shared-visibility, no-privacy design.
 26. **Kafka Consumer Groups.** J. Kreps et al. "Kafka: a Distributed Messaging System for Log Processing." NetDB 2011. (Checkpoint/cursor model inspiration)
 27. **Conway's Law.** M. Conway. "How Do Committees Invent?" Datamation, 1968. (Multi-agent coordination reflects organizational structure; relevant to why per-workspace isolation matters)
+28. **Erman, L.D., Hayes-Roth, F., Lesser, V.R., Reddy, D.R.** "The Hearsay-II Speech-Understanding System: Integrating Knowledge to Resolve Uncertainty." ACM Computing Surveys, 1980. (Blackboard architecture — the shared-medium coordination ancestor)
+29. **Gelernter, D.** "Generative Communication in Linda." ACM TOPLAS 7(1), 1985. (Tuple spaces: claims are a destructive take; broadcast is out/rd)
+30. **FIPA.** "FIPA ACL Message Structure Specification." Foundation for Intelligent Physical Agents, 2002. http://www.fipa.org/specs/fipa00061/ (Performative-typed agent messages — ancestry of Partyline's typed message vocabulary)
