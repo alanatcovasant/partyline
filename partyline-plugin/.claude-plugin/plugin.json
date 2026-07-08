@@ -1,0 +1,6 @@
+{
+  "name": "partyline",
+  "description": "Inter-agent coordination line for a heterogeneous fleet (Claude Code + GitHub Copilot). Bundles the using-partyline skill, the partyline-responder agent, the partyline MCP server, and lifecycle hooks that surface messages addressed to you. Cross-format: installs into both VS Code and Claude Code.",
+  "version": "0.1.0",
+  "author": { "name": "Covasant", "url": "https://github.com/covasant" }
+}

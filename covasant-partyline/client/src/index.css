@@ -70,3 +70,10 @@ ul { list-style: none; margin: 0; padding: 0; }
 }
 .metrics dt { color: var(--muted); font-size: 0.85em; }
 .metrics dd { margin: 0; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+.metrics dd.warn { color: #dc2626; }
+
+/* Diagnostics panel */
+.diag-panel h2 { margin-bottom: 0.5rem; }
+.diag-panel .dot { margin-right: 0.15rem; vertical-align: middle; }
+.diag-stale { margin-top: 0.5rem; font-size: 0.85em; }
+.diag-stale summary { color: #b45309; cursor: pointer; }

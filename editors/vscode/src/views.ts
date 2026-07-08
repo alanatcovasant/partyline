@@ -223,6 +223,108 @@ function sorted(arr: number[]): number[] {
   return [...arr].sort((a, b) => a - b);
 }
 
+// --- Diagnostics Tree ---
+
+interface RecentEvent {
+  time: number;
+  kind: string;
+  message: string;
+}
+
+/**
+ * Health/observability view: connection state, token status, responder activity,
+ * last message, and a recent-events feed. This is the "is it actually working?" panel.
+ */
+export class DiagnosticsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+  private _onDidChange = new vscode.EventEmitter<void>();
+  readonly onDidChangeTreeData = this._onDidChange.event;
+
+  private connection = "Disconnected";
+  private lastMessageAt: number | undefined;
+  private token = "—";
+  private responder = "off";
+  private agents = 0;
+  private claims = 0;
+  private errorCount = 0;
+  private events: RecentEvent[] = [];
+
+  setConnection(state: string) { this.connection = state; this._onDidChange.fire(); }
+  noteMessage() { this.lastMessageAt = Date.now(); this._onDidChange.fire(); }
+  setToken(status: string) { this.token = status; this._onDidChange.fire(); }
+  setResponder(status: string) { this.responder = status; this._onDidChange.fire(); }
+  setCounts(agents: number, claims: number) { this.agents = agents; this.claims = claims; this._onDidChange.fire(); }
+
+  pushEvent(kind: string, message: string) {
+    this.events.unshift({ time: Date.now(), kind, message });
+    if (this.events.length > 50) { this.events.length = 50; }
+    if (/error|closed/i.test(kind)) { this.errorCount++; }
+    this._onDidChange.fire();
+  }
+
+  reset() {
+    this.connection = "Disconnected";
+    this.token = "—";
+    this.responder = "off";
+    this.agents = 0;
+    this.claims = 0;
+    this._onDidChange.fire();
+  }
+
+  private connIcon(): vscode.ThemeIcon {
+    if (/connected|✓/i.test(this.connection)) { return new vscode.ThemeIcon("pass"); }
+    if (/error|disconnect/i.test(this.connection)) { return new vscode.ThemeIcon("error"); }
+    return new vscode.ThemeIcon("sync");
+  }
+
+  getTreeItem(item: vscode.TreeItem): vscode.TreeItem { return item; }
+
+  getChildren(): vscode.TreeItem[] {
+    const now = Date.now();
+    const row = (label: string, value: string, icon: string): vscode.TreeItem => {
+      const t = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+      t.description = value;
+      t.iconPath = new vscode.ThemeIcon(icon);
+      return t;
+    };
+
+    const conn = new vscode.TreeItem("Connection", vscode.TreeItemCollapsibleState.None);
+    conn.description = this.connection;
+    conn.iconPath = this.connIcon();
+
+    const lastMsg = this.lastMessageAt
+      ? formatDuration(Math.floor((now - this.lastMessageAt) / 1000)) + " ago"
+      : "—";
+
+    const items: vscode.TreeItem[] = [
+      conn,
+      row("Last message", lastMsg, "comment"),
+      row("Token", this.token, "key"),
+      row("Responder", this.responder, "hubot"),
+      row("Active agents", String(this.agents), "person"),
+      row("Active claims", String(this.claims), "lock"),
+      row("Errors (session)", String(this.errorCount), this.errorCount > 0 ? "warning" : "check"),
+    ];
+
+    if (this.events.length > 0) {
+      const header = new vscode.TreeItem("Recent events", vscode.TreeItemCollapsibleState.None);
+      header.description = `(last ${Math.min(this.events.length, 10)})`;
+      items.push(header);
+      for (const e of this.events.slice(0, 10)) {
+        const it = new vscode.TreeItem(
+          `${e.kind}: ${e.message}`,
+          vscode.TreeItemCollapsibleState.None
+        );
+        it.description = formatDuration(Math.floor((now - e.time) / 1000)) + " ago";
+        it.tooltip = new vscode.MarkdownString(`\`${e.kind}\`\n\n${e.message}`);
+        it.iconPath = new vscode.ThemeIcon(/error|closed/i.test(e.kind) ? "circle-filled" : "circle-outline");
+        items.push(it);
+      }
+    }
+
+    return items;
+  }
+}
+
 // --- Helpers ---
 
 function typeIcon(type: string): string {

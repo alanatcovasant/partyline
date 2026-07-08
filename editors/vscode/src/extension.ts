@@ -1,9 +1,12 @@
 import * as vscode from "vscode";
 import { execFile } from "child_process";
 import { PartylineClient, PartylineDiagnosticEvent, PartylineMessage } from "./client";
-import { MessagesProvider, AgentsProvider, ClaimsProvider, MetricsProvider } from "./views";
+import { MessagesProvider, AgentsProvider, ClaimsProvider, MetricsProvider, DiagnosticsProvider } from "./views";
+import { PartylineResponder } from "./responder";
 
 let client: PartylineClient | undefined;
+let responder: PartylineResponder | undefined;
+let diagnosticsProvider: DiagnosticsProvider;
 let statusBarItem: vscode.StatusBarItem;
 let pendingMessages: PartylineMessage[] = [];
 let diagnosticsChannel: vscode.OutputChannel;
@@ -61,12 +64,14 @@ export function activate(context: vscode.ExtensionContext) {
   const agentsProvider = new AgentsProvider();
   const claimsProvider = new ClaimsProvider();
   const metricsProvider = new MetricsProvider();
+  diagnosticsProvider = new DiagnosticsProvider();
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("partyline.messages", messagesProvider),
     vscode.window.registerTreeDataProvider("partyline.agents", agentsProvider),
     vscode.window.registerTreeDataProvider("partyline.claims", claimsProvider),
-    vscode.window.registerTreeDataProvider("partyline.metrics", metricsProvider)
+    vscode.window.registerTreeDataProvider("partyline.metrics", metricsProvider),
+    vscode.window.registerTreeDataProvider("partyline.diagnostics", diagnosticsProvider)
   );
 
   // Commands
@@ -136,11 +141,26 @@ async function connect(
     diagnosticsChannel.appendLine(
       `[${new Date().toISOString()}] [token] Acquired token from Databricks CLI (profile: ${profile})`
     );
+    diagnosticsProvider.setToken(`Databricks CLI (${profile})`);
+  } else if (config.get<string>("token")) {
+    diagnosticsProvider.setToken("workspace setting");
+  } else {
+    diagnosticsProvider.setToken("PARTYLINE_TOKEN env");
   }
 
   disconnect(); // clean up previous
 
+  diagnosticsProvider.setConnection("Connecting…");
+  diagnosticsProvider.setResponder(
+    config.get<boolean>("autoRespond", false) ? "on · idle" : "off"
+  );
+
   client = new PartylineClient(url, agentId, token);
+  responder = new PartylineResponder(client, agentId, (m) => {
+    diagnosticsChannel.appendLine(`[${new Date().toISOString()}] ${m}`);
+    diagnosticsProvider.pushEvent("responder", m.replace(/^\[responder\]\s*/, ""));
+    diagnosticsProvider.setResponder(`on · ${m.replace(/^\[responder\]\s*/, "").slice(0, 60)}`);
+  });
 
   // Schedule token refresh every 45 minutes (tokens expire ~1hr)
   tokenRefreshTimer = setInterval(async () => {
@@ -150,12 +170,23 @@ async function connect(
       diagnosticsChannel.appendLine(
         `[${new Date().toISOString()}] [token] Refreshed token from Databricks CLI`
       );
+      diagnosticsProvider.setToken(`Databricks CLI (${profile}) · refreshed`);
+      diagnosticsProvider.pushEvent("token", "refreshed from Databricks CLI");
     }
   }, 45 * 60 * 1000);
 
   client.onMessage((msg) => {
     messagesProvider.addMessage(msg);
     metricsProvider.recordMessage(msg);
+    diagnosticsProvider.noteMessage();
+
+    // Autonomous coordination responder (opt-in). Wakes the extension's own LM agent
+    // for messages addressed to us — the one path that doesn't need an active chat
+    // session. The responder itself gates on recipient/loop-safety.
+    if (vscode.workspace.getConfiguration("partyline").get<boolean>("autoRespond", false)) {
+      void responder?.handle(msg);
+    }
+
     const isForMe =
       msg.recipient === agentId ||
       (msg.mentions && msg.mentions.includes(agentId));
@@ -192,13 +223,19 @@ async function connect(
     updateStatusBar(client!.unreadCount);
   });
 
+  let lastAgentCount = 0;
+  let lastClaimCount = 0;
   client.onAgentsChanged((agents) => {
     agentsProvider.update(agents);
     metricsProvider.updateAgentCount(agents.length);
+    lastAgentCount = agents.length;
+    diagnosticsProvider.setCounts(lastAgentCount, lastClaimCount);
   });
   client.onClaimsChanged((claims) => {
     claimsProvider.update(claims);
     metricsProvider.updateClaimCount(claims.length);
+    lastClaimCount = claims.length;
+    diagnosticsProvider.setCounts(lastAgentCount, lastClaimCount);
   });
   client.onDiagnostic((event) => handleDiagnosticEvent(event));
 
@@ -221,6 +258,8 @@ function disconnect() {
     client.disconnect();
     client = undefined;
   }
+  responder = undefined;
+  if (diagnosticsProvider) { diagnosticsProvider.reset(); }
   updateStatusBar(0, false);
 }
 
@@ -369,6 +408,11 @@ function handleDiagnosticEvent(event: PartylineDiagnosticEvent) {
   diagnosticsChannel.appendLine(
     `[${event.timestamp}] [${event.kind}] ${event.message}`
   );
+
+  diagnosticsProvider.pushEvent(event.kind, event.message);
+  if (event.kind === "sse_connected") { diagnosticsProvider.setConnection("Connected ✓"); }
+  else if (event.kind === "sse_error") { diagnosticsProvider.setConnection("Error — reconnecting"); }
+  else if (event.kind === "sse_closed") { diagnosticsProvider.setConnection("Reconnecting…"); }
   if (event.details !== undefined) {
     try {
       diagnosticsChannel.appendLine(JSON.stringify(event.details, null, 2));

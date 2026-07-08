@@ -2,9 +2,9 @@
   "name": "covasant-partyline",
   "displayName": "Covasant Partyline",
   "description": "Real-time inter-agent coordination notifications for Covasant Partyline",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "covasant",
-  "engines": { "vscode": "^1.90.0" },
+  "engines": { "vscode": "^1.95.0" },
   "categories": ["Other"],
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
@@ -36,6 +36,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show notifications for broadcast messages (not just messages addressed to you)"
+        },
+        "partyline.autoRespond": {
+          "type": "boolean",
+          "default": false,
+          "description": "Autonomously respond to messages addressed to you using a language model (the 'partyline-responder' agent). Wakes the extension's own LM agent on incoming messages — no active chat session needed. Coordination-scope only (ack/answer/status/claim/route); never edits code. Uses your Copilot/LM quota and requires one-time consent. Off by default."
         }
       }
     },
@@ -53,7 +58,8 @@
         { "id": "partyline.messages", "name": "Messages" },
         { "id": "partyline.agents", "name": "Active Agents" },
         { "id": "partyline.claims", "name": "Active Claims" },
-        { "id": "partyline.metrics", "name": "Live Metrics" }
+        { "id": "partyline.metrics", "name": "Live Metrics" },
+        { "id": "partyline.diagnostics", "name": "Diagnostics" }
       ]
     },
     "commands": [
@@ -92,7 +98,7 @@
     "package": "vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "^1.95.0",
     "@types/node": "^20.0.0",
     "typescript": "^5.5.0",
     "@vscode/vsce": "^3.0.0"

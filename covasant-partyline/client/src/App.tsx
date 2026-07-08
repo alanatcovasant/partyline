@@ -38,11 +38,35 @@ type Metrics = {
   unique_posters_1h: number;
   sse_subscribers: number;
 };
+type Diagnostics = {
+  active_within_seconds: number;
+  total_agents: number;
+  active_agents: number;
+  stale_agents: number;
+  oldest_heartbeat: string | null;
+  newest_heartbeat: string | null;
+  sampled_agents: Array<{
+    agent_id: string;
+    repo?: string | null;
+    branch?: string | null;
+    heartbeat_age_seconds: number;
+    is_active: boolean;
+  }>;
+};
+type Health = { status: string; db_configured: boolean };
 
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`${url}: ${r.status}`);
   return r.json();
+}
+
+function fmtAge(seconds: number): string {
+  if (seconds < 0) return "—";
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
 }
 
 const MESSAGE_TYPES = [
@@ -152,10 +176,15 @@ export function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [claims, setClaims] = useState<Claim[]>([]);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [diag, setDiag] = useState<Diagnostics | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
   const [connected, setConnected] = useState(false);
+  const [lastEventAt, setLastEventAt] = useState<number | null>(null);
+  const [sseReconnects, setSseReconnects] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const lastId = useRef(0);
 
-  // Seed history + poll agents/claims/metrics.
+  // Seed history + poll agents/claims/metrics/diagnostics/health.
   useEffect(() => {
     getJSON<Message[]>("/api/messages?after_id=0&limit=200")
       .then((m) => {
@@ -167,9 +196,18 @@ export function App() {
       getJSON<Agent[]>("/api/agents").then(setAgents).catch(() => {});
       getJSON<Claim[]>("/api/claims").then(setClaims).catch(() => {});
       getJSON<Metrics>("/api/metrics").then(setMetrics).catch(() => {});
+      getJSON<Diagnostics>("/api/diagnostics/agents?active_within_seconds=3600&sample_size=25")
+        .then(setDiag).catch(() => {});
+      getJSON<Health>("/api/health").then(setHealth).catch(() => {});
     };
     refresh();
     const t = setInterval(refresh, 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  // 1s tick so "Xs ago" ages stay live between polls.
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
 
@@ -177,8 +215,12 @@ export function App() {
   useEffect(() => {
     const es = new EventSource("/api/stream");
     es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
+    es.onerror = () => {
+      setConnected(false);
+      setSseReconnects((n) => n + 1);
+    };
     es.onmessage = () => {
+      setLastEventAt(Date.now());
       getJSON<Message[]>(`/api/messages?after_id=${lastId.current}&limit=200`)
         .then((rows) => {
           if (!rows.length) return;
@@ -221,6 +263,54 @@ export function App() {
         </section>
 
         <aside>
+          <section className="diag-panel">
+            <h2>🩺 Diagnostics</h2>
+            <dl className="metrics">
+              <dt>Stream</dt>
+              <dd>
+                <span className={connected ? "dot on" : "dot off"} />{" "}
+                {connected ? "connected" : "disconnected"}
+              </dd>
+              <dt>Last SSE event</dt>
+              <dd>{lastEventAt ? fmtAge(Math.floor((nowMs - lastEventAt) / 1000)) : "—"}</dd>
+              <dt>SSE subscribers</dt>
+              <dd>{metrics ? metrics.sse_subscribers : "—"}</dd>
+              <dt>SSE reconnects</dt>
+              <dd className={sseReconnects > 0 ? "warn" : undefined}>{sseReconnects}</dd>
+              <dt>Database</dt>
+              <dd className={health && !health.db_configured ? "warn" : undefined}>
+                {health ? (health.db_configured ? "configured ✓" : "not configured") : "—"}
+              </dd>
+              <dt>Agents active / total</dt>
+              <dd className={diag && diag.active_agents === 0 ? "warn" : undefined}>
+                {diag ? `${diag.active_agents} / ${diag.total_agents}` : "—"}
+                {diag && diag.stale_agents > 0 ? ` (${diag.stale_agents} stale)` : ""}
+              </dd>
+              <dt>Newest heartbeat</dt>
+              <dd>
+                {diag && diag.newest_heartbeat
+                  ? fmtAge(Math.floor((nowMs - new Date(diag.newest_heartbeat).getTime()) / 1000))
+                  : "—"}
+              </dd>
+            </dl>
+            {diag && diag.stale_agents > 0 && (
+              <details className="diag-stale">
+                <summary>{diag.stale_agents} stale agent(s)</summary>
+                <ul className="pills">
+                  {diag.sampled_agents
+                    .filter((a) => !a.is_active)
+                    .map((a) => (
+                      <li key={a.agent_id}>
+                        <b>{a.agent_id}</b>
+                        {a.repo && <span className="muted">{a.repo}</span>}
+                        <time>{fmtAge(a.heartbeat_age_seconds)}</time>
+                      </li>
+                    ))}
+                </ul>
+              </details>
+            )}
+          </section>
+
           <section className="metrics-panel">
             <h2>📊 Live Metrics</h2>
             {metrics ? (
