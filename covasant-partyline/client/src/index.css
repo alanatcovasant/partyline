@@ -59,3 +59,14 @@ ul { list-style: none; margin: 0; padding: 0; }
 }
 .compose button:disabled { opacity: 0.5; cursor: default; }
 .compose-error { color: #dc2626; font-size: 0.85em; }
+
+/* Metrics panel */
+.metrics-panel h2 { margin-bottom: 0.5rem; }
+.metrics {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+}
+.metrics dt { color: var(--muted); font-size: 0.85em; }
+.metrics dd { margin: 0; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }

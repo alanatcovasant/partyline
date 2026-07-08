@@ -211,6 +211,14 @@ async def list_claims() -> list[dict]:
     return rows
 
 
+@router.get("/metrics")
+async def get_metrics() -> dict:
+    """Real-time partyline metrics for the dashboard."""
+    metrics = await run_in_threadpool(db.get_metrics)
+    metrics["sse_subscribers"] = hub.subscriber_count()
+    return metrics
+
+
 @router.get("/stream")
 async def stream(request: Request) -> StreamingResponse:
     """Server-Sent Events stream of live message notifications (push, FR2)."""

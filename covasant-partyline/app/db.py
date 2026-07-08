@@ -495,3 +495,21 @@ def list_claims() -> list[dict]:
         return conn.execute(
             f"SELECT {_CLAIM_COLS} FROM claims WHERE expires_at > now() ORDER BY repo, resource_path"
         ).fetchall()
+
+
+def get_metrics() -> dict:
+    """Compute real-time partyline metrics from the database."""
+    with get_pool().connection() as conn:
+        row = conn.execute("""
+            SELECT
+                (SELECT count(*) FROM messages) AS total_messages,
+                (SELECT count(*) FROM messages WHERE created_at > now() - interval '1 minute') AS messages_last_1m,
+                (SELECT count(*) FROM messages WHERE created_at > now() - interval '5 minutes') AS messages_last_5m,
+                (SELECT count(*) FROM messages WHERE created_at > now() - interval '1 hour') AS messages_last_1h,
+                (SELECT count(*) FROM agents WHERE last_heartbeat > now() - interval '5 minutes') AS active_agents_5m,
+                (SELECT count(*) FROM agents WHERE last_heartbeat > now() - interval '1 hour') AS active_agents_1h,
+                (SELECT count(*) FROM claims WHERE expires_at > now()) AS active_claims,
+                (SELECT max(created_at) FROM messages) AS last_message_at,
+                (SELECT count(DISTINCT agent_id) FROM messages WHERE created_at > now() - interval '1 hour') AS unique_posters_1h
+        """).fetchone()
+        return row if row else {}

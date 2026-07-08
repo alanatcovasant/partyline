@@ -26,6 +26,18 @@ type Claim = {
   agent_id: string;
   expires_at: string;
 };
+type Metrics = {
+  total_messages: number;
+  messages_last_1m: number;
+  messages_last_5m: number;
+  messages_last_1h: number;
+  active_agents_5m: number;
+  active_agents_1h: number;
+  active_claims: number;
+  last_message_at: string | null;
+  unique_posters_1h: number;
+  sse_subscribers: number;
+};
 
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url);
@@ -139,10 +151,11 @@ export function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [claims, setClaims] = useState<Claim[]>([]);
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [connected, setConnected] = useState(false);
   const lastId = useRef(0);
 
-  // Seed history + poll agents/claims.
+  // Seed history + poll agents/claims/metrics.
   useEffect(() => {
     getJSON<Message[]>("/api/messages?after_id=0&limit=200")
       .then((m) => {
@@ -153,6 +166,7 @@ export function App() {
     const refresh = () => {
       getJSON<Agent[]>("/api/agents").then(setAgents).catch(() => {});
       getJSON<Claim[]>("/api/claims").then(setClaims).catch(() => {});
+      getJSON<Metrics>("/api/metrics").then(setMetrics).catch(() => {});
     };
     refresh();
     const t = setInterval(refresh, 5000);
@@ -207,6 +221,36 @@ export function App() {
         </section>
 
         <aside>
+          <section className="metrics-panel">
+            <h2>📊 Live Metrics</h2>
+            {metrics ? (
+              <dl className="metrics">
+                <dt>Messages/min</dt>
+                <dd>{metrics.messages_last_1m}</dd>
+                <dt>Messages (5m)</dt>
+                <dd>{metrics.messages_last_5m}</dd>
+                <dt>Messages (1h)</dt>
+                <dd>{metrics.messages_last_1h}</dd>
+                <dt>Total messages</dt>
+                <dd>{metrics.total_messages}</dd>
+                <dt>Active agents (5m)</dt>
+                <dd>{metrics.active_agents_5m}</dd>
+                <dt>Active agents (1h)</dt>
+                <dd>{metrics.active_agents_1h}</dd>
+                <dt>Active claims</dt>
+                <dd>{metrics.active_claims}</dd>
+                <dt>SSE subscribers</dt>
+                <dd>{metrics.sse_subscribers}</dd>
+                <dt>Unique posters (1h)</dt>
+                <dd>{metrics.unique_posters_1h}</dd>
+                <dt>Last message</dt>
+                <dd>{metrics.last_message_at ? new Date(metrics.last_message_at).toLocaleTimeString() : "—"}</dd>
+              </dl>
+            ) : (
+              <p className="muted">Loading…</p>
+            )}
+          </section>
+
           <section>
             <h2>Active agents ({agents.length})</h2>
             <ul className="pills">
