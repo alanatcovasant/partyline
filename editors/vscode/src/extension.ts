@@ -1,12 +1,44 @@
 import * as vscode from "vscode";
+import { execFile } from "child_process";
 import { PartylineClient, PartylineDiagnosticEvent, PartylineMessage } from "./client";
-import { MessagesProvider, AgentsProvider, ClaimsProvider } from "./views";
+import { MessagesProvider, AgentsProvider, ClaimsProvider, MetricsProvider } from "./views";
 
 let client: PartylineClient | undefined;
 let statusBarItem: vscode.StatusBarItem;
 let pendingMessages: PartylineMessage[] = [];
 let diagnosticsChannel: vscode.OutputChannel;
 let zeroAgentsWarningShown = false;
+let tokenRefreshTimer: NodeJS.Timeout | undefined;
+let activeMetricsProvider: MetricsProvider | undefined;
+
+/**
+ * Attempt to get a Databricks auth token via CLI.
+ * Falls back to empty string if CLI is unavailable.
+ */
+async function getDatabricksToken(profile?: string): Promise<string> {
+  return new Promise((resolve) => {
+    const args = ["auth", "token"];
+    if (profile) { args.push("-p", profile); }
+    execFile("databricks", args, { timeout: 15_000 }, (err, stdout) => {
+      if (err) {
+        diagnosticsChannel.appendLine(
+          `[${new Date().toISOString()}] [token] databricks auth token failed: ${err.message}`
+        );
+        resolve("");
+        return;
+      }
+      try {
+        const parsed = JSON.parse(stdout);
+        resolve(parsed.access_token || "");
+      } catch {
+        diagnosticsChannel.appendLine(
+          `[${new Date().toISOString()}] [token] Failed to parse databricks CLI output`
+        );
+        resolve("");
+      }
+    });
+  });
+}
 
 export function activate(context: vscode.ExtensionContext) {
   diagnosticsChannel = vscode.window.createOutputChannel("Partyline Diagnostics");
@@ -28,17 +60,19 @@ export function activate(context: vscode.ExtensionContext) {
   const messagesProvider = new MessagesProvider();
   const agentsProvider = new AgentsProvider();
   const claimsProvider = new ClaimsProvider();
+  const metricsProvider = new MetricsProvider();
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("partyline.messages", messagesProvider),
     vscode.window.registerTreeDataProvider("partyline.agents", agentsProvider),
-    vscode.window.registerTreeDataProvider("partyline.claims", claimsProvider)
+    vscode.window.registerTreeDataProvider("partyline.claims", claimsProvider),
+    vscode.window.registerTreeDataProvider("partyline.metrics", metricsProvider)
   );
 
   // Commands
   context.subscriptions.push(
     vscode.commands.registerCommand("partyline.connect", () => {
-      connect(context, messagesProvider, agentsProvider, claimsProvider);
+      connect(context, messagesProvider, agentsProvider, claimsProvider, metricsProvider);
     }),
     vscode.commands.registerCommand("partyline.disconnect", () => {
       disconnect();
@@ -63,20 +97,22 @@ export function activate(context: vscode.ExtensionContext) {
   // Auto-connect if configured
   const config = vscode.workspace.getConfiguration("partyline");
   if (config.get<string>("url") && config.get<string>("agentId")) {
-    connect(context, messagesProvider, agentsProvider, claimsProvider);
+    connect(context, messagesProvider, agentsProvider, claimsProvider, metricsProvider);
   }
 }
 
-function connect(
+async function connect(
   context: vscode.ExtensionContext,
   messagesProvider: MessagesProvider,
   agentsProvider: AgentsProvider,
-  claimsProvider: ClaimsProvider
+  claimsProvider: ClaimsProvider,
+  metricsProvider: MetricsProvider
 ) {
   const config = vscode.workspace.getConfiguration("partyline");
   const url = config.get<string>("url");
   const agentId = config.get<string>("agentId");
-  const token = config.get<string>("token") || process.env.PARTYLINE_TOKEN;
+  const profile = config.get<string>("databricksProfile") || "dev-eastus2";
+  let token = config.get<string>("token") || process.env.PARTYLINE_TOKEN;
 
   if (!url || !agentId) {
     vscode.window.showWarningMessage(
@@ -85,17 +121,48 @@ function connect(
     return;
   }
 
+  // Auto-acquire token from Databricks CLI if none configured
+  if (!token) {
+    diagnosticsChannel.appendLine(
+      `[${new Date().toISOString()}] [token] No token configured, attempting databricks auth token -p ${profile}`
+    );
+    token = await getDatabricksToken(profile);
+    if (!token) {
+      vscode.window.showWarningMessage(
+        "Partyline: No token available. Set partyline.token, PARTYLINE_TOKEN env, or ensure `databricks` CLI is on PATH."
+      );
+      return;
+    }
+    diagnosticsChannel.appendLine(
+      `[${new Date().toISOString()}] [token] Acquired token from Databricks CLI (profile: ${profile})`
+    );
+  }
+
   disconnect(); // clean up previous
 
-  client = new PartylineClient(url, agentId, token || "");
+  client = new PartylineClient(url, agentId, token);
+
+  // Schedule token refresh every 45 minutes (tokens expire ~1hr)
+  tokenRefreshTimer = setInterval(async () => {
+    const freshToken = await getDatabricksToken(profile);
+    if (freshToken && client) {
+      client.updateToken(freshToken);
+      diagnosticsChannel.appendLine(
+        `[${new Date().toISOString()}] [token] Refreshed token from Databricks CLI`
+      );
+    }
+  }, 45 * 60 * 1000);
 
   client.onMessage((msg) => {
     messagesProvider.addMessage(msg);
+    metricsProvider.recordMessage(msg);
     const isForMe =
       msg.recipient === agentId ||
       (msg.mentions && msg.mentions.includes(agentId));
+    const isBroadcast = !msg.recipient && (!msg.mentions || msg.mentions.length === 0);
+    const notifyAll = config.get<boolean>("notifyBroadcast", false);
 
-    if (isForMe) {
+    if (isForMe || (isBroadcast && notifyAll)) {
       // Queue for LM tool consumption
       pendingMessages.push(msg);
 
@@ -125,15 +192,31 @@ function connect(
     updateStatusBar(client!.unreadCount);
   });
 
-  client.onAgentsChanged((agents) => agentsProvider.update(agents));
-  client.onClaimsChanged((claims) => claimsProvider.update(claims));
+  client.onAgentsChanged((agents) => {
+    agentsProvider.update(agents);
+    metricsProvider.updateAgentCount(agents.length);
+  });
+  client.onClaimsChanged((claims) => {
+    claimsProvider.update(claims);
+    metricsProvider.updateClaimCount(claims.length);
+  });
   client.onDiagnostic((event) => handleDiagnosticEvent(event));
 
   client.connect();
+  metricsProvider.start();
+  activeMetricsProvider = metricsProvider;
   updateStatusBar(0, true);
 }
 
 function disconnect() {
+  if (tokenRefreshTimer) {
+    clearInterval(tokenRefreshTimer);
+    tokenRefreshTimer = undefined;
+  }
+  if (activeMetricsProvider) {
+    activeMetricsProvider.stop();
+    activeMetricsProvider = undefined;
+  }
   if (client) {
     client.disconnect();
     client = undefined;

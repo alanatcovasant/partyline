@@ -70,6 +70,16 @@ export class PartylineClient {
     return this._unreadCount;
   }
 
+  updateToken(newToken: string) {
+    this.token = newToken;
+    // Restart SSE with the new token
+    if (this.eventSource) {
+      this.eventSource.destroy?.();
+      this.eventSource = undefined;
+      this.startSSE();
+    }
+  }
+
   onMessage(handler: MessageHandler) {
     this.messageHandlers.push(handler);
   }

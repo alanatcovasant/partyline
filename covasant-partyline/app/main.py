@@ -37,6 +37,10 @@ logging.basicConfig(
 )
 log = logging.getLogger("partyline")
 
+_otel_enabled = os.getenv("PARTYLINE_OTEL_ENABLED", "true").lower() == "true"
+_otel_local = os.getenv("PARTYLINE_OTEL_LOCAL", "false").lower() == "true"
+_slow_request_ms = float(os.getenv("PARTYLINE_SLOW_REQUEST_MS", "2000"))
+
 # Serve the MCP endpoint exactly at /mcp (not /mcp/mcp).
 mcp.settings.streamable_http_path = "/"
 mcp_app = mcp.streamable_http_app()
@@ -46,6 +50,20 @@ mcp_app = mcp.streamable_http_app()
 async def lifespan(_: FastAPI):
     # The MCP session manager must run for the mounted Streamable-HTTP app to work.
     async with mcp.session_manager.run():
+        if _otel_enabled:
+            try:
+                from .telemetry import init_telemetry
+
+                init_telemetry(local=_otel_local)
+                log.info("Telemetry initialized (local=%s)", _otel_local)
+            except ModuleNotFoundError as exc:
+                log.warning(
+                    "Telemetry requested but dependency missing (%s); continuing without OTEL",
+                    exc,
+                )
+            except Exception:
+                log.exception("Telemetry initialization failed; continuing without OTEL")
+
         if settings.db_configured:
             await asyncio.to_thread(db.open_pool)
             if settings.auto_migrate:
@@ -87,6 +105,16 @@ async def _request_logging(request, call_next):
     elapsed_ms = (time.perf_counter() - start) * 1000
     status = response.status_code
     level = logging.INFO if status < 500 else logging.ERROR
+    if elapsed_ms >= _slow_request_ms:
+        log.warning(
+            "slow request request_id=%s method=%s path=%s status=%s elapsed_ms=%.1f threshold_ms=%.1f",
+            request_id,
+            request.method,
+            request.url.path,
+            status,
+            elapsed_ms,
+            _slow_request_ms,
+        )
     log.log(
         level,
         "request completed request_id=%s method=%s path=%s status=%s elapsed_ms=%.1f",

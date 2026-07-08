@@ -36,4 +36,9 @@
         "editor.defaultFormatter": "charliermarsh.ruff",
         "editor.formatOnSave": true,
     },
+
+    // Covasant Partyline extension
+    "partyline.url": "https://mcp-covasant-partyline-7405607474919121.1.azure.databricksapps.com",
+    "partyline.agentId": "alan_partyline_1",
+    "partyline.notifyBroadcast": true,
 }

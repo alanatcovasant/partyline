@@ -89,6 +89,140 @@ export class ClaimsProvider implements vscode.TreeDataProvider<PartylineClaim> {
   }
 }
 
+// --- Metrics Tree ---
+
+interface MetricItem {
+  label: string;
+  value: string;
+  icon: string;
+}
+
+export class MetricsProvider implements vscode.TreeDataProvider<MetricItem> {
+  private _onDidChange = new vscode.EventEmitter<void>();
+  readonly onDidChangeTreeData = this._onDidChange.event;
+
+  private arrivals: number[] = [];  // timestamps of message arrivals
+  private latencies: number[] = []; // ms from created_at to local receipt
+  private connectedSince: number | undefined;
+  private totalMessages = 0;
+  private lastMessageAt: number | undefined;
+  private agentCount = 0;
+  private claimCount = 0;
+  private refreshTimer: NodeJS.Timeout | undefined;
+
+  start() {
+    this.connectedSince = Date.now();
+    // Refresh the view every 2 seconds for live counters
+    this.refreshTimer = setInterval(() => this._onDidChange.fire(), 2000);
+  }
+
+  stop() {
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = undefined;
+    }
+    this.connectedSince = undefined;
+    this._onDidChange.fire();
+  }
+
+  recordMessage(msg: { created_at: string }) {
+    const now = Date.now();
+    this.arrivals.push(now);
+    this.totalMessages++;
+    this.lastMessageAt = now;
+
+    // Calculate SSE delivery latency
+    const created = new Date(msg.created_at).getTime();
+    if (!isNaN(created)) {
+      const latency = now - created;
+      if (latency >= 0 && latency < 60_000) { // ignore clock-skew outliers
+        this.latencies.push(latency);
+        if (this.latencies.length > 100) { this.latencies.shift(); }
+      }
+    }
+
+    // Keep only last 5 minutes of arrivals for rate calculation
+    const cutoff = now - 5 * 60_000;
+    this.arrivals = this.arrivals.filter(t => t > cutoff);
+
+    this._onDidChange.fire();
+  }
+
+  updateAgentCount(count: number) {
+    this.agentCount = count;
+    this._onDidChange.fire();
+  }
+
+  updateClaimCount(count: number) {
+    this.claimCount = count;
+    this._onDidChange.fire();
+  }
+
+  getTreeItem(item: MetricItem): vscode.TreeItem {
+    const treeItem = new vscode.TreeItem(
+      `${item.icon} ${item.label}`,
+      vscode.TreeItemCollapsibleState.None
+    );
+    treeItem.description = item.value;
+    return treeItem;
+  }
+
+  getChildren(): MetricItem[] {
+    if (!this.connectedSince) {
+      return [{ label: "Status", value: "Disconnected", icon: "⚫" }];
+    }
+
+    const now = Date.now();
+    const uptimeSec = Math.floor((now - this.connectedSince) / 1000);
+    const uptime = formatDuration(uptimeSec);
+
+    // Messages per minute (over last 5 min window)
+    const windowMs = Math.min(now - this.connectedSince, 5 * 60_000);
+    const rate = windowMs > 0
+      ? (this.arrivals.length / (windowMs / 60_000)).toFixed(1)
+      : "0.0";
+
+    // Average SSE latency
+    const avgLatency = this.latencies.length > 0
+      ? Math.round(this.latencies.reduce((a, b) => a + b, 0) / this.latencies.length)
+      : null;
+
+    // P95 latency
+    const p95Latency = this.latencies.length >= 5
+      ? Math.round(sorted(this.latencies)[Math.floor(this.latencies.length * 0.95)])
+      : null;
+
+    const lastAgo = this.lastMessageAt
+      ? formatDuration(Math.floor((now - this.lastMessageAt) / 1000)) + " ago"
+      : "—";
+
+    const items: MetricItem[] = [
+      { label: "Uptime", value: uptime, icon: "⏱️" },
+      { label: "Total messages", value: String(this.totalMessages), icon: "📨" },
+      { label: "Rate", value: `${rate} msg/min`, icon: "📈" },
+      { label: "Last message", value: lastAgo, icon: "🕐" },
+      { label: "Avg latency", value: avgLatency !== null ? `${avgLatency}ms` : "—", icon: "⚡" },
+      { label: "P95 latency", value: p95Latency !== null ? `${p95Latency}ms` : "—", icon: "🔥" },
+      { label: "Active agents", value: String(this.agentCount), icon: "👥" },
+      { label: "Active claims", value: String(this.claimCount), icon: "🔒" },
+    ];
+
+    return items;
+  }
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) { return `${seconds}s`; }
+  if (seconds < 3600) { return `${Math.floor(seconds / 60)}m ${seconds % 60}s`; }
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}h ${m}m`;
+}
+
+function sorted(arr: number[]): number[] {
+  return [...arr].sort((a, b) => a - b);
+}
+
 // --- Helpers ---
 
 function typeIcon(type: string): string {

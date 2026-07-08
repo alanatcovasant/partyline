@@ -25,7 +25,17 @@
         "partyline.token": {
           "type": "string",
           "default": "",
-          "description": "Bearer token for authentication (leave empty to use PARTYLINE_TOKEN env var)"
+          "description": "Bearer token for authentication (leave empty to auto-acquire from Databricks CLI)"
+        },
+        "partyline.databricksProfile": {
+          "type": "string",
+          "default": "dev-eastus2",
+          "description": "Databricks CLI profile to use for auto-token acquisition"
+        },
+        "partyline.notifyBroadcast": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notifications for broadcast messages (not just messages addressed to you)"
         }
       }
     },
@@ -42,7 +52,8 @@
       "partyline": [
         { "id": "partyline.messages", "name": "Messages" },
         { "id": "partyline.agents", "name": "Active Agents" },
-        { "id": "partyline.claims", "name": "Active Claims" }
+        { "id": "partyline.claims", "name": "Active Claims" },
+        { "id": "partyline.metrics", "name": "Live Metrics" }
       ]
     },
     "commands": [
