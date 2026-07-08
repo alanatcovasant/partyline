@@ -89,6 +89,7 @@ class _Remote:
         self._stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
         self._lock = asyncio.Lock()
+        self.instructions: str | None = None  # server how-to, captured at initialize()
 
     async def _connect(self) -> ClientSession:
         await self.close()
@@ -98,7 +99,10 @@ class _Remote:
             streamablehttp_client(self._url, headers=headers)
         )
         session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
+        init = await session.initialize()
+        # Capture the upstream server's how-to text so the proxy can advertise it to the
+        # agent's MCP client (FR: teach any client how to use the line, no skill needed).
+        self.instructions = getattr(init, "instructions", None) or self.instructions
         self._stack, self._session = stack, session
         return session
 
@@ -125,8 +129,10 @@ class _Remote:
 async def _serve(cfg: Config, mcp_url: str) -> None:
     remote = _Remote(cfg, mcp_url)
     # Connect eagerly so misconfiguration fails at startup, not at the first tool call.
+    # This also populates remote.instructions from the upstream initialize().
     await remote.call(lambda s: s.list_tools())
-    proxy = Server("covasant-partyline-bridge")
+    # Forward the upstream server's instructions so the agent's client sees the how-to.
+    proxy = Server("covasant-partyline-bridge", instructions=remote.instructions)
 
     @proxy.list_tools()
     async def list_tools():
@@ -137,6 +143,14 @@ async def _serve(cfg: Config, mcp_url: str) -> None:
         result = await remote.call(lambda s: s.call_tool(name, arguments))
         # Forward content plus any structured payload the tool returned.
         return result.content, getattr(result, "structuredContent", None)
+
+    @proxy.list_prompts()
+    async def list_prompts():
+        return (await remote.call(lambda s: s.list_prompts())).prompts
+
+    @proxy.get_prompt()
+    async def get_prompt(name: str, arguments: dict | None = None):
+        return await remote.call(lambda s: s.get_prompt(name, arguments))
 
     opts = proxy.create_initialization_options()
     try:

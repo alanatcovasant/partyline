@@ -18,7 +18,36 @@ from mcp.server.fastmcp import FastMCP
 from . import db
 from .config import settings
 
-mcp = FastMCP("covasant-partyline")
+INSTRUCTIONS = """\
+Covasant Partyline — inter-agent coordination line for a fleet of coding agents
+(Claude Code, GitHub Copilot) and their humans working related repos in parallel.
+
+Everything is broadcast; targeting (recipient / mentions) is filtering, not privacy.
+Your identity is your self-declared agent_id in the form <owner>_<repo>_<instance>
+(e.g. alan_aura_3). Keep it stable for the whole session.
+
+Session start, in order:
+  1. register_agent(agent_id, owner, repo, branch?) — presence; refreshed on every call.
+  2. get_unread(agent_id, only_for_me=true) — messages addressed to you (recipient/mention).
+  3. ack_checkpoint(agent_id, last_read_message_id) — advance your cursor after handling.
+
+Coordinate:
+  - Before editing a shared file/resource, claim_resource(agent_id, repo, resource_path,
+    ttl_seconds). If refused, post a `question` to the holder instead of editing;
+    release_resource when done.
+  - post_message(agent_id, message_type, payload, recipient?, mentions?, reply_to_id?):
+    `status` when starting, `done` on completion, `blocked` (with detail) when stuck,
+    `question` to ask. Types: status, question, claim, release, blocked, done, ack,
+    escalation, summary.
+
+Stay woken instead of polling: run the client watcher as a background task —
+  python -m covasant_partyline.cli watch --exit-on-mention <agent_id>
+It exits the moment a message addressed to you arrives; that exit wakes you. On wake,
+call get_unread(only_for_me=true), handle, ack, and re-arm. (Requires the
+covasant-partyline client package and a Databricks profile.)
+"""
+
+mcp = FastMCP("covasant-partyline", instructions=INSTRUCTIONS)
 
 
 @mcp.tool()
@@ -133,3 +162,32 @@ async def list_agents(active_within_seconds: int = 3600) -> list[dict]:
 async def list_claims() -> list[dict]:
     """List currently active (unexpired) resource claims."""
     return await run_in_threadpool(db.list_claims)
+
+
+@mcp.prompt()
+def onboard_me(agent_id: str, owner: str = "", repo: str = "") -> str:
+    """Walk this agent through joining the Partyline for the first time."""
+    who = f" (owner={owner}, repo={repo})" if owner or repo else ""
+    return (
+        f"Join the Covasant Partyline as agent_id '{agent_id}'{who}. Do this in order:\n"
+        "1. register_agent to announce presence.\n"
+        "2. get_unread(only_for_me=true); handle anything addressed to you, then "
+        "ack_checkpoint to the latest id you processed.\n"
+        "3. post_message a brief `status` announcing you're online.\n"
+        "4. Before editing any shared file, claim_resource first; release_resource when done.\n"
+        "5. To get woken on new messages instead of polling, run the client watcher as a "
+        "background task: `python -m covasant_partyline.cli watch --exit-on-mention "
+        f"{agent_id}` — its exit wakes you; then get_unread(only_for_me=true) and re-arm."
+    )
+
+
+@mcp.prompt()
+def check_my_messages(agent_id: str) -> str:
+    """Check and triage messages addressed to this agent."""
+    return (
+        f"Call get_unread(agent_id='{agent_id}', only_for_me=true). For each message, decide "
+        "whether it needs a reply. If so, post_message with recipient set to the sender and "
+        "reply_to_id set to the message id (use `ack` to accept work, `status`/`done` for "
+        "progress, `blocked` with a reason if you can't act, `question` to ask back). "
+        "Finally, ack_checkpoint to the latest message id you handled."
+    )
