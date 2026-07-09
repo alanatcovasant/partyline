@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 import time
 from contextlib import AsyncExitStack
@@ -38,14 +39,17 @@ from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    stream=sys.stderr,
+)
+log = logging.getLogger("partyline.bridge")
+
 # Diagnostics thresholds (seconds)
 _LOCK_WARN_SECS = 5.0
 _CALL_WARN_SECS = 10.0
 _CALL_TIMEOUT_SECS = 120.0
-
-
-def _log(msg: str) -> None:
-    print(f"partyline bridge: {msg}", file=sys.stderr, flush=True)
 
 
 def _auth_headers(cfg: Config) -> dict[str, str]:
@@ -102,11 +106,12 @@ class _Remote:
         self.instructions: str | None = None  # server how-to, captured at initialize()
 
     async def _connect(self) -> ClientSession:
-        _log("connecting...")
+        log.info("Connecting to %s ...", self._url)
         t0 = time.monotonic()
         await self.close()
         stack = AsyncExitStack()
         headers = _auth_headers(self._cfg)  # fresh token every (re)connect
+        log.debug("Auth headers resolved (auth_type=%s)", getattr(self._cfg, "auth_type", "unknown"))
         read, write, _ = await stack.enter_async_context(streamablehttp_client(self._url, headers=headers))
         session = await stack.enter_async_context(ClientSession(read, write))
         init = await session.initialize()
@@ -115,7 +120,7 @@ class _Remote:
         self.instructions = getattr(init, "instructions", None) or self.instructions
         self._stack, self._session = stack, session
         elapsed = time.monotonic() - t0
-        _log(f"connected in {elapsed:.2f}s")
+        log.info("Connected in %.2fs", elapsed)
         return session
 
     async def close(self) -> None:
@@ -123,22 +128,25 @@ class _Remote:
             try:
                 await self._stack.aclose()
             except Exception:
-                pass
+                log.warning("Error closing remote session", exc_info=True)
         self._stack = self._session = None
 
     async def call(self, op, label: str = "?"):
         """Run ``op(session)``, reconnecting with fresh credentials on failure."""
+        log.debug("[%s] acquiring lock ...", label)
         t_wait = time.monotonic()
         lock_acquired = False
         try:
             lock_acquired = await asyncio.wait_for(self._lock.acquire(), timeout=_LOCK_WARN_SECS)
         except asyncio.TimeoutError:
-            _log(f"[{label}] waiting for lock ({_LOCK_WARN_SECS:.0f}s elapsed, another call in progress)")
+            log.warning("[%s] lock contention — waited %.0fs, another call in progress", label, _LOCK_WARN_SECS)
             await self._lock.acquire()
             lock_acquired = True
         lock_wait = time.monotonic() - t_wait
         if lock_wait > _LOCK_WARN_SECS:
-            _log(f"[{label}] lock acquired after {lock_wait:.2f}s")
+            log.warning("[%s] lock acquired after %.2fs", label, lock_wait)
+        else:
+            log.debug("[%s] lock acquired in %.3fs", label, lock_wait)
 
         t0 = time.monotonic()
         try:
@@ -147,19 +155,21 @@ class _Remote:
                 result = await asyncio.wait_for(op(session), timeout=_CALL_TIMEOUT_SECS)
             except asyncio.TimeoutError:
                 elapsed = time.monotonic() - t0
-                _log(f"[{label}] TIMEOUT after {elapsed:.1f}s — forcing reconnect")
+                log.error(
+                    "[%s] TIMEOUT after %.1fs (limit=%.0fs) — forcing reconnect", label, elapsed, _CALL_TIMEOUT_SECS
+                )
                 self._session = None
-                raise
-            except asyncio.TimeoutError:
                 raise
             except Exception as exc:
                 elapsed = time.monotonic() - t0
-                _log(f"[{label}] error after {elapsed:.2f}s ({type(exc).__name__}: {exc}) — reconnecting")
+                log.warning("[%s] error after %.2fs (%s: %s) — reconnecting", label, elapsed, type(exc).__name__, exc)
                 session = await self._connect()
                 result = await asyncio.wait_for(op(session), timeout=_CALL_TIMEOUT_SECS)
             elapsed = time.monotonic() - t0
             if elapsed > _CALL_WARN_SECS:
-                _log(f"[{label}] slow call: {elapsed:.2f}s")
+                log.warning("[%s] slow call: %.2fs", label, elapsed)
+            else:
+                log.debug("[%s] completed in %.2fs", label, elapsed)
             return result
         finally:
             if lock_acquired:
@@ -180,9 +190,9 @@ async def _serve(cfg: Config, mcp_url: str) -> None:
 
     @proxy.call_tool()
     async def call_tool(name: str, arguments: dict):
-        _log(f"-> call_tool({name})")
+        log.info("-> call_tool(%s) args=%s", name, list(arguments.keys()) if arguments else [])
         result = await remote.call(lambda s: s.call_tool(name, arguments), label=f"call_tool/{name}")
-        _log(f"<- call_tool({name}) OK")
+        log.info("<- call_tool(%s) OK", name)
         # Forward content plus any structured payload the tool returned.
         return result.content, getattr(result, "structuredContent", None)
 
@@ -210,9 +220,10 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
 
     cfg = Config(host=args.host) if args.host else Config()
+    log.info("Auth type: %s", getattr(cfg, "auth_type", "unknown"))
     _auth_headers(cfg)  # fail fast on PAT/missing credentials before serving
     mcp_url = _resolve_mcp_url(cfg, args.url, args.app_name)
-    print(f"partyline bridge -> {mcp_url}", file=sys.stderr)
+    log.info("Bridge starting -> %s", mcp_url)
     asyncio.run(_serve(cfg, mcp_url))
 
 

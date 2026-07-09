@@ -11,12 +11,16 @@ calls to resolve an author (as the REST layer does) is a follow-up.
 
 from __future__ import annotations
 
+import logging
+
 from starlette.concurrency import run_in_threadpool
 
 from mcp.server.fastmcp import FastMCP
 
 from . import db
 from .config import settings
+
+log = logging.getLogger("partyline.mcp")
 
 INSTRUCTIONS = """\
 Covasant Partyline — inter-agent coordination line for a fleet of coding agents
@@ -62,9 +66,10 @@ async def register_agent(
 
     agent_id is a unique instance name (e.g. 'alan_aura_3'); owner is the developer/team.
     """
-    return await run_in_threadpool(
-        db.register_agent, agent_id, owner, repo, branch, display_name
-    )
+    log.info("register_agent agent_id=%s owner=%s repo=%s branch=%s", agent_id, owner, repo, branch)
+    result = await run_in_threadpool(db.register_agent, agent_id, owner, repo, branch, display_name)
+    log.info("register_agent OK agent_id=%s", agent_id)
+    return result
 
 
 @mcp.tool()
@@ -87,10 +92,31 @@ async def post_message(
     escalation, summary. recipient is the primary addressee ("To:") but the message is
     still broadcast to the whole line. payload is freeform text; metadata is an opaque bag.
     """
-    return await run_in_threadpool(
-        db.post_message, agent_id, message_type, recipient, repo, branch, resource_path,
-        issue_ref, payload, metadata or {}, mentions or [], reply_to_id, None,
+    log.info(
+        "post_message agent_id=%s type=%s recipient=%s mentions=%s repo=%s",
+        agent_id,
+        message_type,
+        recipient,
+        mentions,
+        repo,
     )
+    result = await run_in_threadpool(
+        db.post_message,
+        agent_id,
+        message_type,
+        recipient,
+        repo,
+        branch,
+        resource_path,
+        issue_ref,
+        payload,
+        metadata or {},
+        mentions or [],
+        reply_to_id,
+        None,
+    )
+    log.info("post_message OK id=%s agent_id=%s", result.get("id"), agent_id)
+    return result
 
 
 @mcp.tool()
@@ -100,22 +126,29 @@ async def get_unread(agent_id: str, limit: int = 500, only_for_me: bool = False)
     Set only_for_me=True to restrict to messages where this agent is the recipient or is
     mentioned, filtering out ambient broadcast chatter.
     """
+    log.info("get_unread agent_id=%s only_for_me=%s limit=%s", agent_id, only_for_me, limit)
     after = await run_in_threadpool(db.get_checkpoint, agent_id)
-    return await run_in_threadpool(
-        db.get_since, after, limit, agent_id if only_for_me else None
-    )
+    rows = await run_in_threadpool(db.get_since, after, limit, agent_id if only_for_me else None)
+    log.info("get_unread OK agent_id=%s checkpoint=%s returned=%s", agent_id, after, len(rows))
+    return rows
 
 
 @mcp.tool()
 async def get_since(after_id: int, limit: int = 500) -> list[dict]:
     """Return messages with id greater than after_id (replay/orientation)."""
-    return await run_in_threadpool(db.get_since, after_id, limit)
+    log.info("get_since after_id=%s limit=%s", after_id, limit)
+    rows = await run_in_threadpool(db.get_since, after_id, limit)
+    log.info("get_since OK returned=%s", len(rows))
+    return rows
 
 
 @mcp.tool()
 async def ack_checkpoint(agent_id: str, last_read_message_id: int) -> dict:
     """Persist/advance this agent's read cursor."""
-    return await run_in_threadpool(db.ack_checkpoint, agent_id, last_read_message_id)
+    log.info("ack_checkpoint agent_id=%s last_read_message_id=%s", agent_id, last_read_message_id)
+    result = await run_in_threadpool(db.ack_checkpoint, agent_id, last_read_message_id)
+    log.info("ack_checkpoint OK agent_id=%s", agent_id)
+    return result
 
 
 @mcp.tool()
@@ -134,34 +167,47 @@ async def claim_resource(
     Returns {acquired: bool, claim: {...}}. On failure, claim is the current holder.
     """
     ttl = ttl_seconds or settings.default_claim_ttl_seconds
+    log.info("claim_resource agent_id=%s repo=%s resource=%s ttl=%s", agent_id, repo, resource_path, ttl)
     acquired, claim = await run_in_threadpool(
-        db.claim_resource, agent_id, repo, branch, resource_path,
-        resource_type, claim_scope, reason, ttl,
+        db.claim_resource,
+        agent_id,
+        repo,
+        branch,
+        resource_path,
+        resource_type,
+        claim_scope,
+        reason,
+        ttl,
     )
+    log.info("claim_resource agent_id=%s resource=%s acquired=%s", agent_id, resource_path, acquired)
     return {"acquired": acquired, "claim": claim}
 
 
 @mcp.tool()
-async def release_resource(
-    agent_id: str, repo: str, resource_path: str, branch: str | None = None
-) -> dict:
+async def release_resource(agent_id: str, repo: str, resource_path: str, branch: str | None = None) -> dict:
     """Release a resource claim held by this agent."""
-    released = await run_in_threadpool(
-        db.release_resource, agent_id, repo, branch, resource_path
-    )
+    log.info("release_resource agent_id=%s repo=%s resource=%s", agent_id, repo, resource_path)
+    released = await run_in_threadpool(db.release_resource, agent_id, repo, branch, resource_path)
+    log.info("release_resource agent_id=%s released=%s", agent_id, released)
     return {"released": released}
 
 
 @mcp.tool()
 async def list_agents(active_within_seconds: int = 3600) -> list[dict]:
     """List agents seen recently (presence)."""
-    return await run_in_threadpool(db.list_agents, active_within_seconds)
+    log.info("list_agents active_within_seconds=%s", active_within_seconds)
+    rows = await run_in_threadpool(db.list_agents, active_within_seconds)
+    log.info("list_agents OK returned=%s", len(rows))
+    return rows
 
 
 @mcp.tool()
 async def list_claims() -> list[dict]:
     """List currently active (unexpired) resource claims."""
-    return await run_in_threadpool(db.list_claims)
+    log.info("list_claims")
+    rows = await run_in_threadpool(db.list_claims)
+    log.info("list_claims OK returned=%s", len(rows))
+    return rows
 
 
 @mcp.prompt()

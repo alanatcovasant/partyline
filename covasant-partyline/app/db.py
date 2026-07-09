@@ -51,7 +51,9 @@ def _mint_token() -> str:
     database credential from ``postgres.generate_database_credential``, scoped to the
     autoscale endpoint.
     """
+    log.debug("Minting Lakebase OAuth credential for endpoint=%s", settings.endpoint_name)
     cred = _ws().postgres.generate_database_credential(endpoint=settings.endpoint_name)
+    log.debug("Lakebase credential minted successfully")
     return cred.token
 
 
@@ -99,12 +101,16 @@ def get_pool() -> ConnectionPool:
 
 
 def open_pool() -> None:
+    log.info("Opening connection pool (host=%s db=%s) ...", settings.pg_host, settings.pg_database)
     get_pool().open(wait=True, timeout=30.0)
+    log.info("Connection pool open")
 
 
 def close_pool() -> None:
+    log.info("Closing connection pool")
     if _pool is not None:
         _pool.close()
+    log.info("Connection pool closed")
 
 
 # --------------------------------------------------------------------------- #
@@ -326,6 +332,7 @@ def post_message(
     ``recipient`` is the primary addressee ("To:"); the message is still broadcast to the
     whole line — recipient/mentions are for targeting and filtering, not privacy.
     """
+    log.info("post_message agent_id=%s type=%s recipient=%s repo=%s", agent_id, message_type, recipient, repo)
     with get_pool().connection() as conn:
         row = conn.execute(
             f"""INSERT INTO messages
@@ -366,6 +373,7 @@ def post_message(
             ),
         )
         conn.commit()
+    log.info("post_message OK id=%s agent_id=%s", row["id"], agent_id)
     return row
 
 
@@ -375,6 +383,7 @@ def get_since(after_id: int, limit: int = 500, for_agent: str | None = None) -> 
     If ``for_agent`` is given, restrict to messages addressed to that agent — i.e. it is
     the recipient or is mentioned ("for me" filter).
     """
+    log.debug("get_since after_id=%s limit=%s for_agent=%s", after_id, limit, for_agent)
     where = "id > %s"
     params: list = [after_id]
     if for_agent is not None:
@@ -394,6 +403,7 @@ def get_since(after_id: int, limit: int = 500, for_agent: str | None = None) -> 
 
 
 def get_checkpoint(agent_id: str) -> int:
+    log.debug("get_checkpoint agent_id=%s", agent_id)
     with get_pool().connection() as conn:
         row = conn.execute(
             "SELECT last_read_message_id FROM checkpoints WHERE agent_id = %s",
@@ -404,6 +414,7 @@ def get_checkpoint(agent_id: str) -> int:
 
 def ack_checkpoint(agent_id: str, last_read_message_id: int) -> dict:
     """Advance (monotonically) a per-agent checkpoint (FR4)."""
+    log.info("ack_checkpoint agent_id=%s last_read_message_id=%s", agent_id, last_read_message_id)
     with get_pool().connection() as conn:
         row = conn.execute(
             """INSERT INTO checkpoints (agent_id, last_read_message_id, updated_at)
@@ -444,6 +455,14 @@ def claim_resource(
     cannot be stolen, while an expired claim or the agent's own claim is (re)acquired.
     Two agents racing cannot both win. The holder is registered (FK to agents).
     """
+    log.info(
+        "claim_resource agent_id=%s repo=%s branch=%s resource=%s ttl=%s",
+        agent_id,
+        repo,
+        branch,
+        resource_path,
+        ttl_seconds,
+    )
     with get_pool().connection() as conn:
         row = conn.execute(
             f"""INSERT INTO claims
@@ -466,6 +485,7 @@ def claim_resource(
         _heartbeat(conn, agent_id)
         conn.commit()
         if row:
+            log.info("claim_resource ACQUIRED agent_id=%s resource=%s", agent_id, resource_path)
             return True, row
         holder = conn.execute(
             f"""SELECT {_CLAIM_COLS} FROM claims
@@ -473,11 +493,18 @@ def claim_resource(
                   AND resource_path = %s""",
             (repo, branch, resource_path),
         ).fetchone()
+    log.info(
+        "claim_resource REFUSED agent_id=%s resource=%s holder=%s",
+        agent_id,
+        resource_path,
+        holder.get("agent_id") if holder else "?",
+    )
     return False, holder
 
 
 def release_resource(agent_id: str, repo: str, branch: str | None, resource_path: str) -> bool:
     """Release a claim, only if held by the caller (FR6). Returns True if released."""
+    log.info("release_resource agent_id=%s repo=%s resource=%s", agent_id, repo, resource_path)
     with get_pool().connection() as conn:
         row = conn.execute(
             """DELETE FROM claims
@@ -487,10 +514,13 @@ def release_resource(agent_id: str, repo: str, branch: str | None, resource_path
             (repo, branch, resource_path, agent_id),
         ).fetchone()
         conn.commit()
-    return row is not None
+    released = row is not None
+    log.info("release_resource agent_id=%s resource=%s released=%s", agent_id, resource_path, released)
+    return released
 
 
 def list_claims() -> list[dict]:
+    log.debug("list_claims")
     with get_pool().connection() as conn:
         return conn.execute(
             f"SELECT {_CLAIM_COLS} FROM claims WHERE expires_at > now() ORDER BY repo, resource_path"
@@ -499,6 +529,7 @@ def list_claims() -> list[dict]:
 
 def get_metrics() -> dict:
     """Compute real-time partyline metrics from the database."""
+    log.debug("get_metrics")
     with get_pool().connection() as conn:
         row = conn.execute("""
             SELECT

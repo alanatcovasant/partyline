@@ -53,7 +53,14 @@ type Diagnostics = {
     is_active: boolean;
   }>;
 };
-type Health = { status: string; db_configured: boolean; version?: string };
+type Health = {
+  status: string;
+  db_configured: boolean;
+  version?: string;
+  build_timestamp?: string;
+  git_commit?: string;
+  build_host?: string;
+};
 
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url);
@@ -269,6 +276,12 @@ export function App() {
             <dl className="metrics">
               <dt>App version</dt>
               <dd>{health?.version ? `v${health.version}` : "—"}</dd>
+              <dt>Build</dt>
+              <dd className="mono">
+                {health?.git_commit && health.git_commit !== "unknown"
+                  ? <>{health.git_commit}{health.build_timestamp && health.build_timestamp !== "dev" ? ` (${health.build_timestamp})` : ""}</>
+                  : "dev"}
+              </dd>
               <dt>Stream</dt>
               <dd>
                 <span className={connected ? "dot on" : "dot off"} />{" "}

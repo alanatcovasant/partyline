@@ -23,7 +23,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from starlette.staticfiles import StaticFiles
 
-from . import __version__, db
+from . import __build_timestamp__, __git_commit__, __version__, db
 from .config import settings
 from .mcp_server import mcp
 from .notify import hub
@@ -69,7 +69,13 @@ async def lifespan(_: FastAPI):
             if settings.auto_migrate:
                 await asyncio.to_thread(db.init_schema)
             hub.start()
-            log.info("Partyline ready (db=%s).", settings.pg_host)
+            log.info(
+                "Partyline ready (version=%s build=%s commit=%s db=%s).",
+                __version__,
+                __build_timestamp__,
+                __git_commit__,
+                settings.pg_host,
+            )
         else:
             log.warning("DB not configured; serving health/UI only. Set PG*/ENDPOINT_NAME.")
         try:
