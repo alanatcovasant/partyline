@@ -7,6 +7,7 @@ import { PartylineResponder } from "./responder";
 let client: PartylineClient | undefined;
 let responder: PartylineResponder | undefined;
 let diagnosticsProvider: DiagnosticsProvider;
+let extVersion = "?";
 let statusBarItem: vscode.StatusBarItem;
 let pendingMessages: PartylineMessage[] = [];
 let diagnosticsChannel: vscode.OutputChannel;
@@ -44,6 +45,7 @@ async function getDatabricksToken(profile?: string): Promise<string> {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  extVersion = (context.extension?.packageJSON?.version as string) || "?";
   diagnosticsChannel = vscode.window.createOutputChannel("Partyline Diagnostics");
   context.subscriptions.push(diagnosticsChannel);
 
@@ -87,7 +89,8 @@ export function activate(context: vscode.ExtensionContext) {
         client.markAllRead();
         updateStatusBar(0);
       }
-    })
+    }),
+    vscode.commands.registerCommand("partyline.copyDiagnostics", () => copyDiagnostics())
   );
 
   // Register MCP server for any LM in VS Code (Copilot, Claude, etc.)
@@ -197,6 +200,16 @@ async function connect(
       // Queue for LM tool consumption
       pendingMessages.push(msg);
 
+      // Auto-open in Copilot chat (opt-in) — drives the Copilot agent with no manual
+      // click. Only for messages actually addressed to us (never broadcasts), and once
+      // per message. Off by default because it steals editor focus / starts a chat turn.
+      const autoOpenChat = vscode.workspace
+        .getConfiguration("partyline")
+        .get<boolean>("autoOpenChat", false);
+      if (isForMe && autoOpenChat) {
+        openInChat(msg);
+      }
+
       // Human notification
       vscode.window
         .showInformationMessage(
@@ -208,15 +221,7 @@ async function connect(
           if (action === "View") {
             vscode.commands.executeCommand("partyline.messages.focus");
           } else if (action === "Send to Chat") {
-            // Open chat with the message content pre-filled
-            const prompt = `A Partyline message just arrived for you:\n\n` +
-              `**From:** ${msg.agent_id}\n` +
-              `**Type:** ${msg.message_type}\n` +
-              (msg.repo ? `**Repo:** ${msg.repo}\n` : "") +
-              (msg.resource_path ? `**Resource:** ${msg.resource_path}\n` : "") +
-              `**Message:** ${msg.payload || "(no payload)"}\n\n` +
-              `Please respond appropriately using Partyline tools (post_message, claim_resource, etc).`;
-            vscode.commands.executeCommand("workbench.action.chat.open", { query: prompt });
+            openInChat(msg);
           }
         });
     }
@@ -400,8 +405,89 @@ function registerChatParticipant(context: vscode.ExtensionContext) {
   context.subscriptions.push(participant);
 }
 
+async function copyDiagnostics() {
+  const cfg = vscode.workspace.getConfiguration("partyline");
+  const snap = diagnosticsProvider.snapshot();
+
+  // Live language-model probe — the single most useful signal for "why did the
+  // responder error?" (Copilot not signed in / no model / consent not granted).
+  let lmInfo: string;
+  try {
+    const models = await vscode.lm.selectChatModels({ vendor: "copilot" });
+    lmInfo = models.length
+      ? models.map((m) => `${m.vendor}/${m.family} id=${m.id} maxInput=${m.maxInputTokens}`).join("; ")
+      : "NONE available (no Copilot models — is Copilot signed in / enabled?)";
+  } catch (e) {
+    const err = e as Error & { code?: string };
+    lmInfo = `probe FAILED: ${err.name} code=${err.code ?? "?"} — ${err.message}`;
+  }
+
+  const age = (ms?: number) =>
+    ms ? `${Math.floor((Date.now() - ms) / 1000)}s ago (${new Date(ms).toISOString()})` : "—";
+
+  const lines = [
+    "# Partyline Diagnostics",
+    `Generated: ${new Date().toISOString()}`,
+    "",
+    "## Environment",
+    `- Extension version: ${extVersion}`,
+    `- VS Code: ${vscode.version}`,
+    `- Platform: ${process.platform}`,
+    `- Connected client: ${client ? "yes" : "no"}`,
+    "",
+    "## Config",
+    `- url set: ${cfg.get<string>("url") ? "yes" : "NO"}`,
+    `- agentId: ${cfg.get<string>("agentId") || "(unset)"}`,
+    `- databricksProfile: ${cfg.get<string>("databricksProfile") || "(default)"}`,
+    `- autoRespond: ${cfg.get<boolean>("autoRespond", false)}`,
+    `- notifyBroadcast: ${cfg.get<boolean>("notifyBroadcast", false)}`,
+    `- token source: ${snap.token}`,
+    "",
+    "## Connection",
+    `- state: ${snap.connection}`,
+    `- last message: ${age(snap.lastMessageAt)}`,
+    `- active agents: ${snap.agents}`,
+    `- active claims: ${snap.claims}`,
+    `- errors (session): ${snap.errorCount}`,
+    "",
+    "## Language model (live probe)",
+    `- ${lmInfo}`,
+    "",
+    "## Responder",
+    `- autoRespond enabled: ${cfg.get<boolean>("autoRespond", false)}`,
+    `- last status: ${snap.responder}`,
+    "",
+    `## Recent events (most recent first — ${snap.events.length})`,
+    ...(snap.events.length
+      ? snap.events.map((e) => `- [${new Date(e.time).toISOString()}] ${e.kind}: ${e.message}`)
+      : ["- (none)"]),
+    "",
+    "## Notes",
+    '- Full unabridged log: Output panel → "Partyline Diagnostics".',
+  ];
+  const text = lines.join("\n");
+  await vscode.env.clipboard.writeText(text);
+  const doc = await vscode.workspace.openTextDocument({ content: text, language: "markdown" });
+  await vscode.window.showTextDocument(doc, { preview: false });
+  vscode.window.showInformationMessage("Partyline diagnostics copied to clipboard.");
+}
+
 export function deactivate() {
   disconnect();
+}
+
+function openInChat(msg: PartylineMessage) {
+  const prompt =
+    `A Partyline message just arrived for you:\n\n` +
+    `**From:** ${msg.agent_id}\n` +
+    `**Type:** ${msg.message_type}\n` +
+    (msg.repo ? `**Repo:** ${msg.repo}\n` : "") +
+    (msg.resource_path ? `**Resource:** ${msg.resource_path}\n` : "") +
+    `**Message:** ${msg.payload || "(no payload)"}\n\n` +
+    `Please respond appropriately using Partyline tools (post_message, claim_resource, etc).`;
+  // Open Copilot chat in agent mode with the message as the query. Best-effort: whether
+  // this auto-submits the turn or just prefills depends on the VS Code chat version.
+  vscode.commands.executeCommand("workbench.action.chat.open", { query: prompt, mode: "agent" });
 }
 
 function handleDiagnosticEvent(event: PartylineDiagnosticEvent) {
