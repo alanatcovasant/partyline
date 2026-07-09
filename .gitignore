@@ -15,3 +15,5 @@ scratch/**
 !scratch/README.md
 **/explorations/**
 **/!explorations/README.md
+# Per-clone partyline config (agent identity, URL) — never tracked
+.partyline/

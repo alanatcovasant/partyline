@@ -15,12 +15,12 @@
         "partyline.url": {
           "type": "string",
           "default": "",
-          "description": "Partyline server URL (e.g. https://covasant-partyline-<id>.azure.databricksapps.com)"
+          "description": "Partyline server URL. Precedence: PARTYLINE_URL env → .partyline/config.json → this setting."
         },
         "partyline.agentId": {
           "type": "string",
           "default": "",
-          "description": "Your agent ID on the partyline (e.g. alan_aura_3)"
+          "description": "Your agent ID on the partyline. Precedence: PARTYLINE_AGENT_ID env → .partyline/config.json → this setting → derived from folder name."
         },
         "partyline.token": {
           "type": "string",

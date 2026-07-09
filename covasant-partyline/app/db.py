@@ -360,6 +360,9 @@ def post_message(
             ),
         ).fetchone()
         _heartbeat(conn, agent_id)
+        # Postgres NOTIFY has an 8000-byte payload limit; truncate the message
+        # body so we never hit it (the full text is always in the DB row).
+        notify_payload = payload[:7000] if payload and len(payload) > 7000 else payload
         conn.execute(
             "SELECT pg_notify(%s, %s)",
             (
@@ -371,7 +374,12 @@ def post_message(
                         "message_type": message_type,
                         "recipient": recipient,
                         "repo": repo,
+                        "branch": branch,
+                        "resource_path": resource_path,
+                        "payload": notify_payload,
                         "mentions": mentions,
+                        "reply_to_id": reply_to_id,
+                        "created_at": str(row["created_at"]),
                     }
                 ),
             ),

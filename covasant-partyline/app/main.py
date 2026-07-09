@@ -70,15 +70,21 @@ async def lifespan(_: FastAPI):
             log.warning(
                 "DB not configured at startup. Frozen settings: PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r; "
                 "Live env: PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r",
-                settings.pg_host, settings.pg_user, settings.endpoint_name,
-                os.getenv("PGHOST"), os.getenv("PGUSER"), os.getenv("ENDPOINT_NAME"),
+                settings.pg_host,
+                settings.pg_user,
+                settings.endpoint_name,
+                os.getenv("PGHOST"),
+                os.getenv("PGUSER"),
+                os.getenv("ENDPOINT_NAME"),
             )
             for attempt in range(1, 11):
                 log.warning(
                     "DB not configured yet (attempt %d/10); waiting 3s for env injection ... "
                     "PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r",
                     attempt,
-                    os.getenv("PGHOST"), os.getenv("PGUSER"), os.getenv("ENDPOINT_NAME"),
+                    os.getenv("PGHOST"),
+                    os.getenv("PGUSER"),
+                    os.getenv("ENDPOINT_NAME"),
                 )
                 await asyncio.sleep(3)
                 if settings.db_configured:
@@ -107,7 +113,9 @@ async def lifespan(_: FastAPI):
                 "DB not configured after 10 retries (30s). "
                 "PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r local=%r. "
                 "Serving health/UI only.",
-                os.getenv("PGHOST"), os.getenv("PGUSER"), os.getenv("ENDPOINT_NAME"),
+                os.getenv("PGHOST"),
+                os.getenv("PGUSER"),
+                os.getenv("ENDPOINT_NAME"),
                 settings.local,
             )
         try:

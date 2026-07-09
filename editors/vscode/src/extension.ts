@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import { execFile } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
 import { PartylineClient, PartylineDiagnosticEvent, PartylineMessage } from "./client";
 import { MessagesProvider, AgentsProvider, ClaimsProvider, MetricsProvider, DiagnosticsProvider } from "./views";
 import { PartylineResponder } from "./responder";
@@ -14,6 +16,78 @@ let diagnosticsChannel: vscode.OutputChannel;
 let zeroAgentsWarningShown = false;
 let tokenRefreshTimer: NodeJS.Timeout | undefined;
 let activeMetricsProvider: MetricsProvider | undefined;
+
+/** Resolved partyline config with precedence: env → .partyline/config.json → settings.json → derived */
+interface PartylineConfig {
+  url: string;
+  agentId: string;
+  databricksProfile: string;
+  token: string;
+  /** Where agentId was resolved from (for diagnostics) */
+  agentIdSource: string;
+}
+
+/**
+ * Resolve partyline config with precedence:
+ *   1. Environment variables (PARTYLINE_AGENT_ID, PARTYLINE_URL)
+ *   2. .partyline/config.json in workspace root (per-clone, untracked)
+ *   3. VSCode settings.json (partyline.* — legacy/fallback)
+ *   4. Derived defaults (folder name + instance)
+ */
+function resolveConfig(): PartylineConfig {
+  const vsConfig = vscode.workspace.getConfiguration("partyline");
+
+  // --- Read .partyline/config.json if it exists ---
+  let fileConfig: { url?: string; agentId?: string; databricksProfile?: string } = {};
+  const workspaceFolders = vscode.workspace.workspaceFolders;
+  if (workspaceFolders) {
+    for (const folder of workspaceFolders) {
+      const configPath = path.join(folder.uri.fsPath, ".partyline", "config.json");
+      try {
+        const raw = fs.readFileSync(configPath, "utf-8");
+        fileConfig = JSON.parse(raw);
+        break; // use first found
+      } catch {
+        // not present in this folder — try next
+      }
+    }
+  }
+
+  // --- Derive a last-resort agentId from workspace folder name ---
+  const derivedAgentId = workspaceFolders?.[0]
+    ? path.basename(workspaceFolders[0].uri.fsPath).replace(/[^a-zA-Z0-9_-]/g, "_") + "_1"
+    : "";
+
+  // --- Resolve with precedence ---
+  let agentId: string;
+  let agentIdSource: string;
+  if (process.env.PARTYLINE_AGENT_ID) {
+    agentId = process.env.PARTYLINE_AGENT_ID;
+    agentIdSource = "env (PARTYLINE_AGENT_ID)";
+  } else if (fileConfig.agentId) {
+    agentId = fileConfig.agentId;
+    agentIdSource = ".partyline/config.json";
+  } else if (vsConfig.get<string>("agentId")) {
+    agentId = vsConfig.get<string>("agentId")!;
+    agentIdSource = "settings.json (legacy)";
+  } else {
+    agentId = derivedAgentId;
+    agentIdSource = "derived from folder name";
+  }
+
+  const url = process.env.PARTYLINE_URL
+    || fileConfig.url
+    || vsConfig.get<string>("url")
+    || "";
+
+  const databricksProfile = fileConfig.databricksProfile
+    || vsConfig.get<string>("databricksProfile")
+    || "dev-eastus2";
+
+  const token = vsConfig.get<string>("token") || process.env.PARTYLINE_TOKEN || "";
+
+  return { url, agentId, databricksProfile, token, agentIdSource };
+}
 
 /**
  * Attempt to get a Databricks auth token via CLI.
@@ -103,8 +177,8 @@ export function activate(context: vscode.ExtensionContext) {
   registerChatParticipant(context);
 
   // Auto-connect if configured
-  const config = vscode.workspace.getConfiguration("partyline");
-  if (config.get<string>("url") && config.get<string>("agentId")) {
+  const resolved = resolveConfig();
+  if (resolved.url && resolved.agentId) {
     connect(context, messagesProvider, agentsProvider, claimsProvider, metricsProvider);
   }
 }
@@ -117,17 +191,22 @@ async function connect(
   metricsProvider: MetricsProvider
 ) {
   const config = vscode.workspace.getConfiguration("partyline");
-  const url = config.get<string>("url");
-  const agentId = config.get<string>("agentId");
-  const profile = config.get<string>("databricksProfile") || "dev-eastus2";
-  let token = config.get<string>("token") || process.env.PARTYLINE_TOKEN;
+  const resolved = resolveConfig();
+  const url = resolved.url;
+  const agentId = resolved.agentId;
+  const profile = resolved.databricksProfile;
+  let token = resolved.token;
 
   if (!url || !agentId) {
     vscode.window.showWarningMessage(
-      "Set partyline.url and partyline.agentId in settings to connect."
+      "Set agentId and url in .partyline/config.json, env vars, or partyline.* settings to connect."
     );
     return;
   }
+
+  diagnosticsChannel.appendLine(
+    `[${new Date().toISOString()}] [config] agentId="${agentId}" (source: ${resolved.agentIdSource}), url="${url}"`
+  );
 
   // Auto-acquire token from Databricks CLI if none configured
   if (!token) {
@@ -292,20 +371,18 @@ function registerMcpServer(context: vscode.ExtensionContext) {
   // Dynamically register Partyline as an MCP server for any LM chat participant
   const provider: vscode.McpServerDefinitionProvider<vscode.McpServerDefinition> = {
     provideMcpServerDefinitions(_token) {
-      const config = vscode.workspace.getConfiguration("partyline");
-      const url = config.get<string>("url");
-      if (!url) { return []; }
+      const resolved = resolveConfig();
+      if (!resolved.url) { return []; }
 
-      const token = config.get<string>("token") || process.env.PARTYLINE_TOKEN || "";
       const headers: Record<string, string> = {};
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
+      if (resolved.token) {
+        headers["Authorization"] = `Bearer ${resolved.token}`;
       }
 
       return [
         new vscode.McpHttpServerDefinition(
           "Covasant Partyline",
-          vscode.Uri.parse(`${url}/mcp`),
+          vscode.Uri.parse(`${resolved.url}/mcp`),
           headers
         ),
       ];
@@ -355,13 +432,13 @@ function registerChatParticipant(context: vscode.ExtensionContext) {
   const participant = vscode.chat.createChatParticipant(
     "covasant.partyline",
     async (request, _context, response, _token) => {
-      const config = vscode.workspace.getConfiguration("partyline");
-      const agentId = config.get<string>("agentId") || "unknown";
+      const resolved = resolveConfig();
+      const agentId = resolved.agentId || "unknown";
 
       if (request.command === "status") {
         // Show current line status
         response.markdown(`**Partyline Status**\n\n`);
-        response.markdown(`- Agent ID: \`${agentId}\`\n`);
+        response.markdown(`- Agent ID: \`${agentId}\` (${resolved.agentIdSource})\n`);
         response.markdown(`- Connected: ${client ? "yes ✓" : "no"}\n`);
         response.markdown(`- Pending messages: ${pendingMessages.length}\n`);
         return;
@@ -407,6 +484,7 @@ function registerChatParticipant(context: vscode.ExtensionContext) {
 
 async function copyDiagnostics() {
   const cfg = vscode.workspace.getConfiguration("partyline");
+  const resolved = resolveConfig();
   const snap = diagnosticsProvider.snapshot();
 
   // Live language-model probe — the single most useful signal for "why did the
@@ -436,9 +514,9 @@ async function copyDiagnostics() {
     `- Connected client: ${client ? "yes" : "no"}`,
     "",
     "## Config",
-    `- url set: ${cfg.get<string>("url") ? "yes" : "NO"}`,
-    `- agentId: ${cfg.get<string>("agentId") || "(unset)"}`,
-    `- databricksProfile: ${cfg.get<string>("databricksProfile") || "(default)"}`,
+    `- url set: ${resolved.url ? "yes" : "NO"}`,
+    `- agentId: ${resolved.agentId || "(unset)"} (${resolved.agentIdSource})`,
+    `- databricksProfile: ${resolved.databricksProfile}`,
     `- autoRespond: ${cfg.get<boolean>("autoRespond", false)}`,
     `- notifyBroadcast: ${cfg.get<boolean>("notifyBroadcast", false)}`,
     `- token source: ${snap.token}`,

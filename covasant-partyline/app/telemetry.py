@@ -41,16 +41,20 @@ def _span_exporter(protocol: str, endpoint: str):
     """
     if protocol.startswith("grpc"):
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+
         return OTLPSpanExporter(endpoint=endpoint, timeout=int(_EXPORT_TIMEOUT))
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
     return OTLPSpanExporter(endpoint=endpoint, timeout=int(_EXPORT_TIMEOUT))
 
 
 def _metric_exporter(protocol: str, endpoint: str):
     if protocol.startswith("grpc"):
         from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+
         return OTLPMetricExporter(endpoint=endpoint, timeout=int(_EXPORT_TIMEOUT))
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+
     return OTLPMetricExporter(endpoint=endpoint, timeout=int(_EXPORT_TIMEOUT))
 
 
@@ -87,10 +91,12 @@ def init_telemetry(service_name: str = "covasant-partyline", local: bool = False
     # skip silently if neither is installed.
     try:
         from opentelemetry.instrumentation.psycopg import PsycopgInstrumentor
+
         PsycopgInstrumentor().instrument()
     except (ImportError, ModuleNotFoundError):
         try:
             from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
+
             Psycopg2Instrumentor().instrument()
         except (ImportError, ModuleNotFoundError):
             pass
