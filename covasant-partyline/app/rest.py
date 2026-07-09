@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 
-from . import db
+from . import __version__, db
 from .auth import resolve_author
 from .config import settings
 from .models import (
@@ -35,7 +35,7 @@ log = logging.getLogger("partyline.rest")
 
 @router.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "db_configured": settings.db_configured}
+    return {"status": "ok", "db_configured": settings.db_configured, "version": __version__}
 
 
 @router.post("/agents", response_model=Agent)

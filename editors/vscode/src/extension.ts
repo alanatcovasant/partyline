@@ -66,7 +66,7 @@ export function activate(context: vscode.ExtensionContext) {
   const agentsProvider = new AgentsProvider();
   const claimsProvider = new ClaimsProvider();
   const metricsProvider = new MetricsProvider();
-  diagnosticsProvider = new DiagnosticsProvider();
+  diagnosticsProvider = new DiagnosticsProvider(extVersion);
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("partyline.messages", messagesProvider),

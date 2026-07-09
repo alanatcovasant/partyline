@@ -23,7 +23,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from starlette.staticfiles import StaticFiles
 
-from . import db
+from . import __version__, db
 from .config import settings
 from .mcp_server import mcp
 from .notify import hub
@@ -80,7 +80,7 @@ async def lifespan(_: FastAPI):
                 await asyncio.to_thread(db.close_pool)
 
 
-app = FastAPI(title="Covasant Partyline", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Covasant Partyline", version=__version__, lifespan=lifespan)
 app.include_router(rest_router)
 app.mount("/mcp", mcp_app)
 

@@ -53,7 +53,7 @@ type Diagnostics = {
     is_active: boolean;
   }>;
 };
-type Health = { status: string; db_configured: boolean };
+type Health = { status: string; db_configured: boolean; version?: string };
 
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url);
@@ -236,6 +236,7 @@ export function App() {
     <div className="wrap">
       <header>
         <h1>Covasant Partyline</h1>
+        {health?.version && <span className="muted">v{health.version}</span>}
         <span className={connected ? "dot on" : "dot off"} />
         <span className="muted">{connected ? "live" : "disconnected"}</span>
       </header>
@@ -266,6 +267,8 @@ export function App() {
           <section className="diag-panel">
             <h2>🩺 Diagnostics</h2>
             <dl className="metrics">
+              <dt>App version</dt>
+              <dd>{health?.version ? `v${health.version}` : "—"}</dd>
               <dt>Stream</dt>
               <dd>
                 <span className={connected ? "dot on" : "dot off"} />{" "}

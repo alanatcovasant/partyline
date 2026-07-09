@@ -248,6 +248,8 @@ export class DiagnosticsProvider implements vscode.TreeDataProvider<vscode.TreeI
   private errorCount = 0;
   private events: RecentEvent[] = [];
 
+  constructor(private readonly version: string = "?") {}
+
   setConnection(state: string) { this.connection = state; this._onDidChange.fire(); }
   noteMessage() { this.lastMessageAt = Date.now(); this._onDidChange.fire(); }
   setToken(status: string) { this.token = status; this._onDidChange.fire(); }
@@ -276,6 +278,20 @@ export class DiagnosticsProvider implements vscode.TreeDataProvider<vscode.TreeI
     return new vscode.ThemeIcon("sync");
   }
 
+  /** Raw state for building a copyable diagnostic report. */
+  snapshot() {
+    return {
+      connection: this.connection,
+      lastMessageAt: this.lastMessageAt,
+      token: this.token,
+      responder: this.responder,
+      agents: this.agents,
+      claims: this.claims,
+      errorCount: this.errorCount,
+      events: this.events.slice(),
+    };
+  }
+
   getTreeItem(item: vscode.TreeItem): vscode.TreeItem { return item; }
 
   getChildren(): vscode.TreeItem[] {
@@ -296,6 +312,7 @@ export class DiagnosticsProvider implements vscode.TreeDataProvider<vscode.TreeI
       : "—";
 
     const items: vscode.TreeItem[] = [
+      row("Version", `v${this.version}`, "tag"),
       conn,
       row("Last message", lastMsg, "comment"),
       row("Token", this.token, "key"),
