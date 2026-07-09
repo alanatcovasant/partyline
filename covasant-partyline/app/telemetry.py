@@ -27,7 +27,6 @@ from opentelemetry.sdk.trace.export import (
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.resources import Resource
 
@@ -84,7 +83,17 @@ def init_telemetry(service_name: str = "covasant-partyline", local: bool = False
 
     # Auto-instrument libraries (cheap no-op when nothing exports).
     FastAPIInstrumentor().instrument()
-    Psycopg2Instrumentor().instrument()
+    # psycopg (v3) — try the v3 instrumentor first, fall back to psycopg2 instrumentor,
+    # skip silently if neither is installed.
+    try:
+        from opentelemetry.instrumentation.psycopg import PsycopgInstrumentor
+        PsycopgInstrumentor().instrument()
+    except (ImportError, ModuleNotFoundError):
+        try:
+            from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
+            Psycopg2Instrumentor().instrument()
+        except (ImportError, ModuleNotFoundError):
+            pass
     HTTPXClientInstrumentor().instrument()
 
     print(f"[telemetry] {service_name}: {mode}", file=sys.stderr)

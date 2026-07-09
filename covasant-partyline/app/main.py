@@ -67,12 +67,20 @@ async def lifespan(_: FastAPI):
         if not settings.db_configured:
             # Databricks Apps may inject PG* env vars after the process starts
             # (resource binding race). Retry a few times before giving up.
-            for attempt in range(1, 6):
+            log.warning(
+                "DB not configured at startup. Frozen settings: PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r; "
+                "Live env: PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r",
+                settings.pg_host, settings.pg_user, settings.endpoint_name,
+                os.getenv("PGHOST"), os.getenv("PGUSER"), os.getenv("ENDPOINT_NAME"),
+            )
+            for attempt in range(1, 11):
                 log.warning(
-                    "DB not configured yet (attempt %d/5); waiting 2s for env injection ...",
+                    "DB not configured yet (attempt %d/10); waiting 3s for env injection ... "
+                    "PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r",
                     attempt,
+                    os.getenv("PGHOST"), os.getenv("PGUSER"), os.getenv("ENDPOINT_NAME"),
                 )
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
                 if settings.db_configured:
                     break
 
@@ -95,7 +103,13 @@ async def lifespan(_: FastAPI):
                 settings.pg_host or os.getenv("PGHOST"),
             )
         else:
-            log.warning("DB not configured after retries; serving health/UI only. Set PG*/ENDPOINT_NAME.")
+            log.error(
+                "DB not configured after 10 retries (30s). "
+                "PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r local=%r. "
+                "Serving health/UI only.",
+                os.getenv("PGHOST"), os.getenv("PGUSER"), os.getenv("ENDPOINT_NAME"),
+                settings.local,
+            )
         try:
             yield
         finally:

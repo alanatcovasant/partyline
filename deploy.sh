@@ -38,8 +38,10 @@ ENDPOINT_NAME="$ENDPOINT_NAME" DATABRICKS_CONFIG_PROFILE="$PROFILE" \
 echo "==> 2/3 Building ops SPA"
 ( cd covasant-partyline/client && npm install && npm run build )
 
-echo "==> 3/3 Deploying bundle (target=$TARGET)"
+echo "==> 3/4 Deploying bundle (target=$TARGET)"
 databricks bundle deploy -t "$TARGET" --profile "$PROFILE"
 
-echo "==> Done. Start the app with:"
-echo "    databricks bundle run covasant_partyline -t $TARGET --profile $PROFILE"
+echo "==> 4/4 Restarting app"
+databricks bundle run covasant_partyline -t "$TARGET" --profile "$PROFILE"
+
+echo "==> Done. App deployed and restarted (version=${FULL_VERSION})."
