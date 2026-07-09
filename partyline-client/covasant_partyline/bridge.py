@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import time
 from contextlib import AsyncExitStack
 
 from databricks.sdk.core import Config
@@ -36,6 +37,15 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
+
+# Diagnostics thresholds (seconds)
+_LOCK_WARN_SECS = 5.0
+_CALL_WARN_SECS = 10.0
+_CALL_TIMEOUT_SECS = 120.0
+
+
+def _log(msg: str) -> None:
+    print(f"partyline bridge: {msg}", file=sys.stderr, flush=True)
 
 
 def _auth_headers(cfg: Config) -> dict[str, str]:
@@ -92,18 +102,20 @@ class _Remote:
         self.instructions: str | None = None  # server how-to, captured at initialize()
 
     async def _connect(self) -> ClientSession:
+        _log("connecting...")
+        t0 = time.monotonic()
         await self.close()
         stack = AsyncExitStack()
         headers = _auth_headers(self._cfg)  # fresh token every (re)connect
-        read, write, _ = await stack.enter_async_context(
-            streamablehttp_client(self._url, headers=headers)
-        )
+        read, write, _ = await stack.enter_async_context(streamablehttp_client(self._url, headers=headers))
         session = await stack.enter_async_context(ClientSession(read, write))
         init = await session.initialize()
         # Capture the upstream server's how-to text so the proxy can advertise it to the
         # agent's MCP client (FR: teach any client how to use the line, no skill needed).
         self.instructions = getattr(init, "instructions", None) or self.instructions
         self._stack, self._session = stack, session
+        elapsed = time.monotonic() - t0
+        _log(f"connected in {elapsed:.2f}s")
         return session
 
     async def close(self) -> None:
@@ -114,43 +126,73 @@ class _Remote:
                 pass
         self._stack = self._session = None
 
-    async def call(self, op):
+    async def call(self, op, label: str = "?"):
         """Run ``op(session)``, reconnecting with fresh credentials on failure."""
-        async with self._lock:
+        t_wait = time.monotonic()
+        lock_acquired = False
+        try:
+            lock_acquired = await asyncio.wait_for(self._lock.acquire(), timeout=_LOCK_WARN_SECS)
+        except asyncio.TimeoutError:
+            _log(f"[{label}] waiting for lock ({_LOCK_WARN_SECS:.0f}s elapsed, another call in progress)")
+            await self._lock.acquire()
+            lock_acquired = True
+        lock_wait = time.monotonic() - t_wait
+        if lock_wait > _LOCK_WARN_SECS:
+            _log(f"[{label}] lock acquired after {lock_wait:.2f}s")
+
+        t0 = time.monotonic()
+        try:
             try:
                 session = self._session or await self._connect()
-                return await op(session)
+                result = await asyncio.wait_for(op(session), timeout=_CALL_TIMEOUT_SECS)
+            except asyncio.TimeoutError:
+                elapsed = time.monotonic() - t0
+                _log(f"[{label}] TIMEOUT after {elapsed:.1f}s — forcing reconnect")
+                self._session = None
+                raise
+            except asyncio.TimeoutError:
+                raise
             except Exception as exc:
-                print(f"partyline bridge: reconnecting ({exc})", file=sys.stderr)
+                elapsed = time.monotonic() - t0
+                _log(f"[{label}] error after {elapsed:.2f}s ({type(exc).__name__}: {exc}) — reconnecting")
                 session = await self._connect()
-                return await op(session)
+                result = await asyncio.wait_for(op(session), timeout=_CALL_TIMEOUT_SECS)
+            elapsed = time.monotonic() - t0
+            if elapsed > _CALL_WARN_SECS:
+                _log(f"[{label}] slow call: {elapsed:.2f}s")
+            return result
+        finally:
+            if lock_acquired:
+                self._lock.release()
 
 
 async def _serve(cfg: Config, mcp_url: str) -> None:
     remote = _Remote(cfg, mcp_url)
     # Connect eagerly so misconfiguration fails at startup, not at the first tool call.
     # This also populates remote.instructions from the upstream initialize().
-    await remote.call(lambda s: s.list_tools())
+    await remote.call(lambda s: s.list_tools(), label="startup/list_tools")
     # Forward the upstream server's instructions so the agent's client sees the how-to.
     proxy = Server("covasant-partyline-bridge", instructions=remote.instructions)
 
     @proxy.list_tools()
     async def list_tools():
-        return (await remote.call(lambda s: s.list_tools())).tools
+        return (await remote.call(lambda s: s.list_tools(), label="list_tools")).tools
 
     @proxy.call_tool()
     async def call_tool(name: str, arguments: dict):
-        result = await remote.call(lambda s: s.call_tool(name, arguments))
+        _log(f"-> call_tool({name})")
+        result = await remote.call(lambda s: s.call_tool(name, arguments), label=f"call_tool/{name}")
+        _log(f"<- call_tool({name}) OK")
         # Forward content plus any structured payload the tool returned.
         return result.content, getattr(result, "structuredContent", None)
 
     @proxy.list_prompts()
     async def list_prompts():
-        return (await remote.call(lambda s: s.list_prompts())).prompts
+        return (await remote.call(lambda s: s.list_prompts(), label="list_prompts")).prompts
 
     @proxy.get_prompt()
     async def get_prompt(name: str, arguments: dict | None = None):
-        return await remote.call(lambda s: s.get_prompt(name, arguments))
+        return await remote.call(lambda s: s.get_prompt(name, arguments), label=f"get_prompt/{name}")
 
     opts = proxy.create_initialization_options()
     try:

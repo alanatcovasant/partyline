@@ -14,4 +14,6 @@ opentelemetry-instrumentation-fastapi>=0.48b0
 opentelemetry-instrumentation-psycopg2>=0.48b0
 opentelemetry-instrumentation-httpx>=0.48b0
 opentelemetry-exporter-otlp-proto-http>=0.48b0
+# gRPC exporter: the protocol Databricks Apps telemetry injects when enabled.
+opentelemetry-exporter-otlp-proto-grpc>=0.48b0
 

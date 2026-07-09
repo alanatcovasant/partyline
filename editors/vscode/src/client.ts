@@ -2,6 +2,11 @@ import * as http from "http";
 import * as https from "https";
 import { URL } from "url";
 
+// No request may hang: bound one-shot requests, and treat SSE silence past the
+// keep-alive interval (~15s) as a dead socket to reconnect.
+const HTTP_TIMEOUT_MS = 15_000;
+const SSE_IDLE_TIMEOUT_MS = 60_000;
+
 export interface PartylineMessage {
   id: number;
   agent_id: string;
@@ -227,6 +232,12 @@ export class PartylineClient {
       setTimeout(() => this.startSSE(), 5000);
     });
 
+    // Silence past the keep-alive interval (~15s) means a dead socket — destroy it so the
+    // error handler above reconnects, instead of the stream hanging open forever.
+    req.setTimeout(SSE_IDLE_TIMEOUT_MS, () =>
+      req.destroy(new Error("SSE idle timeout; reconnecting"))
+    );
+
     this.eventSource = req;
   }
 
@@ -317,7 +328,7 @@ export class PartylineClient {
 
       const req = mod.request(
         url,
-        { method: "POST", headers },
+        { method: "POST", headers, timeout: HTTP_TIMEOUT_MS },
         (res) => {
           let respBody = "";
           res.setEncoding("utf8");
@@ -337,6 +348,7 @@ export class PartylineClient {
           });
         }
       );
+      req.on("timeout", () => req.destroy(new Error(`POST ${path} timed out after ${HTTP_TIMEOUT_MS}ms`)));
       req.on("error", reject);
       req.write(payload);
       req.end();
@@ -354,7 +366,7 @@ export class PartylineClient {
         headers["Authorization"] = `Bearer ${this.token}`;
       }
 
-      const req = mod.get(url, { headers }, (res) => {
+      const req = mod.get(url, { headers, timeout: HTTP_TIMEOUT_MS }, (res) => {
         let body = "";
         res.setEncoding("utf8");
         res.on("data", (d: string) => (body += d));
@@ -372,6 +384,7 @@ export class PartylineClient {
           catch (e) { reject(e); }
         });
       });
+      req.on("timeout", () => req.destroy(new Error(`GET ${path} timed out after ${HTTP_TIMEOUT_MS}ms`)));
       req.on("error", reject);
     });
   }

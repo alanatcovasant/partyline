@@ -25,6 +25,11 @@ import urllib.request
 
 DEFAULT_URL = os.getenv("PARTYLINE_URL", "http://localhost:8000")
 
+# No network call may block forever. Requests get a hard timeout; the watch stream uses a
+# read timeout (keep-alives arrive ~every 15s, so silence past this means a dead socket).
+_HTTP_TIMEOUT = float(os.getenv("PARTYLINE_HTTP_TIMEOUT", "30"))
+_WATCH_READ_TIMEOUT = float(os.getenv("PARTYLINE_WATCH_READ_TIMEOUT", "60"))
+
 
 def _request(method: str, base: str, path: str, body: dict | None = None) -> object:
     url = base.rstrip("/") + path
@@ -36,12 +41,13 @@ def _request(method: str, base: str, path: str, body: dict | None = None) -> obj
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
             return json.loads(resp.read() or "null")
     except urllib.error.HTTPError as e:
         sys.exit(f"HTTP {e.code}: {e.read().decode(errors='replace')}")
-    except urllib.error.URLError as e:
-        sys.exit(f"Connection failed: {e.reason}")
+    except (urllib.error.URLError, TimeoutError) as e:
+        reason = getattr(e, "reason", e)
+        sys.exit(f"Connection failed: {reason}")
 
 
 def _print(obj: object) -> None:
@@ -103,7 +109,12 @@ def cmd_watch(a: argparse.Namespace) -> None:
     """Stream live messages. With --exit-on-mention, exit 0 as soon as a message
     addressed to that agent (recipient or mention) arrives — this turns the stream
     into a wake-up trigger: run it as a background task and react when it exits.
-    Exits 2 on --timeout expiry or stream disconnect (no match)."""
+    Exits 2 on --timeout expiry or stream disconnect (no match).
+
+    The read uses a socket timeout so a silently-dead connection never hangs: on read
+    timeout / disconnect the loop reconnects (bounded by the overall --timeout) instead
+    of blocking forever."""
+    import socket
     import time
 
     url = a.url.rstrip("/") + "/api/stream"
@@ -111,34 +122,43 @@ def cmd_watch(a: argparse.Namespace) -> None:
     token = os.getenv("PARTYLINE_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers)
     deadline = time.monotonic() + a.timeout if a.timeout else None
+    if not a.exit_on_mention:
+        print(f"watching {url} (Ctrl-C to stop)")
+
     try:
-        with urllib.request.urlopen(req) as resp:
-            if not a.exit_on_mention:
-                print(f"watching {url} (Ctrl-C to stop)")
-            for raw in resp:
-                if deadline and time.monotonic() > deadline:
-                    sys.exit(2)
-                line = raw.decode(errors="replace").rstrip()
-                if not line.startswith("data:"):
-                    continue  # keep-alives arrive every ~15s, so the deadline is checked often
-                data = line[5:].strip()
+        while deadline is None or time.monotonic() < deadline:
+            req = urllib.request.Request(url, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=_WATCH_READ_TIMEOUT) as resp:
+                    for raw in resp:
+                        if deadline and time.monotonic() > deadline:
+                            break
+                        line = raw.decode(errors="replace").rstrip()
+                        if not line.startswith("data:"):
+                            continue  # keep-alives arrive ~every 15s
+                        data = line[5:].strip()
+                        if not a.exit_on_mention:
+                            print(data, flush=True)
+                            continue
+                        try:
+                            evt = json.loads(data)
+                        except ValueError:
+                            continue
+                        me = a.exit_on_mention
+                        if evt.get("recipient") == me or me in (evt.get("mentions") or []):
+                            print(data, flush=True)
+                            return  # exit 0: message for me — caller wakes and calls unread
+                # Stream closed cleanly (server side) — reconnect until the deadline.
+            except (TimeoutError, socket.timeout):
+                continue  # idle/dead socket — reconnect (never hang)
+            except urllib.error.URLError as e:
                 if not a.exit_on_mention:
-                    print(data)
-                    continue
-                try:
-                    evt = json.loads(data)
-                except ValueError:
-                    continue
-                me = a.exit_on_mention
-                if evt.get("recipient") == me or me in (evt.get("mentions") or []):
-                    print(data)
-                    return  # exit 0: message for me — caller wakes and calls unread
+                    print(f"reconnecting ({getattr(e, 'reason', e)})", file=sys.stderr, flush=True)
+                time.sleep(2)  # brief backoff on transient network error
+                continue
     except KeyboardInterrupt:
         pass
-    except urllib.error.URLError as e:
-        sys.exit(f"Connection failed: {e.reason}")
     if a.exit_on_mention:
         sys.exit(2)  # stream ended or timed out without a match
 

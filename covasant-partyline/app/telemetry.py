@@ -1,71 +1,95 @@
 """OpenTelemetry instrumentation for Partyline.
 
-Sets up tracing to measure method latency, identify blocking operations, and surface
-performance issues. Exports to OTLP (http); local mode uses console span output.
+Measures method latency, identifies blocking operations, and surfaces performance issues.
+
+Export target is decided by the environment, so it "just works" across deployments:
+  - local mode (PARTYLINE_OTEL_LOCAL=true): spans to the console (→ app logs).
+  - OTEL_EXPORTER_OTLP_ENDPOINT set: OTLP export (protocol from OTEL_EXPORTER_OTLP_PROTOCOL,
+    default grpc — this is what Databricks Apps telemetry injects when enabled).
+  - neither: instrument but DO NOT export. Avoids hammering a dead collector (e.g. the old
+    localhost:4318 default) when no backend is configured; export switches on automatically
+    once App telemetry is enabled and injects the endpoint. No code change needed then.
+
+Every exporter gets a bounded timeout, and export runs in a background BatchSpanProcessor,
+so telemetry can never hang request handling.
 """
 
 import os
 import sys
+
 from opentelemetry import trace, metrics
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    ConsoleSpanExporter,
+    SimpleSpanProcessor,
+)
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+
+_EXPORT_TIMEOUT = float(os.getenv("OTEL_EXPORT_TIMEOUT", "10"))  # seconds; never hang
+
+
+def _span_exporter(protocol: str, endpoint: str):
+    """OTLP span exporter for the injected protocol (grpc default; http/protobuf fallback).
+
+    Imported lazily so a missing exporter dependency degrades gracefully (caught by the
+    caller in main.py) instead of breaking module import.
+    """
+    if protocol.startswith("grpc"):
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        return OTLPSpanExporter(endpoint=endpoint, timeout=int(_EXPORT_TIMEOUT))
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    return OTLPSpanExporter(endpoint=endpoint, timeout=int(_EXPORT_TIMEOUT))
+
+
+def _metric_exporter(protocol: str, endpoint: str):
+    if protocol.startswith("grpc"):
+        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+        return OTLPMetricExporter(endpoint=endpoint, timeout=int(_EXPORT_TIMEOUT))
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+    return OTLPMetricExporter(endpoint=endpoint, timeout=int(_EXPORT_TIMEOUT))
 
 
 def init_telemetry(service_name: str = "covasant-partyline", local: bool = False) -> None:
-    """Initialize OpenTelemetry tracing and metrics.
-
-    Args:
-        service_name: Service name for traces/metrics
-        local: If True, emit spans to console; else export via OTLP HTTP
-    """
-    # Resource labels
+    """Initialize OpenTelemetry tracing and metrics (see module docstring for export modes)."""
     resource = Resource.create(
         {
             "service.name": service_name,
             "environment": "local" if local else os.getenv("ENVIRONMENT", "production"),
         }
     )
+    trace_provider = TracerProvider(resource=resource)
 
-    # Tracer setup
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    protocol = (os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL") or "grpc").lower()
+
     if local:
-        # Dev mode: write spans to app logs/stdout for quick diagnosis.
-        trace_provider = TracerProvider(resource=resource)
         trace_provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
+        mode = "console (local)"
+    elif endpoint:
+        trace_provider.add_span_processor(BatchSpanProcessor(_span_exporter(protocol, endpoint)))
+        reader = PeriodicExportingMetricReader(_metric_exporter(protocol, endpoint))
+        metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[reader]))
+        mode = f"otlp/{protocol} -> {endpoint}"
     else:
-        # Prod mode: OTLP (http exporter, endpoint from env or default)
-        otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-        otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
-        trace_provider = TracerProvider(resource=resource)
-        trace_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+        # No collector configured — instrument but don't export (avoids a dead-endpoint loop).
+        mode = "instrumented; export disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)"
 
     trace.set_tracer_provider(trace_provider)
 
-    # Metrics setup (optional; export if OTLP endpoint is configured)
-    if not local and os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
-        otlp_metrics_exporter = OTLPMetricExporter(endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
-        metrics_reader = PeriodicExportingMetricReader(otlp_metrics_exporter)
-        metrics_provider = MeterProvider(resource=resource, metric_readers=[metrics_reader])
-        metrics.set_meter_provider(metrics_provider)
-
-    # Auto-instrument libraries
+    # Auto-instrument libraries (cheap no-op when nothing exports).
     FastAPIInstrumentor().instrument()
     Psycopg2Instrumentor().instrument()
     HTTPXClientInstrumentor().instrument()
 
-    print(
-        f"[telemetry] initialized {service_name}; tracer={type(trace.get_tracer_provider()).__name__}", file=sys.stderr
-    )
+    print(f"[telemetry] {service_name}: {mode}", file=sys.stderr)
 
 
 def get_tracer(module: str):
     """Get a tracer for a module."""
-    return trace.get_tracer(__name__)
+    return trace.get_tracer(module)
