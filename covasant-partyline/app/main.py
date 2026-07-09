@@ -64,7 +64,25 @@ async def lifespan(_: FastAPI):
             except Exception:
                 log.exception("Telemetry initialization failed; continuing without OTEL")
 
+        if not settings.db_configured:
+            # Databricks Apps may inject PG* env vars after the process starts
+            # (resource binding race). Retry a few times before giving up.
+            for attempt in range(1, 6):
+                log.warning(
+                    "DB not configured yet (attempt %d/5); waiting 2s for env injection ...",
+                    attempt,
+                )
+                await asyncio.sleep(2)
+                if settings.db_configured:
+                    break
+
         if settings.db_configured:
+            log.info(
+                "DB configured: PGHOST=%s PGUSER=%s ENDPOINT_NAME=%s",
+                settings.pg_host or os.getenv("PGHOST"),
+                settings.pg_user or os.getenv("PGUSER"),
+                settings.endpoint_name or os.getenv("ENDPOINT_NAME"),
+            )
             await asyncio.to_thread(db.open_pool)
             if settings.auto_migrate:
                 await asyncio.to_thread(db.init_schema)
@@ -74,10 +92,10 @@ async def lifespan(_: FastAPI):
                 __version__,
                 __build_timestamp__,
                 __git_commit__,
-                settings.pg_host,
+                settings.pg_host or os.getenv("PGHOST"),
             )
         else:
-            log.warning("DB not configured; serving health/UI only. Set PG*/ENDPOINT_NAME.")
+            log.warning("DB not configured after retries; serving health/UI only. Set PG*/ENDPOINT_NAME.")
         try:
             yield
         finally:

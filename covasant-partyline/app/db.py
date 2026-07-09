@@ -58,13 +58,17 @@ def _mint_token() -> str:
 
 
 def _conninfo() -> str:
-    return (
-        f"dbname={settings.pg_database} "
-        f"user={settings.pg_user} "
-        f"host={settings.pg_host} "
-        f"port={settings.pg_port} "
-        f"sslmode={settings.pg_sslmode}"
-    )
+    # Re-read from env at call time — Databricks Apps may inject PG* variables after
+    # the process starts (resource binding race), so the frozen Settings fields can be
+    # None even though the env vars are available by the time open_pool() runs.
+    import os
+
+    pg_host = settings.pg_host or os.getenv("PGHOST", "")
+    pg_user = settings.pg_user or os.getenv("PGUSER", "")
+    pg_database = settings.pg_database or os.getenv("PGDATABASE", "databricks_postgres")
+    pg_port = settings.pg_port or os.getenv("PGPORT", "5432")
+    pg_sslmode = settings.pg_sslmode or os.getenv("PGSSLMODE", "require")
+    return f"dbname={pg_database} user={pg_user} host={pg_host} port={pg_port} sslmode={pg_sslmode}"
 
 
 class OAuthConnection(psycopg.Connection):

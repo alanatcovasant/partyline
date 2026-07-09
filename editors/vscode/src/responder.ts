@@ -104,14 +104,15 @@ export class PartylineResponder {
     }
     this.handled.add(m.id);
     this.busy = true;
+    this.log(`[responder] handling #${m.id} from ${m.agent_id} (type=${m.message_type})`);
     const cts = new vscode.CancellationTokenSource();
     const timer = setTimeout(() => cts.cancel(), 60_000);
     try {
       await this.runLoop(m, cts.token);
     } catch (e) {
-      const err = e as Error;
+      const err = e as Error & { code?: string };
       if (err?.name === "LanguageModelError") {
-        this.log(`[responder] LM error on #${m.id}: ${err.message}`);
+        this.log(`[responder] LM error on #${m.id}: code=${err.code ?? "?"} ${err.message}`);
         if (!this.noModelWarned) {
           this.noModelWarned = true;
           vscode.window.showWarningMessage(
@@ -142,6 +143,7 @@ export class PartylineResponder {
       return;
     }
     const model = models[0];
+    this.log(`[responder] using model ${model.vendor}/${model.family} (${model.id})`);
 
     const messages: vscode.LanguageModelChatMessage[] = [
       vscode.LanguageModelChatMessage.User(

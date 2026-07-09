@@ -41,9 +41,14 @@ class Settings:
 
     @property
     def db_configured(self) -> bool:
+        # Re-read from the live environment on every check — Databricks Apps may
+        # inject PGHOST/PGUSER *after* the process starts (resource binding race).
+        pg_host = self.pg_host or os.getenv("PGHOST")
+        pg_user = self.pg_user or os.getenv("PGUSER")
+        endpoint = self.endpoint_name or os.getenv("ENDPOINT_NAME")
         if self.local:
-            return bool(self.pg_host and self.pg_user)
-        return bool(self.pg_host and self.pg_user and self.endpoint_name)
+            return bool(pg_host and pg_user)
+        return bool(pg_host and pg_user and endpoint)
 
 
 settings = Settings()
