@@ -231,22 +231,29 @@ async def stream(request: Request) -> StreamingResponse:
     """Server-Sent Events stream of live message notifications (push, FR2)."""
 
     async def event_gen():
-        q = hub.subscribe()
+        sub = hub.subscribe()
         client_host = request.client.host if request.client else "unknown"
         log.info("SSE stream connected client=%s subscribers=%s", client_host, hub.subscriber_count())
         try:
             yield "event: hello\ndata: {}\n\n"
             while True:
+                # `closed` is set when the hub drops this subscriber as a slow consumer;
+                # honor it (and client disconnect) so we don't linger as a zombie stream.
+                if sub.closed.is_set():
+                    log.info("SSE stream reaped (slow consumer) client=%s", client_host)
+                    break
                 if await request.is_disconnected():
                     log.info("SSE stream disconnected client=%s", client_host)
                     break
                 try:
-                    payload = await asyncio.wait_for(q.get(), timeout=15.0)
+                    payload = await asyncio.wait_for(sub.queue.get(), timeout=15.0)
                     yield f"data: {payload}\n\n"
                 except asyncio.TimeoutError:
+                    if sub.closed.is_set():
+                        break
                     yield ": keep-alive\n\n"
         finally:
-            hub.unsubscribe(q)
+            hub.unsubscribe(sub)
             log.info("SSE stream cleanup client=%s subscribers=%s", client_host, hub.subscriber_count())
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")

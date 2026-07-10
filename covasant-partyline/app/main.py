@@ -8,6 +8,16 @@ One FastAPI process serves three surfaces:
 Startup opens the Lakebase pool, ensures the schema (FR9), and starts the LISTEN
 listener. All of this is a no-op when the DB isn't configured (e.g. bare local boot),
 so the app still serves /api/health for smoke checks.
+
+SINGLE REPLICA / SINGLE WORKER ONLY. This process keeps per-process in-memory state
+that is NOT shared across replicas: the SSE subscriber set (notify.py) and the MCP
+Streamable-HTTP session manager. Running more than one worker/replica would break SSE
+fan-out (a client on replica A never receives NOTIFYs delivered to replica B's hub) and
+MCP session affinity (a session created on A is invisible on B). Keep uvicorn at one
+worker (see __main__.py — no --workers) and the app at one replica (resources/*.app.yml —
+no autoscale). If horizontal scale is ever needed, move SSE fan-out to a shared broker
+(Postgres LISTEN already broadcasts to all listeners) and make MCP sessions sticky or
+externalized first.
 """
 
 from __future__ import annotations

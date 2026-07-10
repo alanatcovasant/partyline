@@ -29,21 +29,32 @@ _LISTEN_HEARTBEAT_SECS = 30.0
 _LISTEN_MAX_LIFETIME_SECS = 1800.0
 
 
+class _Subscriber:
+    """One SSE client: a bounded queue plus a `closed` flag the hub sets to reap it."""
+
+    __slots__ = ("queue", "closed")
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1000)
+        self.closed = asyncio.Event()
+
+
 class NotifyHub:
     def __init__(self) -> None:
-        self._subscribers: set[asyncio.Queue[str]] = set()
+        self._subscribers: set[_Subscriber] = set()
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
 
     # --- subscriber management (SSE endpoints) ---
-    def subscribe(self) -> asyncio.Queue[str]:
-        q: asyncio.Queue[str] = asyncio.Queue(maxsize=1000)
-        self._subscribers.add(q)
+    def subscribe(self) -> _Subscriber:
+        sub = _Subscriber()
+        self._subscribers.add(sub)
         log.info("SSE subscriber added count=%s", len(self._subscribers))
-        return q
+        return sub
 
-    def unsubscribe(self, q: asyncio.Queue[str]) -> None:
-        self._subscribers.discard(q)
+    def unsubscribe(self, sub: _Subscriber) -> None:
+        self._subscribers.discard(sub)
+        sub.closed.set()
         log.info("SSE subscriber removed count=%s", len(self._subscribers))
 
     def subscriber_count(self) -> int:
@@ -51,12 +62,16 @@ class NotifyHub:
 
     def _broadcast(self, payload: str) -> None:
         dropped = 0
-        for q in list(self._subscribers):
+        for sub in list(self._subscribers):
             try:
-                q.put_nowait(payload)
+                sub.queue.put_nowait(payload)
             except asyncio.QueueFull:
-                # Slow consumer: drop it rather than block the listener.
-                self._subscribers.discard(q)
+                # Slow consumer: drop it rather than block the listener, and signal its SSE
+                # generator to end so the socket is actually reaped. Without the signal the
+                # generator would emit keep-alives forever against a queue that no longer
+                # receives broadcasts — a silent zombie that never sees another message.
+                self._subscribers.discard(sub)
+                sub.closed.set()
                 dropped += 1
         if dropped:
             log.warning("Dropped %s slow SSE subscribers; remaining=%s", dropped, len(self._subscribers))
