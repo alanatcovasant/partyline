@@ -16,6 +16,7 @@ let diagnosticsChannel: vscode.OutputChannel;
 let zeroAgentsWarningShown = false;
 let tokenRefreshTimer: NodeJS.Timeout | undefined;
 let activeMetricsProvider: MetricsProvider | undefined;
+let currentAgentId = "";
 
 /** Resolved partyline config with precedence: env → .partyline/config.json → settings.json → derived */
 interface PartylineConfig {
@@ -164,7 +165,16 @@ export function activate(context: vscode.ExtensionContext) {
         updateStatusBar(0);
       }
     }),
-    vscode.commands.registerCommand("partyline.copyDiagnostics", () => copyDiagnostics())
+    vscode.commands.registerCommand("partyline.copyDiagnostics", () => copyDiagnostics()),
+    vscode.commands.registerCommand("partyline.copyAgentId", async (id?: string) => {
+      const agentId = id || resolveConfig().agentId;
+      if (!agentId) {
+        vscode.window.showWarningMessage("Partyline: no agent ID resolved yet.");
+        return;
+      }
+      await vscode.env.clipboard.writeText(agentId);
+      vscode.window.showInformationMessage(`Copied agent ID: ${agentId}`);
+    })
   );
 
   // Register MCP server for any LM in VS Code (Copilot, Claude, etc.)
@@ -178,6 +188,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Auto-connect if configured
   const resolved = resolveConfig();
+  currentAgentId = resolved.agentId;
+  diagnosticsProvider.setAgentId(resolved.agentId);
   if (resolved.url && resolved.agentId) {
     connect(context, messagesProvider, agentsProvider, claimsProvider, metricsProvider);
   }
@@ -204,6 +216,8 @@ async function connect(
     return;
   }
 
+  currentAgentId = agentId;
+  diagnosticsProvider.setAgentId(agentId);
   diagnosticsChannel.appendLine(
     `[${new Date().toISOString()}] [config] agentId="${agentId}" (source: ${resolved.agentIdSource}), url="${url}"`
   );
@@ -348,9 +362,10 @@ function disconnect() {
 }
 
 function updateStatusBar(unread: number, connected?: boolean) {
+  const idSuffix = currentAgentId ? ` as ${currentAgentId}` : "";
   if (connected === false) {
     statusBarItem.text = "$(megaphone) Partyline";
-    statusBarItem.tooltip = "Click to connect";
+    statusBarItem.tooltip = `Click to connect${idSuffix}`;
     statusBarItem.backgroundColor = undefined;
     return;
   }
@@ -363,7 +378,7 @@ function updateStatusBar(unread: number, connected?: boolean) {
     statusBarItem.text = "$(megaphone) Partyline ✓";
     statusBarItem.backgroundColor = undefined;
   }
-  statusBarItem.tooltip = "Connected — click to mark all read";
+  statusBarItem.tooltip = `Connected${idSuffix} — click to mark all read`;
   statusBarItem.command = "partyline.markRead";
 }
 

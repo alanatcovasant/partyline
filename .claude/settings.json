@@ -67,17 +67,14 @@
       "mcp__partyline__post_message",
       "mcp__partyline__claim_resource",
       "Bash(./partyline.sh *)",
-      "Bash(partyline.cmd *)"
+      "Bash(partyline.cmd *)",
+      "Bash(python -c \"import sys,json;d=json.load\\(sys.stdin\\);print\\('OK — self-resolved; agents:',len\\(d\\)\\)\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\alana\\Code\\Repos\\covasant-agent-bus\\covasant-agent-bus",
       "\\tmp",
       "c:\\Users\\alana\\.claude\\projects\\c--Users-alana-Code-Repos-covasant-partyline\\memory"
     ]
-  },
-  "enabledPlugins": {
-    "code-simplifier@claude-plugins-official": true,
-    "claude-code-setup@claude-plugins-official": true
   },
   "hooks": {
     "SessionStart": [
@@ -90,5 +87,9 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "code-simplifier@claude-plugins-official": true,
+    "claude-code-setup@claude-plugins-official": true
   }
 }

@@ -17,3 +17,6 @@ scratch/**
 **/!explorations/README.md
 # Per-clone partyline config (agent identity, URL) — never tracked
 .partyline/
+
+# Captured Databricks Apps runtime/deploy log (artifact, not source)
+log.txt
