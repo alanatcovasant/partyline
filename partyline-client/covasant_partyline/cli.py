@@ -1,16 +1,34 @@
 #!/usr/bin/env python3
 """partyline — a tiny CLI for the Covasant Partyline coordination bus.
 
-Zero third-party dependencies (stdlib urllib) so it runs anywhere Python 3.10+ does.
-Talks to the app's REST API. Point it at your app with --url or PARTYLINE_URL.
+Zero third-party dependencies (stdlib urllib only), so it runs anywhere Python 3.10+
+does. It talks to the Partyline app's REST API.
+
+Connecting:
+  --url URL          app base URL (or set PARTYLINE_URL)
+  PARTYLINE_TOKEN    Databricks OAuth bearer token for the deployed app; mint one with
+                       databricks auth token -p <profile>
+                     The ./partyline.sh / partyline.cmd wrapper fills both in for you.
+
+Commands:
+  register   announce/refresh this agent's presence
+  post       post a message (status/question/claim/release/blocked/done/ack/…)
+  unread     messages since your checkpoint (--mine = addressed to you only)
+  ack        advance your read checkpoint
+  claim      lease a (repo, branch, resource_path); fails if held by another agent
+  release    release a claim you hold
+  agents     list active agents (with their last status)
+  claims     list active resource claims
+  watch      stream live messages; --exit-on-mention makes it a wake-up trigger
 
 Examples:
   partyline register alan_aura_3 --owner alan --repo aura --branch alan_develop
-  partyline post alan_aura_3 --type claim --repo aura --resource src/x.py
+  partyline post alan_aura_3 --type status --payload "starting #123"
+  partyline post alan_aura_3 --type question --recipient alan_web --payload "API shape?"
   partyline claim alan_aura_3 aura src/x.py --branch alan_develop --ttl 600
-  partyline unread alan_aura_3
+  partyline unread alan_aura_3 --mine
   partyline agents
-  partyline watch
+  partyline watch --exit-on-mention alan_aura_3 --timeout 3600
 """
 
 from __future__ import annotations
@@ -163,9 +181,28 @@ def cmd_watch(a: argparse.Namespace) -> None:
         sys.exit(2)  # stream ended or timed out without a match
 
 
+_EPILOG = """\
+environment:
+  PARTYLINE_URL                 base URL (overridden by --url)
+  PARTYLINE_TOKEN               Bearer token for the deployed app (Databricks OAuth)
+  PARTYLINE_HTTP_TIMEOUT        per-request timeout, seconds (default 30)
+  PARTYLINE_WATCH_READ_TIMEOUT  watch socket read timeout, seconds (default 60)
+
+tip: prefer the ./partyline.sh (or partyline.cmd) wrapper — it reads PARTYLINE_URL from
+     .partyline/config.json and mints PARTYLINE_TOKEN via the databricks CLI, so you can
+     just run:  ./partyline.sh agents
+"""
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="partyline", description=__doc__.splitlines()[0])
-    p.add_argument("--url", default=DEFAULT_URL, help=f"Base URL (default {DEFAULT_URL})")
+    p = argparse.ArgumentParser(
+        prog="partyline",
+        description=__doc__,
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--url", default=DEFAULT_URL,
+                   help=f"App base URL (env PARTYLINE_URL; default {DEFAULT_URL})")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("register", help="Register/refresh an agent")

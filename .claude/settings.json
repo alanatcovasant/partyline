@@ -59,7 +59,15 @@
       "mcp__plugin_playwright_playwright__browser_click",
       "Bash(rm -f \"C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-partyline/69ea35a4-b948-4a03-998b-d1be264d672c/scratchpad/local.env\")",
       "Bash(rm -f nul)",
-      "Bash(cmd //c \"del \\\\\\\\\\\\\\\\.\\\\\\\\%CD:/=\\\\\\\\%\\\\\\\\nul\")"
+      "Bash(cmd //c \"del \\\\\\\\\\\\\\\\.\\\\\\\\%CD:/=\\\\\\\\%\\\\\\\\nul\")",
+      "Bash(databricks auth token *)",
+      "mcp__partyline__get_unread",
+      "mcp__partyline__register_agent",
+      "mcp__partyline__ack_checkpoint",
+      "mcp__partyline__post_message",
+      "mcp__partyline__claim_resource",
+      "Bash(./partyline.sh *)",
+      "Bash(partyline.cmd *)"
     ],
     "additionalDirectories": [
       "c:\\Users\\alana\\Code\\Repos\\covasant-agent-bus\\covasant-agent-bus",
