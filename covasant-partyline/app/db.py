@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
+from datetime import datetime, timezone
 
 import psycopg
 from psycopg.rows import dict_row
@@ -32,28 +35,70 @@ NOTIFY_CHANNEL = "partyline"
 APP_SCHEMA = "partyline"
 
 _pool: ConnectionPool | None = None
+_pool_opened = False
 _workspace_client = None
+_ws_lock = threading.Lock()
+
+# Cached Lakebase credential. Minting hits the Databricks control plane, so without a
+# cache every physical connection open (pool fill, max_lifetime recycle, listener
+# reconnect) would make a blocking, un-timed control-plane call — coupling DB
+# availability to control-plane latency. The credential is a bearer token reusable until
+# it expires (~1h, only used at Postgres login), so mint once and reuse until near expiry.
+_token_lock = threading.Lock()
+_cached_token: str | None = None
+_cached_token_exp: float = 0.0  # monotonic-clock deadline; 0.0 = nothing cached
+_TOKEN_SAFETY_MARGIN_SECS = 300.0  # refresh this long before the real expiry
+_TOKEN_FALLBACK_TTL_SECS = 600.0  # used when expiration_time is missing/unparseable
 
 
 def _ws():
     global _workspace_client
-    if _workspace_client is None:
-        from databricks.sdk import WorkspaceClient
+    with _ws_lock:
+        if _workspace_client is None:
+            from databricks.sdk import WorkspaceClient
 
-        _workspace_client = WorkspaceClient()
-    return _workspace_client
+            _workspace_client = WorkspaceClient()
+        return _workspace_client
+
+
+def _credential_ttl(expiration_time: str | None) -> float:
+    """Seconds to cache a credential: (expiry - now) minus a safety margin.
+
+    Falls back to a short TTL if the timestamp is absent or unparseable, so a bad value
+    means "mint more often", never "reuse an expired token".
+    """
+    if not expiration_time:
+        return _TOKEN_FALLBACK_TTL_SECS
+    try:
+        exp = datetime.fromisoformat(expiration_time.replace("Z", "+00:00"))
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        secs = (exp - datetime.now(timezone.utc)).total_seconds() - _TOKEN_SAFETY_MARGIN_SECS
+        return max(secs, 0.0)
+    except (ValueError, TypeError):
+        return _TOKEN_FALLBACK_TTL_SECS
 
 
 def _mint_token() -> str:
-    """Mint a short-lived, Lakebase-scoped OAuth credential for Postgres login.
+    """Return a Lakebase-scoped OAuth credential for Postgres login, cached until expiry.
 
-    A workspace-scoped OAuth token would be rejected at Postgres login — this must be a
-    database credential from ``postgres.generate_database_credential``, scoped to the
-    autoscale endpoint.
+    Must be a database credential from ``postgres.generate_database_credential`` (a
+    workspace-scoped OAuth token would be rejected at Postgres login). Cached so the
+    control-plane mint stays off the per-connection hot path (see cache constants above).
     """
+    global _cached_token, _cached_token_exp
+    with _token_lock:
+        if _cached_token and time.monotonic() < _cached_token_exp:
+            return _cached_token
+    # Mint outside the lock so a slow control-plane call can't block other threads' cache
+    # hits; a brief window where two threads both mint is harmless (last write wins).
     log.debug("Minting Lakebase OAuth credential for endpoint=%s", settings.endpoint_name)
     cred = _ws().postgres.generate_database_credential(endpoint=settings.endpoint_name)
-    log.debug("Lakebase credential minted successfully")
+    ttl = _credential_ttl(cred.expiration_time)
+    with _token_lock:
+        _cached_token = cred.token
+        _cached_token_exp = time.monotonic() + ttl
+    log.debug("Lakebase credential minted; cached for %.0fs", ttl)
     return cred.token
 
 
@@ -113,19 +158,36 @@ def get_pool() -> ConnectionPool:
             kwargs["connection_class"] = OAuthConnection
             kwargs["max_lifetime"] = 2700  # 45m: recycle before the ~1h token expiry
         _pool = ConnectionPool(**kwargs)
+    # Self-heal: open the pool on first use if startup never did (e.g. PG* env injected
+    # after the startup window — otherwise the pool stays constructed-but-closed and every
+    # query fails forever until a manual restart). open() is idempotent on an already-open
+    # pool; guard on db_configured so we don't burn connect_timeout against an empty host.
+    global _pool_opened
+    if not _pool_opened and settings.db_configured:
+        try:
+            _pool.open(wait=True, timeout=30.0)
+            _pool_opened = True
+            log.info("Connection pool opened")
+        except Exception:
+            log.exception("Pool open failed; will retry on next use")
     return _pool
 
 
 def open_pool() -> None:
     log.info("Opening connection pool (host=%s db=%s) ...", settings.pg_host, settings.pg_database)
-    get_pool().open(wait=True, timeout=30.0)
+    get_pool()  # constructs and opens (idempotent; see self-heal note in get_pool)
     log.info("Connection pool open")
 
 
 def close_pool() -> None:
+    global _pool, _pool_opened
     log.info("Closing connection pool")
     if _pool is not None:
         _pool.close()
+    # Reset so a subsequent get_pool() builds a fresh pool — a psycopg pool cannot be
+    # reopened once closed.
+    _pool = None
+    _pool_opened = False
     log.info("Connection pool closed")
 
 

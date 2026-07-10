@@ -46,6 +46,58 @@ mcp.settings.streamable_http_path = "/"
 mcp_app = mcp.streamable_http_app()
 
 
+async def _bring_up_db() -> None:
+    """Open the pool, run migrations, and start the LISTEN hub. Call once, when the DB
+    is configured."""
+    await asyncio.to_thread(db.open_pool)
+    if settings.auto_migrate:
+        await asyncio.to_thread(db.init_schema)
+    hub.start()
+    log.info(
+        "Partyline ready (version=%s build=%s commit=%s db=%s).",
+        __version__,
+        __build_timestamp__,
+        __git_commit__,
+        settings.pg_host or os.getenv("PGHOST"),
+    )
+
+
+async def _self_heal_db(max_wait_secs: float = 600.0) -> None:
+    """Wait for late PG* env injection, then bring up the DB layer.
+
+    Databricks Apps can inject the bound Postgres resource's env vars *after* the process
+    starts (binding race). Without this, an app that boots before injection would serve
+    health/UI only — with a constructed-but-closed pool and no listener — until a manual
+    restart. Polling here lets it self-heal whenever the env finally appears.
+    """
+    waited = 0.0
+    while waited < max_wait_secs:
+        await asyncio.sleep(3)
+        waited += 3
+        if settings.db_configured:
+            log.info("DB env present after %.0fs; bringing up DB layer", waited)
+            await _bring_up_db()
+            return
+        log.warning(
+            "DB not configured yet (%.0fs/%.0fs); waiting for env injection ... "
+            "PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r",
+            waited,
+            max_wait_secs,
+            os.getenv("PGHOST"),
+            os.getenv("PGUSER"),
+            os.getenv("ENDPOINT_NAME"),
+        )
+    log.error(
+        "DB not configured after %.0fs; serving health/UI only. "
+        "PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r local=%r",
+        max_wait_secs,
+        os.getenv("PGHOST"),
+        os.getenv("PGUSER"),
+        os.getenv("ENDPOINT_NAME"),
+        settings.local,
+    )
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # The MCP session manager must run for the mounted Streamable-HTTP app to work.
@@ -64,32 +116,7 @@ async def lifespan(_: FastAPI):
             except Exception:
                 log.exception("Telemetry initialization failed; continuing without OTEL")
 
-        if not settings.db_configured:
-            # Databricks Apps may inject PG* env vars after the process starts
-            # (resource binding race). Retry a few times before giving up.
-            log.warning(
-                "DB not configured at startup. Frozen settings: PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r; "
-                "Live env: PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r",
-                settings.pg_host,
-                settings.pg_user,
-                settings.endpoint_name,
-                os.getenv("PGHOST"),
-                os.getenv("PGUSER"),
-                os.getenv("ENDPOINT_NAME"),
-            )
-            for attempt in range(1, 11):
-                log.warning(
-                    "DB not configured yet (attempt %d/10); waiting 3s for env injection ... "
-                    "PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r",
-                    attempt,
-                    os.getenv("PGHOST"),
-                    os.getenv("PGUSER"),
-                    os.getenv("ENDPOINT_NAME"),
-                )
-                await asyncio.sleep(3)
-                if settings.db_configured:
-                    break
-
+        heal_task: asyncio.Task | None = None
         if settings.db_configured:
             log.info(
                 "DB configured: PGHOST=%s PGUSER=%s ENDPOINT_NAME=%s",
@@ -97,33 +124,28 @@ async def lifespan(_: FastAPI):
                 settings.pg_user or os.getenv("PGUSER"),
                 settings.endpoint_name or os.getenv("ENDPOINT_NAME"),
             )
-            await asyncio.to_thread(db.open_pool)
-            if settings.auto_migrate:
-                await asyncio.to_thread(db.init_schema)
-            hub.start()
-            log.info(
-                "Partyline ready (version=%s build=%s commit=%s db=%s).",
-                __version__,
-                __build_timestamp__,
-                __git_commit__,
-                settings.pg_host or os.getenv("PGHOST"),
-            )
+            await _bring_up_db()
         else:
-            log.error(
-                "DB not configured after 10 retries (30s). "
-                "PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r local=%r. "
-                "Serving health/UI only.",
+            log.warning(
+                "DB not configured at startup (PGHOST=%r PGUSER=%r ENDPOINT_NAME=%r); "
+                "starting self-heal poller for late env injection.",
                 os.getenv("PGHOST"),
                 os.getenv("PGUSER"),
                 os.getenv("ENDPOINT_NAME"),
-                settings.local,
             )
+            heal_task = asyncio.create_task(_self_heal_db(), name="partyline-db-selfheal")
+
         try:
             yield
         finally:
+            if heal_task is not None:
+                heal_task.cancel()
+                try:
+                    await heal_task
+                except asyncio.CancelledError:
+                    pass
             await hub.stop()
-            if settings.db_configured:
-                await asyncio.to_thread(db.close_pool)
+            await asyncio.to_thread(db.close_pool)
 
 
 app = FastAPI(title="Covasant Partyline", version=__version__, lifespan=lifespan)
