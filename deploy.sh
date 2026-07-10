@@ -57,6 +57,16 @@ cp "$EXT_VSIX" "covasant-partyline/client/dist/$(basename "$EXT_VSIX")"
 cp "$EXT_VSIX" covasant-partyline/client/dist/partyline-extension-latest.vsix
 echo "    hosted extension v${EXT_VER} -> /partyline-extension-latest.vsix"
 
+echo "==> 2.7/4 Packaging Python client wheel + install scripts for download"
+# Build the client wheel straight into the served dir. --no-deps: only our wheel (deps are
+# resolved from PyPI at install time). A manifest file lets install.sh fetch the current
+# versioned wheel (pip can't install a non-versioned '*-latest.whl' name).
+python -m pip wheel ./partyline-client --no-deps -w covasant-partyline/client/dist
+CLIENT_WHL="$(ls -t covasant-partyline/client/dist/covasant_partyline-*.whl | head -1)"
+basename "$CLIENT_WHL" > covasant-partyline/client/dist/partyline-client-latest.txt
+cp install.sh install.ps1 covasant-partyline/client/dist/
+echo "    hosted client wheel $(basename "$CLIENT_WHL") + install.sh/install.ps1"
+
 echo "==> 3/4 Deploying bundle (target=$TARGET)"
 databricks bundle deploy -t "$TARGET" --profile "$PROFILE"
 

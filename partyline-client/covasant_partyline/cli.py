@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -194,6 +195,44 @@ tip: prefer the ./partyline.sh (or partyline.cmd) wrapper — it reads PARTYLINE
 """
 
 
+def _load_config() -> dict:
+    """Find .partyline/config.json in the cwd or any ancestor; return {} if none.
+
+    Lets the CLI be self-sufficient from inside any repo that has been onboarded — no
+    need to export PARTYLINE_URL or wrap it in a shell script.
+    """
+    d = os.getcwd()
+    while True:
+        cfg = os.path.join(d, ".partyline", "config.json")
+        if os.path.isfile(cfg):
+            try:
+                with open(cfg, encoding="utf-8") as f:
+                    return json.load(f)
+            except (OSError, ValueError):
+                return {}
+        parent = os.path.dirname(d)
+        if parent == d:
+            return {}
+        d = parent
+
+
+def _mint_token(profile: str) -> str | None:
+    """Best-effort Databricks OAuth token via the `databricks` CLI (stdlib subprocess only).
+
+    Returns None if the CLI is missing or auth fails — the caller then proceeds tokenless
+    (fine for a local/unauthenticated app; the deployed app will answer 401, which is a
+    clearer signal than a crash).
+    """
+    try:
+        out = subprocess.run(
+            ["databricks", "auth", "token", "-p", profile],
+            capture_output=True, text=True, timeout=30, check=True,
+        ).stdout
+        return json.loads(out).get("access_token")
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+        return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="partyline",
@@ -201,8 +240,13 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--url", default=DEFAULT_URL,
-                   help=f"App base URL (env PARTYLINE_URL; default {DEFAULT_URL})")
+    p.add_argument("--url", default=None,
+                   help="App base URL (default: PARTYLINE_URL, else .partyline/config.json, "
+                        f"else {DEFAULT_URL})")
+    p.add_argument("--profile", default=None,
+                   help="Databricks CLI profile for auto-minting the auth token when "
+                        "PARTYLINE_TOKEN is unset (default: .partyline/config.json, else "
+                        "DATABRICKS_CONFIG_PROFILE, else dev-eastus2)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("register", help="Register/refresh an agent")
@@ -274,6 +318,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+    cfg = _load_config()
+
+    # URL: --url > PARTYLINE_URL env > config > localhost default.
+    args.url = args.url or os.getenv("PARTYLINE_URL") or cfg.get("url") or "http://localhost:8000"
+
+    # Token: reuse PARTYLINE_TOKEN if set; otherwise mint one for a remote app. The
+    # app-specific config profile wins over the ambient DATABRICKS_CONFIG_PROFILE (which
+    # often targets another workspace and would 401). Local apps need no token.
+    is_local = args.url.startswith(("http://localhost", "http://127."))
+    if not os.getenv("PARTYLINE_TOKEN") and not is_local:
+        profile = (args.profile or cfg.get("databricksProfile")
+                   or os.getenv("DATABRICKS_CONFIG_PROFILE") or "dev-eastus2")
+        token = _mint_token(profile)
+        if token:
+            os.environ["PARTYLINE_TOKEN"] = token
+
     args.func(args)
 
 
