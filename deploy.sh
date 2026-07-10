@@ -19,7 +19,9 @@ BUILD_TS="$(date -u +%Y%m%d.%H%M)"
 GIT_COMMIT="$(git rev-parse --short=8 HEAD 2>/dev/null || echo 'unknown')"
 GIT_DIRTY="$(git diff --quiet 2>/dev/null && echo '' || echo '.dirty')"
 BUILD_HOST="$(hostname 2>/dev/null || echo 'unknown')"
-BASE_VERSION="$(grep '__version__' covasant-partyline/app/__init__.py | head -1 | sed 's/.*"\(.*\)".*/\1/' | sed 's/\.dev.*//')"
+# Match the actual `__version__ = "..."` assignment — a bare grep for __version__ also
+# hit the comment/import lines above it, so head -1 grabbed a comment (garbled version).
+BASE_VERSION="$(grep -E '^[[:space:]]*__version__[[:space:]]*=' covasant-partyline/app/__init__.py | head -1 | sed 's/.*"\(.*\)".*/\1/' | sed 's/\.dev.*//')"
 FULL_VERSION="${BASE_VERSION}.dev${BUILD_TS}"
 
 cat > covasant-partyline/app/__version__.py <<EOF
