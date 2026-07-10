@@ -50,10 +50,14 @@ echo "==> 2.5/4 Packaging VS Code extension for download"
   npm run compile
   # --allow-missing-repository: the manifest has no `repository` field, and without this
   # flag vsce errors in a non-interactive shell (set -e would then abort the deploy).
-  # `yes |`: there is no LICENSE file, so vsce still PROMPTS ("Do you want to continue?
-  # [y/N]") in a TTY and stalls the deploy waiting on stdin. Feed it 'y' so the packaging
-  # stays fully hands-off. (.vscodeignore below silences the other, non-blocking warning.)
-  yes | npx --yes @vscode/vsce package --allow-missing-repository
+  # `printf 'y\n' |`: there is no LICENSE file, so vsce still PROMPTS ("Do you want to
+  # continue? [y/N]") in a TTY and stalls the deploy waiting on stdin. Feed it 'y' so the
+  # packaging stays fully hands-off. (.vscodeignore silences the other, non-blocking warning.)
+  # NOTE: use printf, NOT `yes` — `yes` is an infinite writer that gets SIGPIPE-killed
+  # (exit 141) when vsce closes stdin, and `set -o pipefail` (line 7) would then make the
+  # whole pipeline fail and abort the deploy right after packaging. `printf` writes two
+  # bytes, exits 0, and lets vsce's real exit code propagate through the pipe.
+  printf 'y\n' | npx --yes @vscode/vsce package --allow-missing-repository
 )
 EXT_VSIX="$(ls -t editors/vscode/covasant-partyline-*.vsix | head -1)"
 EXT_VER="$(basename "$EXT_VSIX" | sed -E 's/covasant-partyline-(.*)\.vsix/\1/')"
