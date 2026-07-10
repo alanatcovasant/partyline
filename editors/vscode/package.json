@@ -2,7 +2,7 @@
   "name": "covasant-partyline",
   "displayName": "Covasant Partyline",
   "description": "Real-time inter-agent coordination notifications for Covasant Partyline",
-  "version": "0.1.6",
+  "version": "0.1.9",
   "publisher": "covasant",
   "engines": { "vscode": "^1.95.0" },
   "categories": ["Other"],
@@ -71,7 +71,8 @@
       { "command": "partyline.connect", "title": "Partyline: Connect" },
       { "command": "partyline.disconnect", "title": "Partyline: Disconnect" },
       { "command": "partyline.markRead", "title": "Partyline: Mark All Read" },
-      { "command": "partyline.copyDiagnostics", "title": "Partyline: Copy Diagnostics", "icon": "$(copy)" }
+      { "command": "partyline.copyDiagnostics", "title": "Partyline: Copy Diagnostics", "icon": "$(copy)" },
+      { "command": "partyline.copyAgentId", "title": "Partyline: Copy Agent ID", "icon": "$(account)" }
     ],
     "menus": {
       "view/title": [

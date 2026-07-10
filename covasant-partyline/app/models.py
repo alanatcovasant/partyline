@@ -54,6 +54,10 @@ class RegisterAgent(BaseModel):
 class Agent(RegisterAgent):
     registered_at: datetime | None = None
     last_heartbeat: datetime | None = None
+    # Most recent `status`-type message this agent posted (for the agent status grid in
+    # the dashboard and VS Code extension). Null if the agent has never posted a status.
+    last_status: str | None = None
+    last_status_at: datetime | None = None
 
 
 # --------------------------------------------------------------------------- #

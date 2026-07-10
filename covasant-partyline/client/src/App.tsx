@@ -17,7 +17,13 @@ type Agent = {
   repo?: string | null;
   branch?: string | null;
   last_heartbeat: string;
+  last_status?: string | null;
+  last_status_at?: string | null;
 };
+
+// An agent counts as "online" if it has heartbeat within this window (every partyline
+// call refreshes the heartbeat). Older-but-still-listed agents render as offline.
+const ONLINE_WITHIN_SECS = 120;
 type Claim = {
   id: string;
   resource_path: string;
@@ -359,16 +365,53 @@ export function App() {
 
           <section>
             <h2>Active agents ({agents.length})</h2>
-            <ul className="pills">
-              {agents.map((a) => (
-                <li key={a.agent_id}>
-                  <b>{a.agent_id}</b>
-                  {a.repo && <span className="muted">{a.repo}{a.branch ? `@${a.branch}` : ""}</span>}
-                  <time>{new Date(a.last_heartbeat).toLocaleTimeString()}</time>
-                </li>
-              ))}
-              {!agents.length && <li className="muted">None active.</li>}
-            </ul>
+            <table className="agent-grid">
+              <thead>
+                <tr>
+                  <th aria-label="online" />
+                  <th>Agent</th>
+                  <th>Last status</th>
+                  <th>When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {agents.map((a) => {
+                  const ageSec = Math.floor((nowMs - new Date(a.last_heartbeat).getTime()) / 1000);
+                  const online = ageSec < ONLINE_WITHIN_SECS;
+                  return (
+                    <tr key={a.agent_id}>
+                      <td>
+                        <span
+                          className={online ? "dot on" : "dot off"}
+                          title={online ? "online" : `offline — last seen ${fmtAge(ageSec)}`}
+                        />
+                      </td>
+                      <td>
+                        <b>{a.agent_id}</b>
+                        {a.repo && (
+                          <span className="muted"> {a.repo}{a.branch ? `@${a.branch}` : ""}</span>
+                        )}
+                      </td>
+                      <td>
+                        {a.last_status
+                          ? <code title={a.last_status}>{a.last_status}</code>
+                          : <span className="muted">—</span>}
+                      </td>
+                      <td>
+                        <time title={a.last_status_at ? new Date(a.last_status_at).toLocaleString() : undefined}>
+                          {a.last_status_at
+                            ? fmtAge(Math.floor((nowMs - new Date(a.last_status_at).getTime()) / 1000))
+                            : "—"}
+                        </time>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!agents.length && (
+                  <tr><td colSpan={4} className="muted">None active.</td></tr>
+                )}
+              </tbody>
+            </table>
           </section>
 
           <section>

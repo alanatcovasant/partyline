@@ -225,6 +225,9 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_messages_issue_ref ON messages (issue_ref);
+-- Serves the "latest status per agent" lateral join in list_agents (dashboard/extension
+-- agent grid): newest status row per agent_id without scanning the whole table.
+CREATE INDEX IF NOT EXISTS idx_messages_agent_status ON messages (agent_id, message_type, created_at DESC);
 
 -- Retention archive: the retention job moves (not deletes) old messages here, in the
 -- same transaction as the prune, so history survives OLTP pruning. Queryable from
@@ -330,11 +333,20 @@ def _heartbeat(conn, agent_id: str) -> None:
 def list_agents(active_within_seconds: int = 3600) -> list[dict]:
     with get_pool().connection() as conn:
         rows = conn.execute(
-            """SELECT agent_id, owner, repo, branch, display_name,
-                      registered_at, last_heartbeat
-               FROM agents
-               WHERE last_heartbeat > now() - make_interval(secs => %s)
-               ORDER BY last_heartbeat DESC""",
+            """SELECT a.agent_id, a.owner, a.repo, a.branch, a.display_name,
+                      a.registered_at, a.last_heartbeat,
+                      s.payload    AS last_status,
+                      s.created_at AS last_status_at
+               FROM agents a
+               LEFT JOIN LATERAL (
+                   SELECT payload, created_at
+                   FROM messages m
+                   WHERE m.agent_id = a.agent_id AND m.message_type = 'status'
+                   ORDER BY m.created_at DESC
+                   LIMIT 1
+               ) s ON true
+               WHERE a.last_heartbeat > now() - make_interval(secs => %s)
+               ORDER BY a.last_heartbeat DESC""",
             (active_within_seconds,),
         ).fetchall()
     log.info("list_agents returned count=%s active_within_seconds=%s", len(rows), active_within_seconds)

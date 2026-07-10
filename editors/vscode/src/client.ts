@@ -27,6 +27,8 @@ export interface PartylineAgent {
   branch?: string;
   display_name?: string;
   last_heartbeat: string;
+  last_status?: string | null;
+  last_status_at?: string | null;
 }
 
 export interface PartylineClaim {

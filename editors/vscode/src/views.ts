@@ -50,9 +50,32 @@ export class AgentsProvider implements vscode.TreeDataProvider<PartylineAgent> {
       agent.display_name || agent.agent_id,
       vscode.TreeItemCollapsibleState.None
     );
-    item.description = `${agent.repo}${agent.branch ? "/" + agent.branch : ""}`;
-    item.tooltip = `Owner: ${agent.owner}\nLast seen: ${agent.last_heartbeat}`;
-    item.iconPath = new vscode.ThemeIcon("person");
+
+    // Online = heartbeat within the last 2 min (every partyline call refreshes it).
+    const ageMs = Date.now() - new Date(agent.last_heartbeat).getTime();
+    const online = isFinite(ageMs) && ageMs < 120_000;
+
+    // Description shows the last status (the useful at-a-glance signal); fall back to the
+    // repo when the agent hasn't posted a status yet.
+    const repoLabel = `${agent.repo}${agent.branch ? "/" + agent.branch : ""}`;
+    item.description = agent.last_status
+      ? agent.last_status.replace(/\s+/g, " ").slice(0, 60)
+      : repoLabel;
+
+    const statusBlock = agent.last_status
+      ? `\n\n**Last status**${agent.last_status_at ? ` · ${new Date(agent.last_status_at).toLocaleString()}` : ""}:\n\n${agent.last_status}`
+      : "\n\n_No status posted yet._";
+    item.tooltip = new vscode.MarkdownString(
+      `**${agent.agent_id}** — ${online ? "🟢 online" : "⚪ offline"}\n\n` +
+      `Repo: ${repoLabel}\n\nOwner: ${agent.owner}\n\n` +
+      `Last seen: ${new Date(agent.last_heartbeat).toLocaleString()}` +
+      statusBlock
+    );
+
+    // Green filled dot when online, hollow when not.
+    item.iconPath = online
+      ? new vscode.ThemeIcon("circle-filled", new vscode.ThemeColor("charts.green"))
+      : new vscode.ThemeIcon("circle-outline");
     return item;
   }
 
@@ -247,9 +270,11 @@ export class DiagnosticsProvider implements vscode.TreeDataProvider<vscode.TreeI
   private claims = 0;
   private errorCount = 0;
   private events: RecentEvent[] = [];
+  private agentId = "—";
 
   constructor(private readonly version: string = "?") {}
 
+  setAgentId(id: string) { this.agentId = id || "—"; this._onDidChange.fire(); }
   setConnection(state: string) { this.connection = state; this._onDidChange.fire(); }
   noteMessage() { this.lastMessageAt = Date.now(); this._onDidChange.fire(); }
   setToken(status: string) { this.token = status; this._onDidChange.fire(); }
@@ -311,7 +336,26 @@ export class DiagnosticsProvider implements vscode.TreeDataProvider<vscode.TreeI
       ? formatDuration(Math.floor((now - this.lastMessageAt) / 1000)) + " ago"
       : "—";
 
+    // Agent ID — click to copy. This is the identity the human/other agents address.
+    const agentIdItem = new vscode.TreeItem("Agent ID", vscode.TreeItemCollapsibleState.None);
+    agentIdItem.description = this.agentId;
+    agentIdItem.iconPath = new vscode.ThemeIcon("account");
+    agentIdItem.contextValue = "agentId";
+    if (this.agentId && this.agentId !== "—") {
+      agentIdItem.command = {
+        command: "partyline.copyAgentId",
+        title: "Copy Agent ID",
+        arguments: [this.agentId],
+      };
+      agentIdItem.tooltip = new vscode.MarkdownString(
+        `\`${this.agentId}\`\n\n_Click to copy_`
+      );
+    } else {
+      agentIdItem.tooltip = "No agent ID resolved yet";
+    }
+
     const items: vscode.TreeItem[] = [
+      agentIdItem,
       row("Version", `v${this.version}`, "tag"),
       conn,
       row("Last message", lastMsg, "comment"),
