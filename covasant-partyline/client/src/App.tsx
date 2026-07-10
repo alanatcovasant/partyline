@@ -252,6 +252,9 @@ export function App() {
         {health?.version && <span className="muted">v{health.version}</span>}
         <span className={connected ? "dot on" : "dot off"} />
         <span className="muted">{connected ? "live" : "disconnected"}</span>
+        <a className="ext-dl" href="/partyline-extension-latest.vsix" download title="Download the Covasant Partyline VS Code extension (.vsix)">
+          ⬇ VS Code extension
+        </a>
       </header>
 
       <div className="grid">

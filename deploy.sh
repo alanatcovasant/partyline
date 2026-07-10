@@ -35,8 +35,25 @@ echo "==> 1/3 Provisioning Lakebase ($ENDPOINT_NAME) on profile $PROFILE"
 ENDPOINT_NAME="$ENDPOINT_NAME" DATABRICKS_CONFIG_PROFILE="$PROFILE" \
   python scripts/provision_lakebase.py
 
-echo "==> 2/3 Building ops SPA"
+echo "==> 2/4 Building ops SPA"
 ( cd covasant-partyline/client && npm install && npm run build )
+
+echo "==> 2.5/4 Packaging VS Code extension for download"
+# Build the extension and host it from the SPA's static dir so teammates can install it
+# straight from the app (<app-url>/partyline-extension-latest.vsix). Must run AFTER the
+# SPA build — vite empties client/dist on build, which would otherwise wipe the .vsix.
+(
+  cd editors/vscode
+  npm install
+  npm run compile
+  npx --yes @vscode/vsce package
+)
+EXT_VSIX="$(ls -t editors/vscode/covasant-partyline-*.vsix | head -1)"
+EXT_VER="$(basename "$EXT_VSIX" | sed -E 's/covasant-partyline-(.*)\.vsix/\1/')"
+mkdir -p covasant-partyline/client/dist
+cp "$EXT_VSIX" "covasant-partyline/client/dist/$(basename "$EXT_VSIX")"
+cp "$EXT_VSIX" covasant-partyline/client/dist/partyline-extension-latest.vsix
+echo "    hosted extension v${EXT_VER} -> /partyline-extension-latest.vsix"
 
 echo "==> 3/4 Deploying bundle (target=$TARGET)"
 databricks bundle deploy -t "$TARGET" --profile "$PROFILE"
