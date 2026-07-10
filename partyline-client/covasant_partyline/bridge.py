@@ -50,6 +50,10 @@ log = logging.getLogger("partyline.bridge")
 _LOCK_WARN_SECS = 5.0
 _CALL_WARN_SECS = 10.0
 _CALL_TIMEOUT_SECS = 120.0
+# Bound the connect/initialize handshake so a cold or mid-restart app (Databricks Apps
+# scale to zero) can't stall the bridge forever — without this, a hung initialize() blocks
+# until the MCP client's own idle timeout (~30min) and reads as "Connection closed".
+_CONNECT_TIMEOUT_SECS = 30.0
 
 
 def _auth_headers(cfg: Config) -> dict[str, str]:
@@ -112,9 +116,23 @@ class _Remote:
         stack = AsyncExitStack()
         headers = _auth_headers(self._cfg)  # fresh token every (re)connect
         log.debug("Auth headers resolved (auth_type=%s)", getattr(self._cfg, "auth_type", "unknown"))
-        read, write, _ = await stack.enter_async_context(streamablehttp_client(self._url, headers=headers))
-        session = await stack.enter_async_context(ClientSession(read, write))
-        init = await session.initialize()
+        try:
+            read, write, _ = await stack.enter_async_context(streamablehttp_client(self._url, headers=headers))
+            session = await stack.enter_async_context(ClientSession(read, write))
+            # Only the initialize() RPC is timeout-wrapped: it awaits a server response
+            # (where a cold app stalls) but doesn't own the streams' anyio cancel scopes,
+            # so cancelling it is safe. The transport entry above relies on httpx's own
+            # connect timeout. On failure we close the stack from *this* task — the one
+            # that entered the contexts — to avoid anyio's cross-task-exit error.
+            init = await asyncio.wait_for(session.initialize(), timeout=_CONNECT_TIMEOUT_SECS)
+        except BaseException as exc:
+            try:
+                await stack.aclose()
+            except Exception:
+                log.warning("Error cleaning up failed connect", exc_info=True)
+            if isinstance(exc, asyncio.TimeoutError):
+                log.error("Connect TIMEOUT after %.0fs to %s", _CONNECT_TIMEOUT_SECS, self._url)
+            raise
         # Capture the upstream server's how-to text so the proxy can advertise it to the
         # agent's MCP client (FR: teach any client how to use the line, no skill needed).
         self.instructions = getattr(init, "instructions", None) or self.instructions
