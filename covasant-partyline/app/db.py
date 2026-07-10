@@ -68,7 +68,14 @@ def _conninfo() -> str:
     pg_database = settings.pg_database or os.getenv("PGDATABASE", "databricks_postgres")
     pg_port = settings.pg_port or os.getenv("PGPORT", "5432")
     pg_sslmode = settings.pg_sslmode or os.getenv("PGSSLMODE", "require")
-    return f"dbname={pg_database} user={pg_user} host={pg_host} port={pg_port} sslmode={pg_sslmode}"
+    # connect_timeout bounds a stalled TCP/TLS handshake (Lakebase scaling from zero,
+    # control-plane slowness). TCP keepalives let the kernel surface a silently-dropped
+    # socket as an error instead of a pooled connection that hangs on first use.
+    return (
+        f"dbname={pg_database} user={pg_user} host={pg_host} port={pg_port} "
+        f"sslmode={pg_sslmode} connect_timeout=10 "
+        "keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_count=3"
+    )
 
 
 class OAuthConnection(psycopg.Connection):
@@ -89,7 +96,12 @@ def get_pool() -> ConnectionPool:
             "max_size": 10,
             "open": False,
             # search_path pins all statements to the app's own schema (see APP_SCHEMA).
-            "kwargs": {"row_factory": dict_row, "options": f"-c search_path={APP_SCHEMA}"},
+            # statement_timeout caps any single query so a hung statement (lock wait,
+            # Lakebase stall) can't pin a threadpool thread forever and starve the server.
+            "kwargs": {
+                "row_factory": dict_row,
+                "options": f"-c search_path={APP_SCHEMA} -c statement_timeout=30000",
+            },
         }
         if settings.local:
             # Local dev: use PGPASSWORD, standard connection class, no token rotation.
@@ -210,7 +222,14 @@ def init_schema() -> None:
             try:
                 conn.execute(stmt)
                 conn.commit()
-            except psycopg.errors.InsufficientPrivilege as exc:
+            except (
+                psycopg.errors.InsufficientPrivilege,
+                # With statement_timeout set, a best-effort ALTER (e.g. REPLICA IDENTITY,
+                # which needs ACCESS EXCLUSIVE) can be canceled or lose a lock race. These
+                # are idempotent/optional, so skip-and-continue rather than crash startup.
+                psycopg.errors.QueryCanceled,
+                psycopg.errors.LockNotAvailable,
+            ) as exc:
                 conn.rollback()
                 log.warning("Schema statement skipped (%s): %.80s", exc, stmt)
     log.info("Schema ensured (agents, messages, checkpoints, claims).")
