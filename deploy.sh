@@ -46,7 +46,9 @@ echo "==> 2.5/4 Packaging VS Code extension for download"
   cd editors/vscode
   npm install
   npm run compile
-  npx --yes @vscode/vsce package
+  # --allow-missing-repository: the manifest has no `repository` field, and without this
+  # flag vsce errors in a non-interactive shell (set -e would then abort the deploy).
+  npx --yes @vscode/vsce package --allow-missing-repository
 )
 EXT_VSIX="$(ls -t editors/vscode/covasant-partyline-*.vsix | head -1)"
 EXT_VER="$(basename "$EXT_VSIX" | sed -E 's/covasant-partyline-(.*)\.vsix/\1/')"

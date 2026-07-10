@@ -94,7 +94,10 @@ def _mint_token() -> str:
     # hits; a brief window where two threads both mint is harmless (last write wins).
     log.debug("Minting Lakebase OAuth credential for endpoint=%s", settings.endpoint_name)
     cred = _ws().postgres.generate_database_credential(endpoint=settings.endpoint_name)
-    ttl = _credential_ttl(cred.expiration_time)
+    # getattr, not attribute access: older databricks-sdk builds (the version pinned in
+    # the deployed app) have no `expiration_time` on DatabaseCredential — a hard access
+    # raises AttributeError, which previously broke every connection and crashed startup.
+    ttl = _credential_ttl(getattr(cred, "expiration_time", None))
     with _token_lock:
         _cached_token = cred.token
         _cached_token_exp = time.monotonic() + ttl
@@ -169,7 +172,18 @@ def get_pool() -> ConnectionPool:
             _pool_opened = True
             log.info("Connection pool opened")
         except Exception:
-            log.exception("Pool open failed; will retry on next use")
+            # A pool that failed to open is closed, and psycopg cannot reopen a closed
+            # pool. Discard it so the next call builds a fresh one (self-heal), and
+            # re-raise — never return a dead pool that would then raise PoolClosed on use
+            # (which is exactly what crashed startup once mint began failing).
+            log.exception("Pool open failed; discarding pool for rebuild")
+            try:
+                _pool.close()
+            except Exception:
+                pass
+            _pool = None
+            _pool_opened = False
+            raise
     return _pool
 
 
