@@ -7,11 +7,13 @@ bundle:
 include:
   - resources/*.yml
 
-# node_modules/.venv are already skipped via .gitignore. The built ops SPA is
-# gitignored too (build artifact) but IS needed at runtime, so force-sync it.
+# node_modules/.venv are already skipped via .gitignore. The built ops SPA and the
+# deploy-stamped build metadata are gitignored (build artifacts) but ARE needed at
+# runtime, so force-sync them — otherwise the app falls back to 0.1.0.dev0 defaults.
 sync:
   include:
     - "covasant-partyline/client/dist/**"
+    - "covasant-partyline/app/__version__.py"
 
 artifacts:
   python_artifact:
