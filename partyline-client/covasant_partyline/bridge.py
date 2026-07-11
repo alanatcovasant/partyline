@@ -49,7 +49,16 @@ log = logging.getLogger("partyline.bridge")
 # Diagnostics thresholds (seconds)
 _LOCK_WARN_SECS = 5.0
 _CALL_WARN_SECS = 10.0
+# Hard wall-clock ceiling for one proxied operation (connect + tool call, incl. one
+# reconnect retry). The op runs in a shielded task and is ABANDONED past this deadline:
+# asyncio.wait_for alone is not enough because an anyio stream read inside the mcp session
+# can swallow the cancellation on a half-open socket (app mid-restart), which is exactly
+# how a single tool call was observed hanging the client's full ~1800s idle timeout.
 _CALL_TIMEOUT_SECS = 120.0
+# Never wait on the per-remote lock longer than this. The previous unbounded acquire meant
+# one wedged call blocked EVERY later call until the client's ~1800s idle timeout. Slightly
+# above _CALL_TIMEOUT_SECS so a legitimately in-flight call can finish and release first.
+_LOCK_ACQUIRE_TIMEOUT_SECS = 150.0
 # Bound the connect/initialize handshake so a cold or mid-restart app (Databricks Apps
 # scale to zero) can't stall the bridge forever — without this, a hung initialize() blocks
 # until the MCP client's own idle timeout (~30min) and reads as "Connection closed".
@@ -150,55 +159,103 @@ class _Remote:
         self._stack = self._session = None
 
     async def call(self, op, label: str = "?"):
-        """Run ``op(session)``, reconnecting with fresh credentials on failure."""
+        """Run ``op(session)``, reconnecting with fresh credentials on failure.
+
+        Hard-bounded end to end: a call can block at most _LOCK_ACQUIRE_TIMEOUT_SECS
+        (waiting its turn) plus _CALL_TIMEOUT_SECS (the op itself) — both well under the
+        MCP client's ~1800s idle timeout. A wedged remote therefore surfaces as a fast
+        error the client can reconnect from, instead of a silent 30-minute hang.
+        """
         log.debug("[%s] acquiring lock ...", label)
         t_wait = time.monotonic()
-        lock_acquired = False
         try:
-            lock_acquired = await asyncio.wait_for(self._lock.acquire(), timeout=_LOCK_WARN_SECS)
+            # Bounded acquire (was unbounded): if a prior call wedged the connection, fail
+            # fast so the client reconnects rather than queueing behind it until 1800s.
+            await asyncio.wait_for(self._lock.acquire(), timeout=_LOCK_ACQUIRE_TIMEOUT_SECS)
         except asyncio.TimeoutError:
-            log.warning("[%s] lock contention — waited %.0fs, another call in progress", label, _LOCK_WARN_SECS)
-            await self._lock.acquire()
-            lock_acquired = True
+            log.error(
+                "[%s] bridge busy >%.0fs (prior call wedged) — failing fast to trigger reconnect",
+                label,
+                _LOCK_ACQUIRE_TIMEOUT_SECS,
+            )
+            raise RuntimeError(
+                f"partyline bridge busy for >{_LOCK_ACQUIRE_TIMEOUT_SECS:.0f}s; the remote app "
+                "may be restarting — please retry."
+            )
         lock_wait = time.monotonic() - t_wait
         if lock_wait > _LOCK_WARN_SECS:
             log.warning("[%s] lock acquired after %.2fs", label, lock_wait)
         else:
             log.debug("[%s] lock acquired in %.3fs", label, lock_wait)
 
-        t0 = time.monotonic()
         try:
+            return await self._call_bounded(op, label)
+        finally:
+            self._lock.release()
+
+    async def _call_bounded(self, op, label: str):
+        """Attempt ``op`` (reconnecting once on error) under a hard wall-clock deadline.
+
+        The attempt runs in its own task and is ``shield``-ed: if the deadline fires we
+        ABANDON that (possibly cancellation-deaf) task rather than awaiting it, drop the
+        session so the next call rebuilds a fresh transport, and raise. This is the part
+        plain ``wait_for(op, ...)`` could not guarantee — an anyio read on a half-open
+        socket can ignore the cancellation and keep the coroutine alive indefinitely.
+        """
+        t0 = time.monotonic()
+
+        async def _attempt():
             try:
                 session = self._session or await self._connect()
-                result = await asyncio.wait_for(op(session), timeout=_CALL_TIMEOUT_SECS)
-            except asyncio.TimeoutError:
-                elapsed = time.monotonic() - t0
-                log.error(
-                    "[%s] TIMEOUT after %.1fs (limit=%.0fs) — forcing reconnect", label, elapsed, _CALL_TIMEOUT_SECS
-                )
-                self._session = None
+                return await op(session)
+            except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                elapsed = time.monotonic() - t0
-                log.warning("[%s] error after %.2fs (%s: %s) — reconnecting", label, elapsed, type(exc).__name__, exc)
+                log.warning("[%s] error after %.2fs (%s: %s) — reconnecting once",
+                            label, time.monotonic() - t0, type(exc).__name__, exc)
                 session = await self._connect()
-                result = await asyncio.wait_for(op(session), timeout=_CALL_TIMEOUT_SECS)
+                return await op(session)
+
+        task = asyncio.ensure_future(_attempt())
+        try:
+            result = await asyncio.wait_for(asyncio.shield(task), timeout=_CALL_TIMEOUT_SECS)
+        except asyncio.TimeoutError:
             elapsed = time.monotonic() - t0
-            if elapsed > _CALL_WARN_SECS:
-                log.warning("[%s] slow call: %.2fs", label, elapsed)
-            else:
-                log.debug("[%s] completed in %.2fs", label, elapsed)
-            return result
-        finally:
-            if lock_acquired:
-                self._lock.release()
+            log.error(
+                "[%s] HARD DEADLINE %.0fs exceeded (remote wedged) — dropping session for reconnect",
+                label,
+                _CALL_TIMEOUT_SECS,
+            )
+            # Best-effort cancel and detach: do NOT await it (it may be ignoring the
+            # cancel). Drop only the session ref so the NEXT call reconnects into a fresh
+            # transport; _connect()'s close() reaps the old (leaked) stack then, guarded.
+            task.cancel()
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+            self._session = None
+            raise
+        elapsed = time.monotonic() - t0
+        if elapsed > _CALL_WARN_SECS:
+            log.warning("[%s] slow call: %.2fs", label, elapsed)
+        else:
+            log.debug("[%s] completed in %.2fs", label, elapsed)
+        return result
 
 
 async def _serve(cfg: Config, mcp_url: str) -> None:
     remote = _Remote(cfg, mcp_url)
-    # Connect eagerly so misconfiguration fails at startup, not at the first tool call.
-    # This also populates remote.instructions from the upstream initialize().
-    await remote.call(lambda s: s.list_tools(), label="startup/list_tools")
+    # Try to connect eagerly to surface misconfiguration early and to capture the upstream
+    # instructions — but do NOT die if it fails. When the bridge (re)spawns while the app
+    # is mid-restart, a fatal startup connect would exit the process, so the MCP client
+    # burns a 30s connect-timeout and retries repeatedly. Serving regardless lets the
+    # bridge stay up and reconnect lazily on the first real call once the app is back.
+    try:
+        await remote.call(lambda s: s.list_tools(), label="startup/list_tools")
+    except Exception:
+        log.warning(
+            "Startup connect failed (app may be starting/restarting) — serving anyway; "
+            "will connect on the first tool call.",
+            exc_info=True,
+        )
     # Forward the upstream server's instructions so the agent's client sees the how-to.
     proxy = Server("covasant-partyline-bridge", instructions=remote.instructions)
 
