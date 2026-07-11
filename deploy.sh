@@ -37,6 +37,15 @@ echo "==> 1/3 Provisioning Lakebase ($ENDPOINT_NAME) on profile $PROFILE"
 ENDPOINT_NAME="$ENDPOINT_NAME" DATABRICKS_CONFIG_PROFILE="$PROFILE" \
   python scripts/provision_lakebase.py
 
+echo "==> 1.5/3 Migrating schema as owner (owner-only DDL the app SP can't run)"
+# The app connects as its service principal, which does NOT own the partyline tables, so
+# ALTER/CREATE INDEX from the app's init_schema are skipped. Run that DDL here as the
+# deploying user (the owner) BEFORE the app restarts, so schema changes land on deployed
+# instead of crash-looping the app. Idempotent; no-op on a first-ever deploy. See
+# docs/adr/2026-07-11-conversation-threading-and-search.md.
+ENDPOINT_NAME="$ENDPOINT_NAME" APP_NAME="mcp-covasant-partyline" DATABRICKS_CONFIG_PROFILE="$PROFILE" \
+  python scripts/migrate_schema.py
+
 echo "==> 2/4 Building ops SPA"
 ( cd covasant-partyline/client && npm install && npm run build )
 
