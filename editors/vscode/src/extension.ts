@@ -174,7 +174,8 @@ export function activate(context: vscode.ExtensionContext) {
       }
       await vscode.env.clipboard.writeText(agentId);
       vscode.window.showInformationMessage(`Copied agent ID: ${agentId}`);
-    })
+    }),
+    vscode.commands.registerCommand("partyline.search", () => searchHistory())
   );
 
   // Register MCP server for any LM in VS Code (Copilot, Claude, etc.)
@@ -303,20 +304,26 @@ async function connect(
         openInChat(msg);
       }
 
-      // Human notification
-      vscode.window
-        .showInformationMessage(
-          `📬 ${msg.agent_id}: ${msg.payload?.slice(0, 100) || msg.message_type}`,
-          "View",
-          "Send to Chat"
-        )
-        .then((action) => {
-          if (action === "View") {
-            vscode.commands.executeCommand("partyline.messages.focus");
-          } else if (action === "Send to Chat") {
-            openInChat(msg);
-          }
-        });
+      // Human notification (toast). Push-delivered via SSE — no polling. Gated by
+      // partyline.notifyToast (default true) so it can be silenced without losing the
+      // tree/status-bar updates. "View thread" pivots to the full conversation.
+      if (config.get<boolean>("notifyToast", true)) {
+        const actions = ["View", "View thread", "Send to Chat"];
+        vscode.window
+          .showInformationMessage(
+            `📬 ${msg.agent_id}: ${msg.payload?.slice(0, 100) || msg.message_type}`,
+            ...actions
+          )
+          .then((action) => {
+            if (action === "View") {
+              vscode.commands.executeCommand("partyline.messages.focus");
+            } else if (action === "View thread" && msg.conversation_id) {
+              void showConversation(msg.conversation_id);
+            } else if (action === "Send to Chat") {
+              openInChat(msg);
+            }
+          });
+      }
     }
     updateStatusBar(client!.unreadCount);
   });
@@ -581,6 +588,81 @@ function openInChat(msg: PartylineMessage) {
   // Open Copilot chat in agent mode with the message as the query. Best-effort: whether
   // this auto-submits the turn or just prefills depends on the VS Code chat version.
   vscode.commands.executeCommand("workbench.action.chat.open", { query: prompt, mode: "agent" });
+}
+
+let searchChannel: vscode.OutputChannel | undefined;
+
+/** Render a list of messages (a thread or a single hit) into the Partyline Search
+ *  output channel and reveal it. */
+function renderThread(title: string, rows: PartylineMessage[]) {
+  if (!searchChannel) {
+    searchChannel = vscode.window.createOutputChannel("Partyline Search");
+  }
+  searchChannel.clear();
+  searchChannel.appendLine(title);
+  searchChannel.appendLine("=".repeat(title.length));
+  for (const m of rows) {
+    const when = new Date(m.created_at).toLocaleString();
+    const to = m.recipient ? ` → ${m.recipient}` : "";
+    const src = m.source === "archive" ? " [archived]" : "";
+    searchChannel.appendLine(`\n#${m.id} [${m.message_type}] ${m.agent_id}${to}${src}  (${when})`);
+    if (m.payload) { searchChannel.appendLine(m.payload); }
+  }
+  searchChannel.show(true);
+}
+
+/** Load and display a full conversation thread. */
+async function showConversation(conversationId: string) {
+  if (!client) {
+    vscode.window.showWarningMessage("Partyline: not connected.");
+    return;
+  }
+  try {
+    const rows = await client.getConversation(conversationId);
+    renderThread(`Conversation ${conversationId} (${rows.length} messages)`, rows);
+  } catch (e) {
+    vscode.window.showErrorMessage(`Partyline: failed to load conversation (${e})`);
+  }
+}
+
+/** Prompt for a query, search live + archived history, and pivot a hit to its thread. */
+async function searchHistory() {
+  if (!client) {
+    vscode.window.showWarningMessage("Partyline: not connected — connect first.");
+    return;
+  }
+  const q = await vscode.window.showInputBox({
+    prompt: "Search partyline history (live + archived)",
+    placeHolder: 'keywords, "quoted phrase", OR, -exclude',
+  });
+  if (!q || !q.trim()) { return; }
+  let hits: PartylineMessage[];
+  try {
+    hits = await client.searchMessages(q.trim(), 50);
+  } catch (e) {
+    vscode.window.showErrorMessage(`Partyline: search failed (${e})`);
+    return;
+  }
+  if (!hits.length) {
+    vscode.window.showInformationMessage(`Partyline: no matches for "${q.trim()}".`);
+    return;
+  }
+  const items = hits.map((m) => ({
+    label: `$(comment) ${m.message_type} · ${m.agent_id}`,
+    description: m.source === "archive" ? "archived" : "",
+    detail: (m.payload || "").replace(/\s+/g, " ").slice(0, 200),
+    msg: m,
+  }));
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: `${hits.length} result(s) — select to open the full thread`,
+    matchOnDetail: true,
+  });
+  if (!pick) { return; }
+  if (pick.msg.conversation_id) {
+    await showConversation(pick.msg.conversation_id);
+  } else {
+    renderThread(`Message #${pick.msg.id}`, [pick.msg]);
+  }
 }
 
 function handleDiagnosticEvent(event: PartylineDiagnosticEvent) {

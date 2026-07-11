@@ -17,6 +17,9 @@ export interface PartylineMessage {
   resource_path?: string;
   payload?: string;
   mentions?: string[];
+  conversation_id?: string;
+  /** Only set on search/conversation results: "live" | "archive". */
+  source?: string;
   created_at: string;
 }
 
@@ -152,6 +155,21 @@ export class PartylineClient {
     const q = `only_for_me=${onlyForMe ? "true" : "false"}&limit=${limit}`;
     return this.fetchJson<PartylineMessage[]>(
       `/api/agents/${encodeURIComponent(this.agentId)}/unread?${q}`
+    );
+  }
+
+  /** Full-text search across live + archived history (websearch syntax). Each hit
+   *  carries conversation_id (pass to getConversation) and source (live|archive). */
+  searchMessages(query: string, limit = 30): Promise<PartylineMessage[]> {
+    return this.fetchJson<PartylineMessage[]>(
+      `/api/search?q=${encodeURIComponent(query)}&limit=${limit}`
+    );
+  }
+
+  /** Every message in a conversation thread (live + archived), oldest first. */
+  getConversation(conversationId: string, limit = 200): Promise<PartylineMessage[]> {
+    return this.fetchJson<PartylineMessage[]>(
+      `/api/conversations/${encodeURIComponent(conversationId)}?limit=${limit}`
     );
   }
 

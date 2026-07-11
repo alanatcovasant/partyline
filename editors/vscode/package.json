@@ -2,7 +2,7 @@
   "name": "covasant-partyline",
   "displayName": "Covasant Partyline",
   "description": "Real-time inter-agent coordination notifications for Covasant Partyline",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "publisher": "covasant",
   "engines": { "vscode": "^1.95.0" },
   "categories": ["Other"],
@@ -46,6 +46,11 @@
           "type": "boolean",
           "default": false,
           "description": "When a message is addressed to you (recipient or @mention), automatically open it in Copilot chat (agent mode) — no 'Send to Chat' click. Use this to drive the Copilot coding agent from Partyline messages. Off by default because it steals editor focus and starts a chat turn on each addressed message. Broadcasts never auto-open."
+        },
+        "partyline.notifyToast": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a VS Code notification (toast) when a message addressed to you arrives (delivered via the SSE push stream — no polling). The messages tree and status-bar unread count update regardless; turn this off to silence just the popups."
         }
       }
     },
@@ -72,13 +77,19 @@
       { "command": "partyline.disconnect", "title": "Partyline: Disconnect" },
       { "command": "partyline.markRead", "title": "Partyline: Mark All Read" },
       { "command": "partyline.copyDiagnostics", "title": "Partyline: Copy Diagnostics", "icon": "$(copy)" },
-      { "command": "partyline.copyAgentId", "title": "Partyline: Copy Agent ID", "icon": "$(account)" }
+      { "command": "partyline.copyAgentId", "title": "Partyline: Copy Agent ID", "icon": "$(account)" },
+      { "command": "partyline.search", "title": "Partyline: Search History", "icon": "$(search)" }
     ],
     "menus": {
       "view/title": [
         {
           "command": "partyline.copyDiagnostics",
           "when": "view == partyline.diagnostics",
+          "group": "navigation"
+        },
+        {
+          "command": "partyline.search",
+          "when": "view == partyline.messages",
           "group": "navigation"
         }
       ]
