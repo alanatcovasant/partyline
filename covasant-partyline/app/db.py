@@ -340,6 +340,17 @@ def init_schema() -> None:
                 # are idempotent/optional, so skip-and-continue rather than crash startup.
                 psycopg.errors.QueryCanceled,
                 psycopg.errors.LockNotAvailable,
+                # A migration that depends on an owner-only DDL statement this SP was NOT
+                # allowed to run (e.g. a backfill/index that needs a column a skipped
+                # ALTER couldn't add) surfaces as UndefinedColumn/UndefinedTable/-Object.
+                # On the deployed DB the privileged deploy-time migrate step (scripts/
+                # migrate_schema.py) applies that DDL; here we must NEVER let the cascade
+                # crash-loop the whole app — a request-time 500 on one path beats the line
+                # going down. (Cost: a genuinely mis-referenced object is skipped silently;
+                # acceptable for this best-effort, idempotent bootstrap.)
+                psycopg.errors.UndefinedColumn,
+                psycopg.errors.UndefinedTable,
+                psycopg.errors.UndefinedObject,
             ) as exc:
                 conn.rollback()
                 log.warning("Schema statement skipped (%s): %.80s", exc, stmt)
