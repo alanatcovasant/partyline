@@ -516,6 +516,23 @@ def get_since(after_id: int, limit: int = 500, for_agent: str | None = None) -> 
         ).fetchall()
 
 
+def get_recent(limit: int = 500) -> list[dict]:
+    """Return the most recent `limit` messages in ascending id order.
+
+    For the dashboard initial seed: it must open on the LATEST activity. `get_since`
+    tails forward from an id, so seeding it with after_id=0 returns the OLDEST rows —
+    on a large backlog the feed then never showed recent posts (they looked unpersisted).
+    We fetch newest-first with LIMIT, then reverse so the client still renders
+    oldest→newest and can set its cursor to the last (highest) id.
+    """
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            f"SELECT {_MSG_COLS} FROM messages ORDER BY id DESC LIMIT %s",
+            (limit,),
+        ).fetchall()
+    return list(reversed(rows))
+
+
 # --------------------------------------------------------------------------- #
 # Checkpoints
 # --------------------------------------------------------------------------- #

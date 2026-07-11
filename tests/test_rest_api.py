@@ -143,6 +143,32 @@ async def test_get_messages(client):
 
 
 @pytest.mark.anyio
+async def test_get_messages_latest_returns_most_recent_ascending(client):
+    """The dashboard seed (?latest=true) must return the NEWEST `limit` messages in
+    ascending id order — not the oldest. Regression: with a large backlog the feed
+    seeded from the oldest 200 and never showed recent posts."""
+    await client.post(
+        "/api/agents",
+        json={"agent_id": "latest_agent", "owner": "alan", "repo": "partyline"},
+    )
+    posted = []
+    for i in range(5):
+        r = await client.post(
+            "/api/messages",
+            json={"agent_id": "latest_agent", "message_type": "status", "payload": f"m{i}"},
+        )
+        posted.append(r.json()["id"])
+
+    resp = await client.get("/api/messages", params={"latest": "true", "limit": 3})
+    assert resp.status_code == 200
+    rows = resp.json()
+    got = [m["id"] for m in rows]
+    # the three most recent overall (my last three posts), in ascending order
+    assert got == sorted(posted)[-3:]
+    assert got == sorted(got), "rows must be ascending so the client renders oldest→newest"
+
+
+@pytest.mark.anyio
 async def test_unread_messages(client):
     await client.post(
         "/api/agents",

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type Message = {
   id: number;
@@ -197,15 +197,35 @@ export function App() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const lastId = useRef(0);
 
+  // Pull messages newer than our cursor and append. Dedupes by id so the SSE push and
+  // the 5s poll (below) can both call this without double-appending, and advances the
+  // cursor to the highest id seen.
+  const pullNew = useCallback(() => {
+    getJSON<Message[]>(`/api/messages?after_id=${lastId.current}&limit=200`)
+      .then((rows) => {
+        if (!rows.length) return;
+        lastId.current = Math.max(lastId.current, ...rows.map((m) => m.id));
+        setMessages((prev) => {
+          const seen = new Set(prev.map((m) => m.id));
+          const fresh = rows.filter((m) => !seen.has(m.id));
+          return fresh.length ? [...prev, ...fresh].slice(-500) : prev;
+        });
+      })
+      .catch(() => {});
+  }, []);
+
   // Seed history + poll agents/claims/metrics/diagnostics/health.
   useEffect(() => {
-    getJSON<Message[]>("/api/messages?after_id=0&limit=200")
+    // Seed with the LATEST messages, not the oldest — otherwise a large backlog fills
+    // the window with ancient rows and recent posts never show (looked "not persisted").
+    getJSON<Message[]>("/api/messages?latest=true&limit=200")
       .then((m) => {
         setMessages(m);
-        lastId.current = m.length ? m[m.length - 1].id : 0;
+        lastId.current = m.length ? Math.max(...m.map((x) => x.id)) : 0;
       })
       .catch(() => {});
     const refresh = () => {
+      pullNew(); // self-heal: tail messages even if the SSE push never reaches the browser
       getJSON<Agent[]>("/api/agents").then(setAgents).catch(() => {});
       getJSON<Claim[]>("/api/claims").then(setClaims).catch(() => {});
       getJSON<Metrics>("/api/metrics").then(setMetrics).catch(() => {});
@@ -216,7 +236,7 @@ export function App() {
     refresh();
     const t = setInterval(refresh, 5000);
     return () => clearInterval(t);
-  }, []);
+  }, [pullNew]);
 
   // 1s tick so "Xs ago" ages stay live between polls.
   useEffect(() => {
@@ -234,16 +254,10 @@ export function App() {
     };
     es.onmessage = () => {
       setLastEventAt(Date.now());
-      getJSON<Message[]>(`/api/messages?after_id=${lastId.current}&limit=200`)
-        .then((rows) => {
-          if (!rows.length) return;
-          lastId.current = rows[rows.length - 1].id;
-          setMessages((prev) => [...prev, ...rows].slice(-500));
-        })
-        .catch(() => {});
+      pullNew();
     };
     return () => es.close();
-  }, []);
+  }, [pullNew]);
 
   return (
     <div className="wrap">

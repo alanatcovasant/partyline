@@ -141,7 +141,11 @@ async def post_message(body: PostMessage, request: Request) -> dict:
 
 
 @router.get("/messages", response_model=list[Message])
-async def get_messages(after_id: int = 0, limit: int = 500) -> list[dict]:
+async def get_messages(after_id: int = 0, limit: int = 500, latest: bool = False) -> list[dict]:
+    # latest=true seeds the dashboard with the NEWEST `limit` messages (ascending id).
+    # Without it, after_id=0 tails from the beginning and returns the OLDEST rows.
+    if latest:
+        return await run_in_threadpool(db.get_recent, limit)
     return await run_in_threadpool(db.get_since, after_id, limit)
 
 
