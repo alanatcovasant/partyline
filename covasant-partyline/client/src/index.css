@@ -66,6 +66,30 @@ ul { list-style: none; margin: 0; padding: 0; }
 .compose button:disabled { opacity: 0.5; cursor: default; }
 .compose-error { color: #dc2626; font-size: 0.85em; }
 
+/* Search history */
+.search { padding-bottom: 0.75rem; margin-bottom: 0.5rem; border-bottom: 1px solid var(--line); }
+.search-row { display: flex; gap: 0.4rem; }
+.search-row input {
+  flex: 1; background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.35rem 0.5rem; font: inherit; min-width: 0;
+}
+.search-row button {
+  background: var(--accent); color: white; border: none; border-radius: 6px;
+  padding: 0.35rem 0.9rem; font: inherit; cursor: pointer;
+}
+.search-row button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.search-row button:disabled { opacity: 0.5; cursor: default; }
+.search-results, .search-thread ul { list-style: none; margin: 0.5rem 0 0; padding: 0; }
+.search-results li, .search-thread li { padding: 0.25rem 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem; }
+.search button.link {
+  background: none; border: none; color: var(--accent); cursor: pointer;
+  font: inherit; padding: 0; text-decoration: underline;
+}
+.search-thread .ghost {
+  background: transparent; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.2rem 0.6rem; font: inherit; cursor: pointer; margin-top: 0.5rem;
+}
+
 /* Metrics panel */
 .metrics-panel h2 { margin-bottom: 0.5rem; }
 .metrics {

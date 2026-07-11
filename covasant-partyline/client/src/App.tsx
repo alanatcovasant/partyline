@@ -9,8 +9,11 @@ type Message = {
   repo?: string | null;
   resource_path?: string | null;
   payload?: string | null;
+  conversation_id?: string | null;
   created_at: string;
 };
+// Search hits and conversation rows are Messages plus a source tag (live|archive).
+type SearchHit = Message & { source?: string };
 type Agent = {
   agent_id: string;
   owner?: string | null;
@@ -184,6 +187,93 @@ function Compose({ agents }: { agents: Agent[] }) {
   );
 }
 
+/** Search the full line history (live + archived) and pivot any hit to its whole
+ *  conversation thread. Backed by /api/search and /api/conversations/{id}. */
+function Search() {
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<SearchHit[] | null>(null);
+  const [thread, setThread] = useState<SearchHit[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function run(e: React.FormEvent) {
+    e.preventDefault();
+    const query = q.trim();
+    if (!query) return;
+    setBusy(true);
+    setThread(null);
+    try {
+      setHits(await getJSON<SearchHit[]>(`/api/search?q=${encodeURIComponent(query)}&limit=50`));
+    } catch {
+      setHits([]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openThread(cid?: string | null) {
+    if (!cid) return;
+    try {
+      setThread(await getJSON<SearchHit[]>(`/api/conversations/${cid}`));
+    } catch {
+      setThread([]);
+    }
+  }
+
+  const row = (m: SearchHit) => (
+    <li key={`${m.source ?? "live"}-${m.id}`}>
+      <span className={`tag t-${m.message_type}`}>{m.message_type}</span>
+      <b>{m.agent_id}</b>
+      {m.recipient && <span className="muted"> → {m.recipient}</span>}
+      {m.source === "archive" && <span className="muted"> (archived)</span>}
+      {m.payload && <code>{m.payload}</code>}
+      <time>{new Date(m.created_at).toLocaleString()}</time>
+    </li>
+  );
+
+  return (
+    <section className="search">
+      <form className="search-row" onSubmit={run}>
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder='🔎 search history — "quoted phrase", OR, -exclude'
+          aria-label="Search history"
+        />
+        <button type="submit" disabled={busy || !q.trim()}>{busy ? "…" : "Search"}</button>
+        {(hits || thread) && (
+          <button type="button" className="ghost" onClick={() => { setHits(null); setThread(null); }}>
+            clear
+          </button>
+        )}
+      </form>
+
+      {thread ? (
+        <div className="search-thread">
+          <button type="button" className="ghost" onClick={() => setThread(null)}>← back to results</button>
+          <ul>{thread.map(row)}{!thread.length && <li className="muted">Empty thread.</li>}</ul>
+        </div>
+      ) : hits ? (
+        <ul className="search-results">
+          {hits.map((m) => (
+            <li key={`${m.source ?? "live"}-${m.id}`}>
+              <span className={`tag t-${m.message_type}`}>{m.message_type}</span>
+              <b>{m.agent_id}</b>
+              {m.source === "archive" && <span className="muted"> (archived)</span>}
+              {m.payload && <code>{m.payload}</code>}
+              {m.conversation_id && (
+                <button type="button" className="link" onClick={() => openThread(m.conversation_id)}>
+                  view thread →
+                </button>
+              )}
+            </li>
+          ))}
+          {!hits.length && <li className="muted">No matches.</li>}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
 export function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -275,6 +365,7 @@ export function App() {
         <section className="stream">
           <h2>Message stream</h2>
           <Compose agents={agents} />
+          <Search />
           <ul>
             {messages
               .slice()
