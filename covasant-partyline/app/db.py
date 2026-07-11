@@ -236,6 +236,7 @@ CREATE TABLE IF NOT EXISTS messages (
     metadata      JSONB       NOT NULL DEFAULT '{}'::jsonb,
     mentions      TEXT[]      NOT NULL DEFAULT '{}',
     reply_to_id   BIGINT      REFERENCES messages(id),
+    conversation_id UUID,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_messages_issue_ref ON messages (issue_ref);
@@ -285,6 +286,36 @@ _REPLICA_IDENTITY = [
     "ALTER TABLE agents      REPLICA IDENTITY FULL",
 ]
 
+# Idempotent migrations for existing databases (ADD COLUMN IF NOT EXISTS, NULL-only
+# backfill, CREATE INDEX IF NOT EXISTS). Fresh DBs get conversation_id from the CREATE
+# above; these bring already-provisioned DBs up to date. See docs/adr/2026-07-11-*.
+_MIGRATIONS = [
+    "ALTER TABLE messages         ADD COLUMN IF NOT EXISTS conversation_id UUID",
+    "ALTER TABLE messages_archive ADD COLUMN IF NOT EXISTS conversation_id UUID",
+    # Backfill live threads: each reply-tree (root = no resolvable parent) gets one UUID,
+    # propagated down reply_to_id chains. Fills NULLs only, so re-running is a no-op.
+    """
+    WITH RECURSIVE roots AS (
+        SELECT id, id AS root_id FROM messages
+         WHERE reply_to_id IS NULL OR reply_to_id NOT IN (SELECT id FROM messages)
+        UNION ALL
+        SELECT m.id, r.root_id FROM messages m JOIN roots r ON m.reply_to_id = r.id
+    ),
+    gen AS (SELECT DISTINCT root_id, gen_random_uuid() AS cid FROM roots)
+    UPDATE messages m SET conversation_id = g.cid
+      FROM roots r JOIN gen g ON g.root_id = r.root_id
+     WHERE m.id = r.id AND m.conversation_id IS NULL
+    """,
+    # Archived rows (>retention window) are not re-threaded: give each its own id.
+    "UPDATE messages_archive SET conversation_id = gen_random_uuid() WHERE conversation_id IS NULL",
+    # Full-text search (FR: inspect history). websearch_to_tsquery queries these.
+    "CREATE INDEX IF NOT EXISTS idx_messages_fts ON messages USING GIN (to_tsvector('english', coalesce(payload, '')))",
+    "CREATE INDEX IF NOT EXISTS idx_archive_fts  ON messages_archive USING GIN (to_tsvector('english', coalesce(payload, '')))",
+    # Thread lookup (get_conversation).
+    "CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id, id)",
+    "CREATE INDEX IF NOT EXISTS idx_archive_conversation  ON messages_archive (conversation_id, id)",
+]
+
 
 def init_schema() -> None:
     """Idempotent bootstrap, statement by statement.
@@ -295,6 +326,7 @@ def init_schema() -> None:
     skipped statement is safe — log it and continue rather than crash the app.
     """
     statements = [s.strip() for s in _SCHEMA.split(";") if s.strip()]
+    statements += _MIGRATIONS
     statements += _REPLICA_IDENTITY
     with get_pool().connection() as conn:
         for stmt in statements:
@@ -420,7 +452,7 @@ def get_agent_presence_diagnostics(active_within_seconds: int = 3600, sample_siz
 
 _MSG_COLS = (
     "id, agent_id, author, message_type, recipient, repo, branch, resource_path, "
-    "issue_ref, payload, metadata, mentions, reply_to_id, created_at"
+    "issue_ref, payload, metadata, mentions, reply_to_id, conversation_id::text, created_at"
 )
 
 
@@ -448,8 +480,12 @@ def post_message(
         row = conn.execute(
             f"""INSERT INTO messages
                  (agent_id, author, message_type, recipient, repo, branch,
-                  resource_path, issue_ref, payload, metadata, mentions, reply_to_id)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                  resource_path, issue_ref, payload, metadata, mentions, reply_to_id,
+                  conversation_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                       -- inherit the parent's thread on a reply, else start a new one
+                       COALESCE((SELECT conversation_id FROM messages WHERE id = %s),
+                                gen_random_uuid()))
                RETURNING {_MSG_COLS}""",
             (
                 agent_id,
@@ -464,6 +500,7 @@ def post_message(
                 json.dumps(metadata),
                 mentions,
                 reply_to_id,
+                reply_to_id,  # again: for the COALESCE subquery that resolves the thread
             ),
         ).fetchone()
         _heartbeat(conn, agent_id)
@@ -486,6 +523,7 @@ def post_message(
                         "payload": notify_payload,
                         "mentions": mentions,
                         "reply_to_id": reply_to_id,
+                        "conversation_id": row["conversation_id"],
                         "created_at": str(row["created_at"]),
                     }
                 ),
@@ -531,6 +569,51 @@ def get_recent(limit: int = 500) -> list[dict]:
             (limit,),
         ).fetchall()
     return list(reversed(rows))
+
+
+def search_messages(query: str, limit: int = 50) -> list[dict]:
+    """Full-text search over live + archived message payloads (inspect history).
+
+    Uses websearch_to_tsquery (supports quoted phrases, OR, and -exclusions) against the
+    GIN tsvector indexes, ranked by ts_rank then recency. Each hit carries its
+    conversation_id (pivot to the full thread via get_conversation) and a `source` tag.
+    """
+    sql = f"""
+        SELECT * FROM (
+            SELECT {_MSG_COLS},
+                   ts_rank(to_tsvector('english', coalesce(payload, '')), q) AS rank,
+                   'live' AS source
+              FROM messages, websearch_to_tsquery('english', %s) AS q
+             WHERE to_tsvector('english', coalesce(payload, '')) @@ q
+            UNION ALL
+            SELECT {_MSG_COLS},
+                   ts_rank(to_tsvector('english', coalesce(payload, '')), q) AS rank,
+                   'archive' AS source
+              FROM messages_archive, websearch_to_tsquery('english', %s) AS q
+             WHERE to_tsvector('english', coalesce(payload, '')) @@ q
+        ) hits
+        ORDER BY rank DESC, id DESC
+        LIMIT %s
+    """
+    with get_pool().connection() as conn:
+        return conn.execute(sql, (query, query, limit)).fetchall()
+
+
+def get_conversation(conversation_id: str, limit: int = 500) -> list[dict]:
+    """Return every message in a conversation (live + archived), oldest first."""
+    sql = f"""
+        SELECT * FROM (
+            SELECT {_MSG_COLS}, 'live' AS source
+              FROM messages WHERE conversation_id = %s::uuid
+            UNION ALL
+            SELECT {_MSG_COLS}, 'archive' AS source
+              FROM messages_archive WHERE conversation_id = %s::uuid
+        ) thread
+        ORDER BY id ASC
+        LIMIT %s
+    """
+    with get_pool().connection() as conn:
+        return conn.execute(sql, (conversation_id, conversation_id, limit)).fetchall()
 
 
 # --------------------------------------------------------------------------- #

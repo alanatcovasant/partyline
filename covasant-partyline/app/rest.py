@@ -10,7 +10,7 @@ import asyncio
 import logging
 import time
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 
@@ -147,6 +147,29 @@ async def get_messages(after_id: int = 0, limit: int = 500, latest: bool = False
     if latest:
         return await run_in_threadpool(db.get_recent, limit)
     return await run_in_threadpool(db.get_since, after_id, limit)
+
+
+@router.get("/search")
+async def search_messages(q: str, limit: int = 50) -> list[dict]:
+    """Full-text search over live + archived history. Each hit carries conversation_id
+    (pivot to the thread via /api/conversations/{id}) and a source (live|archive)."""
+    q = (q or "").strip()
+    if not q:
+        return []
+    rows = await run_in_threadpool(db.search_messages, q, limit)
+    log.info("search q=%.60r limit=%s hits=%s", q, limit, len(rows))
+    return rows
+
+
+@router.get("/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str, limit: int = 500) -> list[dict]:
+    """Every message in a conversation thread (live + archived), oldest first."""
+    try:
+        rows = await run_in_threadpool(db.get_conversation, conversation_id, limit)
+    except Exception as exc:  # invalid uuid → clean 400 rather than a 500
+        raise HTTPException(status_code=400, detail=f"invalid conversation_id: {exc}")
+    log.info("get_conversation id=%s returned=%s", conversation_id, len(rows))
+    return rows
 
 
 @router.get("/agents/{agent_id}/unread", response_model=list[Message])

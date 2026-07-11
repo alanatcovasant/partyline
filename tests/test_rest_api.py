@@ -169,6 +169,52 @@ async def test_get_messages_latest_returns_most_recent_ascending(client):
 
 
 @pytest.mark.anyio
+async def test_conversation_threading(client):
+    """A reply inherits its parent's conversation_id; a fresh post starts a new one."""
+    await client.post("/api/agents", json={"agent_id": "thread_agent", "owner": "alan", "repo": "partyline"})
+
+    a = (await client.post("/api/messages", json={"agent_id": "thread_agent", "message_type": "status", "payload": "root"})).json()
+    assert a["conversation_id"]  # server-assigned
+    b = (await client.post("/api/messages", json={"agent_id": "thread_agent", "message_type": "ack", "payload": "reply", "reply_to_id": a["id"]})).json()
+    assert b["conversation_id"] == a["conversation_id"], "reply must inherit the thread"
+    c = (await client.post("/api/messages", json={"agent_id": "thread_agent", "message_type": "status", "payload": "unrelated"})).json()
+    assert c["conversation_id"] != a["conversation_id"], "fresh post must start a new thread"
+
+
+@pytest.mark.anyio
+async def test_search_finds_message_with_conversation(client):
+    await client.post("/api/agents", json={"agent_id": "search_agent", "owner": "alan", "repo": "partyline"})
+    token = "zqxwovc"  # unlikely to collide with other fixtures
+    posted = (await client.post("/api/messages", json={"agent_id": "search_agent", "message_type": "status", "payload": f"unique marker {token} in payload"})).json()
+
+    resp = await client.get("/api/search", params={"q": token, "limit": 10})
+    assert resp.status_code == 200
+    hits = resp.json()
+    match = [h for h in hits if h["id"] == posted["id"]]
+    assert match, f"search for {token!r} should find the posted message"
+    assert match[0]["conversation_id"] == posted["conversation_id"]
+    assert match[0]["source"] == "live"
+
+
+@pytest.mark.anyio
+async def test_get_conversation_returns_full_thread(client):
+    await client.post("/api/agents", json={"agent_id": "conv_agent", "owner": "alan", "repo": "partyline"})
+    a = (await client.post("/api/messages", json={"agent_id": "conv_agent", "message_type": "question", "payload": "q"})).json()
+    b = (await client.post("/api/messages", json={"agent_id": "conv_agent", "message_type": "ack", "payload": "a", "reply_to_id": a["id"]})).json()
+
+    resp = await client.get(f"/api/conversations/{a['conversation_id']}")
+    assert resp.status_code == 200
+    ids = [m["id"] for m in resp.json()]
+    assert ids == [a["id"], b["id"]], "thread returned oldest-first, both messages"
+
+
+@pytest.mark.anyio
+async def test_get_conversation_invalid_id_400(client):
+    resp = await client.get("/api/conversations/not-a-uuid")
+    assert resp.status_code == 400
+
+
+@pytest.mark.anyio
 async def test_unread_messages(client):
     await client.post(
         "/api/agents",

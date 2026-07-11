@@ -84,6 +84,9 @@ class PostMessage(BaseModel):
 class Message(PostMessage):
     id: int
     author: str | None = Field(None, description="OBO-authenticated principal (audit)")
+    conversation_id: str | None = Field(
+        None, description="Thread id: inherited from reply_to_id's message, else new"
+    )
     created_at: datetime
 
 
