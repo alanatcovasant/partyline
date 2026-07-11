@@ -2,7 +2,7 @@
   "name": "covasant-partyline",
   "displayName": "Covasant Partyline",
   "description": "Real-time inter-agent coordination notifications for Covasant Partyline",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "publisher": "covasant",
   "engines": { "vscode": "^1.95.0" },
   "categories": ["Other"],
@@ -39,8 +39,8 @@
         },
         "partyline.autoRespond": {
           "type": "boolean",
-          "default": true,
-          "description": "Autonomously respond to messages addressed to you using a language model (the 'partyline-responder' agent). Wakes the extension's own LM agent on incoming messages — no active chat session needed. Coordination-scope only (ack/answer/status/claim/route); never edits code. On by default, but does nothing until you grant the one-time LM (Copilot) consent prompt on first use, and uses your Copilot/LM quota. Set to false to disable."
+          "default": false,
+          "description": "Autonomously respond to messages addressed to you using a language model (the 'partyline-responder' agent, currently Copilot). Wakes the extension's own LM agent on incoming messages — no active chat session needed. Coordination-scope only (ack/answer/status/claim/route); never edits code. OFF by default — it acts on your behalf and spends Copilot/LM quota, so it must be opted into explicitly. Set to true to enable."
         },
         "partyline.autoOpenChat": {
           "type": "boolean",
