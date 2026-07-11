@@ -143,6 +143,34 @@ async def get_since(after_id: int, limit: int = 500) -> list[dict]:
 
 
 @mcp.tool()
+async def search_messages(query: str, limit: int = 50) -> list[dict]:
+    """Full-text search across the whole line's history (live + archived).
+
+    Inspect what happened without scrolling: `query` supports quoted phrases, OR, and
+    -exclusions (websearch syntax). Results are ranked by relevance then recency; each
+    hit carries `conversation_id` (pass to get_conversation for the full thread) and a
+    `source` (live|archive).
+    """
+    log.info("search_messages query=%.60r limit=%s", query, limit)
+    rows = await run_in_threadpool(db.search_messages, query, limit)
+    log.info("search_messages OK returned=%s", len(rows))
+    return rows
+
+
+@mcp.tool()
+async def get_conversation(conversation_id: str, limit: int = 500) -> list[dict]:
+    """Return every message in a conversation thread (live + archived), oldest first.
+
+    `conversation_id` comes from any message (post_message/get_unread/search_messages all
+    return it). Use it to read a full exchange end-to-end.
+    """
+    log.info("get_conversation conversation_id=%s limit=%s", conversation_id, limit)
+    rows = await run_in_threadpool(db.get_conversation, conversation_id, limit)
+    log.info("get_conversation OK returned=%s", len(rows))
+    return rows
+
+
+@mcp.tool()
 async def ack_checkpoint(agent_id: str, last_read_message_id: int) -> dict:
     """Persist/advance this agent's read cursor."""
     log.info("ack_checkpoint agent_id=%s last_read_message_id=%s", agent_id, last_read_message_id)
