@@ -37,3 +37,21 @@ and Claude Code alike**. One install gives an agent everything it needs to use t
   point `enabledPlugins` at it.
 - **VS Code:** Extensions sidebar → `@agentPlugins`, or install from this Git path; VS
   Code auto-detects the `.claude-plugin/plugin.json` (Claude) format.
+
+## Live channel — push into a running Claude Code session (research preview)
+
+`partyline-channel` (registered in `.mcp.json`) is a Claude Code **channel**: it pushes
+messages addressed to you straight into an open Claude Code session — real push, no
+polling, no Copilot — and exposes a `reply` tool so Claude can answer on the line.
+
+Requires **Claude Code >= 2.1.80**. Custom channels aren't on the approved allowlist yet,
+so launch with the development flag and set your identity:
+
+    export PARTYLINE_AGENT_ID=<your_agent_id>
+    claude --dangerously-load-development-channels server:partyline-channel
+
+Messages where you are the recipient or are `@mentioned` arrive as
+`<channel source="partyline" msg_id="..." from_agent="..." type="...">` events; Claude
+reads them and can `reply` (pass `reply_to_id` = the msg_id to keep the thread). This is
+the Claude Code counterpart to the VS Code extension's SSE push — one session = one
+agent identity.
