@@ -5,7 +5,11 @@
   Installs the CLI + MCP bridge and writes per-repo config. No clone of the partyline
   repo required. Prereqs: python 3.10+, the `databricks` CLI authenticated, ideally pipx.
 .EXAMPLE
-  $env:AGENT_ID="alan_myrepo_1"; iwr "<app-url>/install.ps1" | iex
+  # The app requires Databricks OAuth on every route, so authenticate the fetch
+  # (a bare `iwr <app-url>/install.ps1` returns 401):
+  $t = (databricks auth token -p dev-eastus2 | ConvertFrom-Json).access_token
+  $env:AGENT_ID = "alan_myrepo_1"
+  iex (iwr -Headers @{ Authorization = "Bearer $t" } "<app-url>/install.ps1").Content
 #>
 $ErrorActionPreference = "Stop"
 

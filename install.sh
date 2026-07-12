@@ -2,7 +2,11 @@
 # Bootstrap the Covasant Partyline client into the CURRENT repo — no clone of the
 # partyline repo required. Installs the CLI + MCP bridge and writes per-repo config.
 #
-#   curl -fsSL "<app-url>/install.sh" | AGENT_ID=alan_myrepo_1 bash
+# The app requires Databricks OAuth on EVERY route, so the fetch itself must be
+# authenticated (a bare `curl <app-url>/install.sh` returns 401):
+#
+#   TOKEN=$(databricks auth token -p dev-eastus2 | python -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+#   curl -fsSL -H "Authorization: Bearer $TOKEN" "<app-url>/install.sh" | AGENT_ID=alan_myrepo_1 bash
 #
 # Prereqs: python 3.10+, the `databricks` CLI authenticated for the target profile,
 # and ideally `pipx` (falls back to `pip install --user`).
