@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Message = {
   id: number;
@@ -274,6 +274,81 @@ function Search() {
   );
 }
 
+const PAGE_SIZE = 50;
+
+/** The message feed: newest-first, with type + text filtering and pagination over the
+ *  loaded window. (Whole-history search lives in <Search />; this filters what's loaded.) */
+function MessageStream({ agents, messages }: { agents: Agent[]; messages: Message[] }) {
+  const [ftype, setFtype] = useState("all");
+  const [fq, setFq] = useState("");
+  const [page, setPage] = useState(0);
+
+  const filtered = useMemo(() => {
+    const needle = fq.trim().toLowerCase();
+    return messages
+      .slice()
+      .reverse() // newest first
+      .filter((m) => ftype === "all" || m.message_type === ftype)
+      .filter(
+        (m) =>
+          !needle ||
+          (m.payload || "").toLowerCase().includes(needle) ||
+          m.agent_id.toLowerCase().includes(needle) ||
+          (m.recipient || "").toLowerCase().includes(needle)
+      );
+  }, [messages, ftype, fq]);
+
+  // Snap back to the first (newest) page whenever the filter changes.
+  useEffect(() => setPage(0), [ftype, fq]);
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const cur = Math.min(page, pageCount - 1);
+  const shown = filtered.slice(cur * PAGE_SIZE, cur * PAGE_SIZE + PAGE_SIZE);
+
+  return (
+    <section className="stream">
+      <h2>Message stream</h2>
+      <Compose agents={agents} />
+      <Search />
+      <div className="stream-filter">
+        <select value={ftype} onChange={(e) => setFtype(e.target.value)} aria-label="Filter by type">
+          <option value="all">all types</option>
+          {MESSAGE_TYPES.map((t) => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+        <input
+          value={fq}
+          onChange={(e) => setFq(e.target.value)}
+          placeholder="filter loaded messages (agent, recipient, text)"
+          aria-label="Filter messages"
+        />
+        <span className="muted">{filtered.length} shown</span>
+      </div>
+      <ul>
+        {shown.map((m) => (
+          <li key={m.id}>
+            <span className={`tag t-${m.message_type}`}>{m.message_type}</span>
+            <b>{m.agent_id}</b>
+            {m.recipient && <span className="muted"> → {m.recipient}</span>}
+            {m.repo && <span className="muted"> [{m.repo}{m.resource_path ? `:${m.resource_path}` : ""}]</span>}
+            {m.payload && <code>{m.payload}</code>}
+            <time title={new Date(m.created_at).toString()}>{new Date(m.created_at).toLocaleString()}</time>
+          </li>
+        ))}
+        {!filtered.length && <li className="muted">No messages match.</li>}
+      </ul>
+      {pageCount > 1 && (
+        <div className="pager">
+          <button type="button" disabled={cur === 0} onClick={() => setPage(cur - 1)}>← newer</button>
+          <span className="muted">page {cur + 1} / {pageCount}</span>
+          <button type="button" disabled={cur >= pageCount - 1} onClick={() => setPage(cur + 1)}>older →</button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -361,31 +436,8 @@ export function App() {
         </a>
       </header>
 
-      <div className="grid">
-        <section className="stream">
-          <h2>Message stream</h2>
-          <Compose agents={agents} />
-          <Search />
-          <ul>
-            {messages
-              .slice()
-              .reverse()
-              .map((m) => (
-                <li key={m.id}>
-                  <span className={`tag t-${m.message_type}`}>{m.message_type}</span>
-                  <b>{m.agent_id}</b>
-                  {m.recipient && <span className="muted"> → {m.recipient}</span>}
-                  {m.repo && <span className="muted"> [{m.repo}{m.resource_path ? `:${m.resource_path}` : ""}]</span>}
-                  {m.payload && <code>{m.payload}</code>}
-                  <time>{new Date(m.created_at).toLocaleTimeString()}</time>
-                </li>
-              ))}
-            {!messages.length && <li className="muted">No messages yet.</li>}
-          </ul>
-        </section>
-
-        <aside>
-          <section className="diag-panel">
+      <div className="panels">
+          <section className="diag-panel" style={{ order: 4 }}>
             <h2>🩺 Diagnostics</h2>
             <dl className="metrics">
               <dt>App version</dt>
@@ -441,7 +493,7 @@ export function App() {
             )}
           </section>
 
-          <section className="metrics-panel">
+          <section className="metrics-panel" style={{ order: 3 }}>
             <h2>📊 Live Metrics</h2>
             {metrics ? (
               <dl className="metrics">
@@ -471,7 +523,7 @@ export function App() {
             )}
           </section>
 
-          <section>
+          <section style={{ order: 1 }}>
             <h2>Active agents ({agents.length})</h2>
             <table className="agent-grid">
               <thead>
@@ -522,7 +574,7 @@ export function App() {
             </table>
           </section>
 
-          <section>
+          <section style={{ order: 2 }}>
             <h2>Active claims ({claims.length})</h2>
             <ul className="pills">
               {claims.map((c) => (
@@ -535,8 +587,8 @@ export function App() {
               {!claims.length && <li className="muted">Nothing claimed.</li>}
             </ul>
           </section>
-        </aside>
       </div>
+      <MessageStream agents={agents} messages={messages} />
     </div>
   );
 }
