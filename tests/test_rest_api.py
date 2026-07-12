@@ -169,6 +169,16 @@ async def test_get_messages_latest_returns_most_recent_ascending(client):
 
 
 @pytest.mark.anyio
+async def test_index_html_served_no_cache(client):
+    """index.html must be no-cache so a redeploy is picked up without a hard reload
+    (hashed assets stay immutable). Skips if the SPA isn't built in this env."""
+    resp = await client.get("/")
+    if resp.status_code != 200 or not resp.headers.get("content-type", "").startswith("text/html"):
+        pytest.skip("SPA not built/served in this environment")
+    assert "no-cache" in resp.headers.get("cache-control", "").lower()
+
+
+@pytest.mark.anyio
 async def test_conversation_threading(client):
     """A reply inherits its parent's conversation_id; a fresh post starts a new one."""
     await client.post("/api/agents", json={"agent_id": "thread_agent", "owner": "alan", "repo": "partyline"})

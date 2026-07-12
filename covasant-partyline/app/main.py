@@ -216,9 +216,26 @@ async def _mcp_trailing_slash(request, call_next):
     return await call_next(request)
 
 
+class _SpaStatic(StaticFiles):
+    """StaticFiles that stamps cache headers so a redeploy is picked up without a manual
+    hard reload. Vite emits content-hashed asset filenames (assets/index-<hash>.js), so
+    those are immutable and cached for a year; index.html references the current hashes
+    and MUST always be revalidated (no-cache), or the browser serves a stale SPA that
+    points at old bundles after every deploy."""
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        ctype = resp.headers.get("content-type", "")
+        if ctype.startswith("text/html"):
+            resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+        elif path.startswith("assets/") or "/assets/" in path:
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
+
+
 # Static SPA (built into client/dist). Mounted last so /api and /mcp win.
 _spa = Path(__file__).resolve().parent.parent / "client" / "dist"
 if _spa.is_dir():
-    app.mount("/", StaticFiles(directory=str(_spa), html=True), name="spa")
+    app.mount("/", _SpaStatic(directory=str(_spa), html=True), name="spa")
 else:
     log.info("No built SPA at %s; run `npm --prefix client run build`.", _spa)
