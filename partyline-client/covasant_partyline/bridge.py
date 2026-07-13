@@ -63,6 +63,14 @@ _LOCK_ACQUIRE_TIMEOUT_SECS = 150.0
 # scale to zero) can't stall the bridge forever — without this, a hung initialize() blocks
 # until the MCP client's own idle timeout (~30min) and reads as "Connection closed".
 _CONNECT_TIMEOUT_SECS = 30.0
+# Proactively refresh the connection (re-mint the OAuth token) once it reaches this age.
+# Databricks workspace OAuth tokens expire ~1h after minting, and this bridge bakes the
+# token into the streamable-http transport ONCE at connect time — it is never refreshed in
+# place. A call that arrives after the token has expired rides a stale, half-open session:
+# the observed multi-minute hang (only broken by the hard deadline below). Reconnecting
+# under this ceiling means every call uses a freshly-minted token — the same "always
+# re-authenticate" guarantee Aura's per-request bridge (utils/mcp_bridge.py) gets for free.
+_TOKEN_MAX_AGE_SECS = 40 * 60  # 2400s, comfortably under the ~1h token lifetime
 
 
 def _auth_headers(cfg: Config) -> dict[str, str]:
@@ -105,9 +113,11 @@ class _Remote:
     """Lazily-connected remote MCP session that reconnects with fresh credentials.
 
     The workspace OAuth token expires after ~1h, so a session opened once at bridge
-    start silently dies mid-session (observed in the field). Every proxied call goes
-    through ``call()``, which (re)connects on demand and retries once on failure —
-    minting fresh auth headers from the SDK ``Config`` on each (re)connect.
+    start silently dies mid-session (observed in the field). Two mechanisms keep the
+    token fresh: every proxied call (re)connects on demand and retries once on failure
+    (minting fresh auth headers from the SDK ``Config`` on each (re)connect), AND a call
+    that finds the current connection older than ``_TOKEN_MAX_AGE_SECS`` reconnects
+    *before* using it — so a call never rides a token that has since expired.
     """
 
     def __init__(self, cfg: Config, mcp_url: str) -> None:
@@ -115,8 +125,17 @@ class _Remote:
         self._url = mcp_url
         self._stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
+        self._connected_at: float | None = None  # monotonic time the token was last minted
         self._lock = asyncio.Lock()
         self.instructions: str | None = None  # server how-to, captured at initialize()
+
+    def _token_stale(self) -> bool:
+        """True if the live connection's token was minted long enough ago that it may
+        expire mid-call. Guards against the multi-minute hang caused by riding a stale
+        token on the long-lived streamable-http session."""
+        if self._connected_at is None:
+            return False
+        return (time.monotonic() - self._connected_at) > _TOKEN_MAX_AGE_SECS
 
     async def _connect(self) -> ClientSession:
         log.info("Connecting to %s ...", self._url)
@@ -146,6 +165,7 @@ class _Remote:
         # agent's MCP client (FR: teach any client how to use the line, no skill needed).
         self.instructions = getattr(init, "instructions", None) or self.instructions
         self._stack, self._session = stack, session
+        self._connected_at = time.monotonic()  # start the token-age clock
         elapsed = time.monotonic() - t0
         log.info("Connected in %.2fs", elapsed)
         return session
@@ -157,6 +177,7 @@ class _Remote:
             except Exception:
                 log.warning("Error closing remote session", exc_info=True)
         self._stack = self._session = None
+        self._connected_at = None
 
     async def call(self, op, label: str = "?"):
         """Run ``op(session)``, reconnecting with fresh credentials on failure.
@@ -206,7 +227,15 @@ class _Remote:
 
         async def _attempt():
             try:
-                session = self._session or await self._connect()
+                session = self._session
+                if session is not None and self._token_stale():
+                    log.info(
+                        "[%s] connection age > %.0fs — reconnecting to refresh the OAuth "
+                        "token before use", label, _TOKEN_MAX_AGE_SECS,
+                    )
+                    session = await self._connect()
+                elif session is None:
+                    session = await self._connect()
                 return await op(session)
             except asyncio.CancelledError:
                 raise

@@ -92,6 +92,67 @@ def test_hard_deadline_on_wedged_op_fails_fast_and_drops_session(monkeypatch):
     asyncio.run(body())
 
 
+def test_stale_token_forces_reconnect_before_use(monkeypatch):
+    # The token-lifetime fix: an existing session older than _TOKEN_MAX_AGE_SECS must be
+    # rebuilt (fresh token) BEFORE the call runs — never ride an expired token.
+    monkeypatch.setattr(bridge, "_TOKEN_MAX_AGE_SECS", 0.0)  # everything counts as stale
+
+    async def body():
+        r = _remote()
+        connects = {"n": 0}
+
+        async def fake_connect():
+            connects["n"] += 1
+            r._session = f"session-{connects['n']}"
+            r._connected_at = time.monotonic()
+            return r._session
+
+        r._connect = fake_connect
+        # Prime a live-but-old session, as if the bridge connected an hour ago.
+        r._session = "stale-session"
+        r._connected_at = time.monotonic() - 10_000
+
+        seen = {}
+
+        async def op(session):
+            seen["session"] = session
+            return "ok"
+
+        assert await r.call(op, "stale") == "ok"
+        assert connects["n"] == 1, "a stale session must trigger exactly one reconnect"
+        assert seen["session"] == "session-1", "op must run on the freshly reconnected session"
+
+    asyncio.run(body())
+
+
+def test_fresh_token_reuses_session(monkeypatch):
+    # Inverse guard: a recently-minted session must NOT reconnect (no needless churn).
+    monkeypatch.setattr(bridge, "_TOKEN_MAX_AGE_SECS", 10_000.0)
+
+    async def body():
+        r = _remote()
+        connects = {"n": 0}
+
+        async def fake_connect():
+            connects["n"] += 1
+            r._session = "should-not-reconnect"
+            r._connected_at = time.monotonic()
+            return r._session
+
+        r._connect = fake_connect
+        r._session = "live-session"
+        r._connected_at = time.monotonic()  # just minted
+
+        async def op(session):
+            assert session == "live-session"
+            return "ok"
+
+        assert await r.call(op, "fresh") == "ok"
+        assert connects["n"] == 0, "a fresh session must be reused, not reconnected"
+
+    asyncio.run(body())
+
+
 def test_bounded_lock_fails_fast_when_prior_call_wedged(monkeypatch):
     # If a prior call is wedged holding the lock, a new call must fail fast (RuntimeError)
     # instead of queueing behind it forever.
