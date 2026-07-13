@@ -40,14 +40,23 @@ New-Item -ItemType Directory -Force -Path .partyline | Out-Null
   ConvertTo-Json | Set-Content -Encoding utf8 .partyline\config.json
 
 if (Test-Path .mcp.json) {
-  Write-Host "==> .mcp.json exists — add the 'partyline' server yourself (command: partyline-bridge)"
+  Write-Host "==> .mcp.json exists — add the 'partyline' (command: partyline-bridge) and"
+  Write-Host "    'partyline-channel' (command: partyline-channel) servers yourself."
+  Write-Host "    The channel reads agent_id + url from .partyline\config.json written above;"
+  Write-Host "    enable it per launch with: claude --dangerously-load-development-channels server:partyline-channel"
 } else {
   Write-Host "==> Writing .mcp.json"
-  @{ mcpServers = @{ partyline = @{
+  @{ mcpServers = @{
+    partyline = @{
       command = "partyline-bridge"
       args = @("--app-name", "mcp-covasant-partyline")
       env = @{ DATABRICKS_CONFIG_PROFILE = $Profile }
-  } } } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 .mcp.json
+    }
+    "partyline-channel" = @{
+      command = "partyline-channel"
+      env = @{ DATABRICKS_CONFIG_PROFILE = $Profile }
+    }
+  } } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 .mcp.json
 }
 
 Write-Host ""

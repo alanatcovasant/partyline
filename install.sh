@@ -44,10 +44,14 @@ cat > .partyline/config.json <<JSON
 JSON
 
 if [ -f .mcp.json ]; then
-  echo "==> .mcp.json exists — add the 'partyline' server yourself:"
+  echo "==> .mcp.json exists — add the 'partyline' and 'partyline-channel' servers yourself:"
   echo '      "partyline": { "command": "partyline-bridge",'
   echo '                     "args": ["--app-name", "mcp-covasant-partyline"],'
+  echo "                     \"env\": { \"DATABRICKS_CONFIG_PROFILE\": \"$PROFILE\" } },"
+  echo '      "partyline-channel": { "command": "partyline-channel",'
   echo "                     \"env\": { \"DATABRICKS_CONFIG_PROFILE\": \"$PROFILE\" } }"
+  echo "    (the channel reads agent_id + url from .partyline/config.json written above;"
+  echo "     enable it per launch with: claude --dangerously-load-development-channels server:partyline-channel)"
 else
   echo "==> Writing .mcp.json"
   cat > .mcp.json <<JSON
@@ -56,6 +60,10 @@ else
     "partyline": {
       "command": "partyline-bridge",
       "args": ["--app-name", "mcp-covasant-partyline"],
+      "env": { "DATABRICKS_CONFIG_PROFILE": "$PROFILE" }
+    },
+    "partyline-channel": {
+      "command": "partyline-channel",
       "env": { "DATABRICKS_CONFIG_PROFILE": "$PROFILE" }
     }
   }
