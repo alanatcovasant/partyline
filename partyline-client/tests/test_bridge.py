@@ -23,7 +23,7 @@ def test_call_success():
         r = _remote()
         sentinel = object()
 
-        async def fake_connect():
+        async def fake_connect(tag=None):
             r._session = sentinel
             return sentinel
 
@@ -43,7 +43,7 @@ def test_reconnects_once_on_error():
         r = _remote()
         connects = {"n": 0}
 
-        async def fake_connect():
+        async def fake_connect(tag=None):
             connects["n"] += 1
             r._session = f"session-{connects['n']}"
             return r._session
@@ -73,7 +73,7 @@ def test_hard_deadline_on_wedged_op_fails_fast_and_drops_session(monkeypatch):
         r = _remote()
         sentinel = object()
 
-        async def fake_connect():
+        async def fake_connect(tag=None):
             r._session = sentinel
             return sentinel
 
@@ -101,7 +101,7 @@ def test_stale_token_forces_reconnect_before_use(monkeypatch):
         r = _remote()
         connects = {"n": 0}
 
-        async def fake_connect():
+        async def fake_connect(tag=None):
             connects["n"] += 1
             r._session = f"session-{connects['n']}"
             r._connected_at = time.monotonic()
@@ -133,7 +133,7 @@ def test_fresh_token_reuses_session(monkeypatch):
         r = _remote()
         connects = {"n": 0}
 
-        async def fake_connect():
+        async def fake_connect(tag=None):
             connects["n"] += 1
             r._session = "should-not-reconnect"
             r._connected_at = time.monotonic()
@@ -151,6 +151,50 @@ def test_fresh_token_reuses_session(monkeypatch):
         assert connects["n"] == 0, "a fresh session must be reused, not reconnected"
 
     asyncio.run(body())
+
+
+def test_token_stale_prefers_real_expiry_over_age():
+    # When the SDK exposes a real expiry, staleness is a CHECK (not the age guess): a token
+    # within the safety margin of expiry is stale even if just minted; one far from expiry
+    # is fresh even if the age heuristic would call it old.
+    import datetime as dt
+
+    r = _remote()
+    now = dt.datetime.now(dt.timezone.utc)
+
+    # Far from expiry -> fresh, regardless of mint age.
+    r._connected_at = time.monotonic() - 10_000  # age heuristic would say "stale"
+    r._token_expiry = now + dt.timedelta(seconds=3600)
+    assert r._token_stale() is False
+
+    # Within the safety margin -> stale, even though just minted.
+    r._connected_at = time.monotonic()
+    r._token_expiry = now + dt.timedelta(seconds=30)  # < _TOKEN_EXPIRY_SAFETY_SECS
+    assert r._token_stale() is True
+
+    # Already expired -> stale.
+    r._token_expiry = now - dt.timedelta(seconds=1)
+    assert r._token_stale() is True
+
+
+def test_bridge_info_identifies_the_running_build():
+    info = bridge._bridge_info()
+    assert info["component"] == "covasant-partyline MCP bridge"
+    assert info["module_path"].replace("\\", "/").endswith("covasant_partyline/bridge.py")
+    assert info["pid"] == __import__("os").getpid()
+    assert "version" in info and "python" in info and "uptime_secs" in info
+
+    # With a remote it also reports live connection + token state.
+    r = _remote()
+    import datetime as dt
+    r._session = object()
+    r._connected_at = time.monotonic()
+    r._token_expiry = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=900)
+    info = bridge._bridge_info(r)
+    assert info["connected"] is True
+    assert info["mcp_url"] == "http://test/mcp"
+    assert info["token_valid"] is True
+    assert info["token_valid_for_secs"] > 0
 
 
 def test_bounded_lock_fails_fast_when_prior_call_wedged(monkeypatch):

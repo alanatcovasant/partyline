@@ -21,30 +21,76 @@ The agent's only setup is a `.mcp.json` entry — no Databricks SDK knowledge re
 
 Pass either --url (full https URL of the app's /mcp endpoint) or --app-name (resolved to
 the app URL via the SDK).
+
+Observability
+-------------
+All logs go to stderr (captured by the MCP client, e.g. Claude Code's mcp-logs). Verbosity
+is env-tunable via ``PARTYLINE_BRIDGE_LOG_LEVEL`` (DEBUG|INFO|WARNING|ERROR; default INFO).
+Two invariants hold regardless of level:
+
+  * **Every failure is loud.** Connect faults, per-call errors, the hard-deadline abort, a
+    wedged-lock timeout, and even the *later* fate of an abandoned task are logged at
+    WARNING/ERROR/CRITICAL with the exception type and message (full traceback at DEBUG).
+  * **Every proxied call is traceable.** Each invocation gets a monotonic id, so the
+    interleaved log lines for one call share a ``<label>#<n>`` tag end to end.
+
+Set ``PARTYLINE_BRIDGE_LOG_LEVEL=DEBUG`` to also surface the underlying httpx/mcp wire
+logs (handshake, 401s, stream reads) when tracking down a stubborn failure.
+
+Two more diagnosis aids:
+  * The startup banner logs the build version AND the module file path, so it is obvious
+    which installed build is serving a given agent (catches version/deploy skew).
+  * A local ``partyline_bridge_info`` MCP tool (handled here, not proxied) lets the agent
+    query that same identity + live health at runtime — it works even when the upstream
+    line is unreachable, which is exactly when you want it.
+
+Token freshness is a *check*, not a guess, when possible: the token's real expiry is read
+from the SDK (``Config.oauth_token().expiry``) and the connection is refreshed before it
+lapses; the mint-age heuristic is only the fallback for auth strategies that expose no
+expiry.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime as dt
+import itertools
+import json
 import logging
+import os
+import platform
 import sys
 import time
 from contextlib import AsyncExitStack
 
 from databricks.sdk.core import Config
 
+from mcp import types as mcp_types
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
+_LOG_LEVEL = os.getenv("PARTYLINE_BRIDGE_LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=getattr(logging, _LOG_LEVEL, logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
     stream=sys.stderr,
 )
 log = logging.getLogger("partyline.bridge")
+# When deep-tracing, surface the transport's own logs too — this is where 401s, connection
+# resets, and stalled stream reads actually show up.
+if log.isEnabledFor(logging.DEBUG):
+    for _noisy in ("httpx", "httpcore", "mcp"):
+        logging.getLogger(_noisy).setLevel(logging.DEBUG)
+
+# Monotonic per-call id: every proxied invocation's log lines share a "<label>#<n>" tag so
+# an operation can be followed end to end even when calls interleave.
+_call_seq = itertools.count(1)
+
+# Process start (monotonic) for uptime reporting in the startup banner and bridge_info tool.
+_STARTED_AT = time.monotonic()
 
 # Diagnostics thresholds (seconds)
 _LOCK_WARN_SECS = 5.0
@@ -71,6 +117,73 @@ _CONNECT_TIMEOUT_SECS = 30.0
 # under this ceiling means every call uses a freshly-minted token — the same "always
 # re-authenticate" guarantee Aura's per-request bridge (utils/mcp_bridge.py) gets for free.
 _TOKEN_MAX_AGE_SECS = 40 * 60  # 2400s, comfortably under the ~1h token lifetime
+# Preferred over the age heuristic when the SDK exposes the token's real expiry: reconnect
+# once the baked token is within this margin of its ACTUAL expiry, so a call never rides a
+# token that has (or is about to) expire — a check, not a guess.
+_TOKEN_EXPIRY_SAFETY_SECS = 120.0
+
+
+def _bridge_version() -> str:
+    """Best-effort installed version, for the startup banner (diagnose build skew)."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return version("covasant-partyline")
+        except PackageNotFoundError:
+            return "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _trace_tb() -> bool:
+    """Include a full traceback only when debugging — keeps routine retry logs terse
+    while still capturing everything on DEBUG."""
+    return log.isEnabledFor(logging.DEBUG)
+
+
+def _bridge_info(remote: "_Remote | None" = None) -> dict:
+    """Identify THIS bridge build/process and (if given) its live connection state.
+
+    Surfaced two ways so it's easy to tell which build is actually running in an agent's
+    environment: logged in the startup banner, and callable at runtime via the local
+    ``partyline_bridge_info`` MCP tool. ``module_path`` + ``version`` pin down exactly
+    which installed file is serving the session (catches build/version skew)."""
+    info: dict = {
+        "component": "covasant-partyline MCP bridge",
+        "version": _bridge_version(),
+        "module_path": os.path.abspath(__file__),
+        "pid": os.getpid(),
+        "python": platform.python_version(),
+        "host": platform.node(),
+        "log_level": _LOG_LEVEL,
+        "uptime_secs": round(time.monotonic() - _STARTED_AT, 1),
+    }
+    if remote is not None:
+        info["mcp_url"] = remote._url
+        info["auth_type"] = getattr(remote._cfg, "auth_type", None)
+        info["connected"] = remote._session is not None
+        if remote._connected_at is not None:
+            info["connection_age_secs"] = round(time.monotonic() - remote._connected_at, 1)
+        if remote._token_expiry is not None:
+            remaining = (remote._token_expiry - dt.datetime.now(dt.timezone.utc)).total_seconds()
+            info["token_expiry"] = remote._token_expiry.isoformat()
+            info["token_valid_for_secs"] = round(remaining, 1)
+            info["token_valid"] = remaining > 0
+    return info
+
+
+# Local (non-proxied) tool the agent can call to identify the running bridge build + health.
+_BRIDGE_INFO_TOOL = mcp_types.Tool(
+    name="partyline_bridge_info",
+    description=(
+        "Diagnostics for the local Partyline MCP bridge process serving THIS session: build "
+        "version, module file path, pid, uptime, upstream URL, auth type, connection state, "
+        "and token validity. Handled locally by the bridge (not proxied to the app). Use it "
+        "to confirm which bridge build is running in this environment and whether it's healthy."
+    ),
+    inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
+)
 
 
 def _auth_headers(cfg: Config) -> dict[str, str]:
@@ -87,7 +200,16 @@ def _auth_headers(cfg: Config) -> dict[str, str]:
             "DATABRICKS_CLIENT_SECRET (M2M) or run `databricks auth login` (U2M). "
             "Unset DATABRICKS_TOKEN."
         )
-    headers = cfg.authenticate()  # dict of headers for the current credential strategy
+    try:
+        headers = cfg.authenticate()  # dict of headers for the current credential strategy
+    except Exception as exc:
+        # authenticate() reaches out to refresh U2M tokens / mint M2M tokens; a failure here
+        # (expired refresh token, bad client secret, network) is a hard blocker — say so.
+        log.error(
+            "Databricks auth FAILED (auth_type=%s): %s: %s",
+            auth_type or "unknown", type(exc).__name__, exc, exc_info=True,
+        )
+        raise
     if "Authorization" not in headers:
         raise SystemExit(
             "Could not resolve Databricks OAuth credentials. Set DATABRICKS_HOST and "
@@ -98,15 +220,27 @@ def _auth_headers(cfg: Config) -> dict[str, str]:
 
 def _resolve_mcp_url(cfg: Config, url: str | None, app_name: str | None) -> str:
     if url:
+        log.info("Using explicit --url endpoint: %s", url)
         return url
     if not app_name:
         raise SystemExit("Provide --url or --app-name.")
+    log.info("Resolving app URL for --app-name=%s via the Databricks SDK ...", app_name)
     from databricks.sdk import WorkspaceClient
 
-    app = WorkspaceClient(config=cfg).apps.get(name=app_name)
+    try:
+        app = WorkspaceClient(config=cfg).apps.get(name=app_name)
+    except Exception as exc:
+        log.error(
+            "Failed to resolve app '%s' via SDK (%s: %s) — check the name, the profile's "
+            "workspace, and that you can see the app.",
+            app_name, type(exc).__name__, exc, exc_info=True,
+        )
+        raise
     if not app.url:
         raise SystemExit(f"App '{app_name}' has no URL yet (is it deployed and running?).")
-    return app.url.rstrip("/") + "/mcp"
+    resolved = app.url.rstrip("/") + "/mcp"
+    log.info("Resolved app '%s' -> %s", app_name, resolved)
+    return resolved
 
 
 class _Remote:
@@ -126,24 +260,84 @@ class _Remote:
         self._stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
         self._connected_at: float | None = None  # monotonic time the token was last minted
+        self._token_expiry: dt.datetime | None = None  # real expiry of the baked token, if known
         self._lock = asyncio.Lock()
         self.instructions: str | None = None  # server how-to, captured at initialize()
 
+    def _peek_token_expiry(self, tag: str) -> "dt.datetime | None":
+        """Read the REAL expiry of the OAuth token we just baked into the transport, so we
+        refresh on actual expiry instead of a fixed age guess. Returns a tz-aware UTC
+        datetime, or None when the auth strategy doesn't expose one (then we fall back to
+        the age heuristic). Best-effort: never fatal."""
+        try:
+            tok = self._cfg.oauth_token()
+        except Exception as exc:
+            log.debug("[%s] token expiry unavailable (%s: %s) — will use age heuristic",
+                      tag, type(exc).__name__, exc)
+            return None
+        expiry = getattr(tok, "expiry", None)
+        if expiry is None:
+            return None
+        if expiry.tzinfo is None:  # normalize to tz-aware UTC for comparison
+            expiry = expiry.replace(tzinfo=dt.timezone.utc)
+        remaining = (expiry - dt.datetime.now(dt.timezone.utc)).total_seconds()
+        log.debug("[%s] token valid for %.0fs (until %s)", tag, remaining, expiry.isoformat())
+        return expiry
+
     def _token_stale(self) -> bool:
-        """True if the live connection's token was minted long enough ago that it may
-        expire mid-call. Guards against the multi-minute hang caused by riding a stale
-        token on the long-lived streamable-http session."""
+        """True if the token baked into the live connection has expired or is about to —
+        so a call never rides a dead token (the multi-minute-hang trigger).
+
+        Prefers the token's REAL expiry (verify) and falls back to a mint-age heuristic
+        (guess) only when the SDK doesn't expose an expiry for the active auth strategy."""
+        if self._token_expiry is not None:
+            remaining = (self._token_expiry - dt.datetime.now(dt.timezone.utc)).total_seconds()
+            return remaining <= _TOKEN_EXPIRY_SAFETY_SECS
         if self._connected_at is None:
             return False
         return (time.monotonic() - self._connected_at) > _TOKEN_MAX_AGE_SECS
 
-    async def _connect(self) -> ClientSession:
-        log.info("Connecting to %s ...", self._url)
+    def _staleness_reason(self) -> str:
+        """Human-readable why-we-reconnected, for the log line."""
+        if self._token_expiry is not None:
+            remaining = (self._token_expiry - dt.datetime.now(dt.timezone.utc)).total_seconds()
+            return f"expires in {remaining:.0f}s (<= {_TOKEN_EXPIRY_SAFETY_SECS:.0f}s margin)"
+        if self._connected_at is not None:
+            return f"minted {time.monotonic() - self._connected_at:.0f}s ago (> {_TOKEN_MAX_AGE_SECS:.0f}s)"
+        return "no live token"
+
+    @staticmethod
+    def _log_abandoned(task: "asyncio.Task", tag: str, t0: float) -> None:
+        """Loud post-mortem for a task abandoned at the hard deadline.
+
+        Previously the callback discarded ``task.exception()`` purely to silence asyncio's
+        "exception never retrieved" warning — hiding the single most useful clue: what the
+        wedged call was actually stuck on and how it ended. Now we log that outcome.
+        """
+        elapsed = time.monotonic() - t0
+        if task.cancelled():
+            log.error("[%s] abandoned task confirmed CANCELLED %.1fs after start", tag, elapsed)
+            return
+        exc = task.exception()  # retrieved => no "exception never retrieved" warning
+        if exc is not None:
+            log.error(
+                "[%s] abandoned task later FAILED %.1fs after start (%s: %s)",
+                tag, elapsed, type(exc).__name__, exc,
+            )
+        else:
+            log.error(
+                "[%s] abandoned task later COMPLETED %.1fs after start — result discarded, "
+                "the deadline had already fired (consider raising _CALL_TIMEOUT_SECS if this recurs)",
+                tag, elapsed,
+            )
+
+    async def _connect(self, tag: str = "connect") -> ClientSession:
+        log.info("[%s] connecting to %s ...", tag, self._url)
         t0 = time.monotonic()
         await self.close()
         stack = AsyncExitStack()
         headers = _auth_headers(self._cfg)  # fresh token every (re)connect
-        log.debug("Auth headers resolved (auth_type=%s)", getattr(self._cfg, "auth_type", "unknown"))
+        log.debug("[%s] auth headers resolved (auth_type=%s)", tag, getattr(self._cfg, "auth_type", "unknown"))
         try:
             read, write, _ = await stack.enter_async_context(streamablehttp_client(self._url, headers=headers))
             session = await stack.enter_async_context(ClientSession(read, write))
@@ -157,17 +351,27 @@ class _Remote:
             try:
                 await stack.aclose()
             except Exception:
-                log.warning("Error cleaning up failed connect", exc_info=True)
+                log.warning("[%s] error cleaning up failed connect", tag, exc_info=True)
             if isinstance(exc, asyncio.TimeoutError):
-                log.error("Connect TIMEOUT after %.0fs to %s", _CONNECT_TIMEOUT_SECS, self._url)
+                log.error(
+                    "[%s] connect TIMEOUT after %.0fs to %s — app cold-starting/restarting, "
+                    "or the network is blocked", tag, _CONNECT_TIMEOUT_SECS, self._url,
+                )
+            elif isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+                pass  # not a connect fault (shutdown/cancellation) — let it propagate quietly
+            else:
+                log.error(
+                    "[%s] connect FAILED to %s (%s: %s)",
+                    tag, self._url, type(exc).__name__, exc, exc_info=True,
+                )
             raise
         # Capture the upstream server's how-to text so the proxy can advertise it to the
         # agent's MCP client (FR: teach any client how to use the line, no skill needed).
         self.instructions = getattr(init, "instructions", None) or self.instructions
         self._stack, self._session = stack, session
-        self._connected_at = time.monotonic()  # start the token-age clock
-        elapsed = time.monotonic() - t0
-        log.info("Connected in %.2fs", elapsed)
+        self._connected_at = time.monotonic()  # start the token-age clock (heuristic fallback)
+        self._token_expiry = self._peek_token_expiry(tag)  # real expiry when the SDK exposes it
+        log.info("[%s] connected in %.2fs", tag, time.monotonic() - t0)
         return session
 
     async def close(self) -> None:
@@ -178,6 +382,7 @@ class _Remote:
                 log.warning("Error closing remote session", exc_info=True)
         self._stack = self._session = None
         self._connected_at = None
+        self._token_expiry = None
 
     async def call(self, op, label: str = "?"):
         """Run ``op(session)``, reconnecting with fresh credentials on failure.
@@ -187,7 +392,8 @@ class _Remote:
         MCP client's ~1800s idle timeout. A wedged remote therefore surfaces as a fast
         error the client can reconnect from, instead of a silent 30-minute hang.
         """
-        log.debug("[%s] acquiring lock ...", label)
+        tag = f"{label}#{next(_call_seq)}"
+        log.debug("[%s] acquiring lock ...", tag)
         t_wait = time.monotonic()
         try:
             # Bounded acquire (was unbounded): if a prior call wedged the connection, fail
@@ -195,9 +401,8 @@ class _Remote:
             await asyncio.wait_for(self._lock.acquire(), timeout=_LOCK_ACQUIRE_TIMEOUT_SECS)
         except asyncio.TimeoutError:
             log.error(
-                "[%s] bridge busy >%.0fs (prior call wedged) — failing fast to trigger reconnect",
-                label,
-                _LOCK_ACQUIRE_TIMEOUT_SECS,
+                "[%s] bridge busy >%.0fs (a prior call is wedged holding the lock) — failing "
+                "fast to trigger a client reconnect", tag, _LOCK_ACQUIRE_TIMEOUT_SECS,
             )
             raise RuntimeError(
                 f"partyline bridge busy for >{_LOCK_ACQUIRE_TIMEOUT_SECS:.0f}s; the remote app "
@@ -205,16 +410,16 @@ class _Remote:
             )
         lock_wait = time.monotonic() - t_wait
         if lock_wait > _LOCK_WARN_SECS:
-            log.warning("[%s] lock acquired after %.2fs", label, lock_wait)
+            log.warning("[%s] lock acquired after %.2fs (contention)", tag, lock_wait)
         else:
-            log.debug("[%s] lock acquired in %.3fs", label, lock_wait)
+            log.debug("[%s] lock acquired in %.3fs", tag, lock_wait)
 
         try:
-            return await self._call_bounded(op, label)
+            return await self._call_bounded(op, tag)
         finally:
             self._lock.release()
 
-    async def _call_bounded(self, op, label: str):
+    async def _call_bounded(self, op, tag: str):
         """Attempt ``op`` (reconnecting once on error) under a hard wall-clock deadline.
 
         The attempt runs in its own task and is ``shield``-ed: if the deadline fires we
@@ -230,43 +435,50 @@ class _Remote:
                 session = self._session
                 if session is not None and self._token_stale():
                     log.info(
-                        "[%s] connection age > %.0fs — reconnecting to refresh the OAuth "
-                        "token before use", label, _TOKEN_MAX_AGE_SECS,
+                        "[%s] token stale (%s) — reconnecting to refresh it before use",
+                        tag, self._staleness_reason(),
                     )
-                    session = await self._connect()
+                    session = await self._connect(tag)
                 elif session is None:
-                    session = await self._connect()
+                    log.debug("[%s] no live session — connecting", tag)
+                    session = await self._connect(tag)
                 return await op(session)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.warning("[%s] error after %.2fs (%s: %s) — reconnecting once",
-                            label, time.monotonic() - t0, type(exc).__name__, exc)
-                session = await self._connect()
+                # First failure is usually a stale/dropped session — reconnect and retry
+                # once. Transient by nature, so log at WARNING (traceback only on DEBUG).
+                log.warning(
+                    "[%s] op failed after %.2fs (%s: %s) — reconnecting once and retrying",
+                    tag, time.monotonic() - t0, type(exc).__name__, exc, exc_info=_trace_tb(),
+                )
+                session = await self._connect(tag)
+                # If the retry also fails it propagates out; the proxy boundary logs the
+                # definitive ERROR (with the tool name/args), so we don't double-log here.
                 return await op(session)
 
         task = asyncio.ensure_future(_attempt())
         try:
             result = await asyncio.wait_for(asyncio.shield(task), timeout=_CALL_TIMEOUT_SECS)
         except asyncio.TimeoutError:
-            elapsed = time.monotonic() - t0
             log.error(
-                "[%s] HARD DEADLINE %.0fs exceeded (remote wedged) — dropping session for reconnect",
-                label,
-                _CALL_TIMEOUT_SECS,
+                "[%s] HARD DEADLINE %.0fs exceeded (remote wedged) — abandoning the task and "
+                "dropping the session so the next call reconnects", tag, _CALL_TIMEOUT_SECS,
             )
             # Best-effort cancel and detach: do NOT await it (it may be ignoring the
-            # cancel). Drop only the session ref so the NEXT call reconnects into a fresh
+            # cancel). Drop the session/age so the NEXT call reconnects into a fresh
             # transport; _connect()'s close() reaps the old (leaked) stack then, guarded.
+            # The done-callback logs the abandoned task's eventual fate (never silent).
             task.cancel()
-            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+            task.add_done_callback(lambda t: self._log_abandoned(t, tag, t0))
             self._session = None
+            self._connected_at = None
             raise
         elapsed = time.monotonic() - t0
         if elapsed > _CALL_WARN_SECS:
-            log.warning("[%s] slow call: %.2fs", label, elapsed)
+            log.warning("[%s] slow call: %.2fs", tag, elapsed)
         else:
-            log.debug("[%s] completed in %.2fs", label, elapsed)
+            log.debug("[%s] completed in %.2fs", tag, elapsed)
         return result
 
 
@@ -279,39 +491,74 @@ async def _serve(cfg: Config, mcp_url: str) -> None:
     # bridge stay up and reconnect lazily on the first real call once the app is back.
     try:
         await remote.call(lambda s: s.list_tools(), label="startup/list_tools")
+        log.info("Startup connect OK — upstream reachable, serving proxy")
     except Exception:
         log.warning(
             "Startup connect failed (app may be starting/restarting) — serving anyway; "
             "will connect on the first tool call.",
             exc_info=True,
         )
+
+    async def _proxied(desc: str, op, label: str):
+        """Run a proxied op and make any failure loud at the boundary — one ERROR record
+        naming the operation, with a traceback, before it reaches the MCP framework."""
+        try:
+            return await remote.call(op, label=label)
+        except Exception as exc:
+            log.error("%s FAILED (%s: %s)", desc, type(exc).__name__, exc, exc_info=True)
+            raise
+
     # Forward the upstream server's instructions so the agent's client sees the how-to.
     proxy = Server("covasant-partyline-bridge", instructions=remote.instructions)
 
     @proxy.list_tools()
     async def list_tools():
-        return (await remote.call(lambda s: s.list_tools(), label="list_tools")).tools
+        # Always advertise the local bridge_info tool — even when the upstream list fails,
+        # so an agent can still diagnose the bridge exactly when the line is unreachable.
+        try:
+            upstream = (await remote.call(lambda s: s.list_tools(), label="list_tools")).tools
+        except Exception as exc:
+            log.error(
+                "list_tools FAILED (%s: %s) — advertising only the local bridge tool",
+                type(exc).__name__, exc, exc_info=True,
+            )
+            upstream = []
+        return list(upstream) + [_BRIDGE_INFO_TOOL]
 
     @proxy.call_tool()
     async def call_tool(name: str, arguments: dict):
+        if name == _BRIDGE_INFO_TOOL.name:
+            # Handled locally — never proxied. Works even if the upstream is down.
+            info = _bridge_info(remote)
+            log.info("-> call_tool(%s) [local] -> %s", name, info)
+            return [mcp_types.TextContent(type="text", text=json.dumps(info, indent=2, default=str))], info
         log.info("-> call_tool(%s) args=%s", name, list(arguments.keys()) if arguments else [])
-        result = await remote.call(lambda s: s.call_tool(name, arguments), label=f"call_tool/{name}")
+        result = await _proxied(
+            f"call_tool({name})", lambda s: s.call_tool(name, arguments), f"call_tool/{name}"
+        )
         log.info("<- call_tool(%s) OK", name)
         # Forward content plus any structured payload the tool returned.
         return result.content, getattr(result, "structuredContent", None)
 
     @proxy.list_prompts()
     async def list_prompts():
-        return (await remote.call(lambda s: s.list_prompts(), label="list_prompts")).prompts
+        return (await _proxied("list_prompts", lambda s: s.list_prompts(), "list_prompts")).prompts
 
     @proxy.get_prompt()
     async def get_prompt(name: str, arguments: dict | None = None):
-        return await remote.call(lambda s: s.get_prompt(name, arguments), label=f"get_prompt/{name}")
+        return await _proxied(
+            f"get_prompt({name})", lambda s: s.get_prompt(name, arguments), f"get_prompt/{name}"
+        )
 
     opts = proxy.create_initialization_options()
+    log.info("stdio proxy ready — serving MCP over stdin/stdout")
     try:
         async with stdio_server() as (r, w):
             await proxy.run(r, w, opts)
+        log.info("stdio loop ended (client closed the connection) — shutting down")
+    except Exception:
+        log.error("stdio proxy loop crashed", exc_info=True)
+        raise
     finally:
         await remote.close()
 
@@ -323,12 +570,38 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--host", help="Databricks workspace host (overrides DATABRICKS_HOST)")
     args = p.parse_args(argv)
 
-    cfg = Config(host=args.host) if args.host else Config()
-    log.info("Auth type: %s", getattr(cfg, "auth_type", "unknown"))
-    _auth_headers(cfg)  # fail fast on PAT/missing credentials before serving
-    mcp_url = _resolve_mcp_url(cfg, args.url, args.app_name)
-    log.info("Bridge starting -> %s", mcp_url)
-    asyncio.run(_serve(cfg, mcp_url))
+    log.info(
+        "partyline bridge v%s starting | module=%s | pid=%s | python=%s | host=%s | log_level=%s",
+        _bridge_version(), os.path.abspath(__file__), os.getpid(),
+        platform.python_version(), platform.node(), _LOG_LEVEL,
+    )
+    try:
+        cfg = Config(host=args.host) if args.host else Config()
+        log.info(
+            "Databricks config: auth_type=%s host=%s",
+            getattr(cfg, "auth_type", "unknown"), getattr(cfg, "host", None),
+        )
+        _auth_headers(cfg)  # fail fast on PAT/missing credentials before serving
+        mcp_url = _resolve_mcp_url(cfg, args.url, args.app_name)
+        log.info(
+            "timeouts: connect=%.0fs call=%.0fs lock=%.0fs token_max_age=%.0fs",
+            _CONNECT_TIMEOUT_SECS, _CALL_TIMEOUT_SECS, _LOCK_ACQUIRE_TIMEOUT_SECS, _TOKEN_MAX_AGE_SECS,
+        )
+        log.info("Bridge serving -> %s", mcp_url)
+        asyncio.run(_serve(cfg, mcp_url))
+    except SystemExit as exc:
+        # Config errors raise SystemExit with a human message — echo it into the log stream
+        # (not just raw interpreter stderr) so the MCP client's captured logs show the reason.
+        if exc.code and not isinstance(exc.code, int):
+            log.critical("Bridge cannot start: %s", exc.code)
+        raise
+    except KeyboardInterrupt:
+        log.info("Interrupted — shutting down")
+    except BaseException as exc:
+        log.critical("Bridge FATAL (%s: %s)", type(exc).__name__, exc, exc_info=True)
+        raise
+    finally:
+        log.info("partyline bridge stopped")
 
 
 if __name__ == "__main__":
