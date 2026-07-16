@@ -3,11 +3,11 @@
 # builds the ops SPA, and deploys the bundle. No manual provisioning steps.
 #
 # Usage:  ./deploy.sh [profile] [target]
-#         ./deploy.sh dev-eastus2 dev      # defaults
+#         ./deploy.sh dev-eastus2 dev-eastus2      # defaults
 set -euo pipefail
 
 PROFILE="${1:-dev-eastus2}"
-TARGET="${2:-dev}"
+TARGET="${2:-dev-eastus2}"
 # Must match ENDPOINT_NAME in resources/covasant_partyline_app.app.yml (config.env).
 ENDPOINT_NAME="${ENDPOINT_NAME:-projects/partyline/branches/production/endpoints/primary}"
 

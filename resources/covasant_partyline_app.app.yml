@@ -16,15 +16,11 @@ resources:
         - group_name: users
           level: CAN_USE
 
-      # Runtime config lives here (not app.yaml) so it can reference ${bundle.target};
-      # app.yaml is synced verbatim and is NOT interpolated.
-      config:
-        command: ["python", "-m", "app"]
-        env:
-          # Full autoscale Lakebase endpoint resource name. Used to mint OAuth DB
-          # credentials and to self-provision the project/branch/endpoint (app/db.py).
-          - name: ENDPOINT_NAME
-            value: "projects/partyline/branches/production/endpoints/primary"
+      # Runtime config (command + env) lives in app.yaml, NOT here. config.env set via the
+      # bundle is only applied at DEPLOY time: a bare `apps stop`/`start` or a platform
+      # container recycle does not re-apply it, which dropped ENDPOINT_NAME and 500'd every
+      # DB route with PoolClosed until a full redeploy. app.yaml is re-read on every app
+      # start, so env declared there survives restarts. See covasant-partyline/app.yaml.
 
       # Bind the app to the autoscale Lakebase branch. This provisions the app service
       # principal's Postgres role and auto-injects PGHOST/PGPORT/PGDATABASE/PGUSER/PGSSLMODE.

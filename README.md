@@ -138,8 +138,8 @@ LISTEN/NOTIFY can't run on the default proactor loop); deployed Linux is unaffec
 Fully automated, no manual provisioning steps — one command:
 
 ```bash
-./deploy.sh dev-eastus2 dev          # [profile] [target]
-databricks bundle run covasant_partyline -t dev --profile dev-eastus2   # start it
+./deploy.sh dev-eastus2 dev-eastus2   # [profile] [target]
+databricks bundle run covasant_partyline -t dev-eastus2 --profile dev-eastus2   # start it
 ```
 
 `deploy.sh` does three things:

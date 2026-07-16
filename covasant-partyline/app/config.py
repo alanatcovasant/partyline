@@ -28,8 +28,13 @@ class Settings:
     # Full Lakebase endpoint resource name, e.g.
     #   projects/<project-id>/branches/<branch-id>/endpoints/<endpoint-id>
     # Used to mint short-lived OAuth database credentials and to self-provision the
-    # project/branch/endpoint if missing (see app/db.py).
-    endpoint_name: str | None = os.getenv("ENDPOINT_NAME")
+    # project/branch/endpoint if missing (see app/db.py). Normally supplied by app.yaml env
+    # (re-read on every start). The default is a self-heal fallback: if the env var is ever
+    # dropped (e.g. a config layer that isn't re-applied on restart), db_configured stays
+    # true and the DB layer still comes up, rather than 500'ing every route with PoolClosed.
+    endpoint_name: str | None = os.getenv(
+        "ENDPOINT_NAME", "projects/partyline/branches/production/endpoints/primary"
+    )
 
     # --- Behaviour ---
     # Whether to run CREATE TABLE IF NOT EXISTS migrations on startup (FR9).
