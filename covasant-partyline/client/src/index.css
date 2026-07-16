@@ -33,6 +33,17 @@ header .ext-dl {
   color: var(--fg); text-decoration: none;
 }
 header .ext-dl:hover { border-color: var(--muted); background: rgba(127, 127, 127, 0.08); }
+/* Refresh-interval selector: pushed to the right with the extension link. */
+header .poll-select { margin-left: auto; display: inline-flex; align-items: center; gap: 0.3rem; }
+header .poll-select + .ext-dl { margin-left: 0; }
+header .poll-select select {
+  font-size: 0.85em; padding: 0.1rem 0.3rem; border: 1px solid var(--line);
+  border-radius: 6px; background: transparent; color: var(--fg);
+}
+/* Collapsible full-detail payload under a concise summary. */
+.msg-details { margin-top: 0.2rem; }
+.msg-details > summary { cursor: pointer; font-size: 0.8em; list-style: revert; }
+.msg-details[open] > summary { margin-bottom: 0.2rem; }
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .dot.on { background: #16a34a; }
 .dot.off { background: #9ca3af; }

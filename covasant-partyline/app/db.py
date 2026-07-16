@@ -232,6 +232,11 @@ CREATE TABLE IF NOT EXISTS messages (
     branch        TEXT,
     resource_path TEXT,
     issue_ref     TEXT,
+    -- summary: a concise, agent-authored one-liner (the "what") — payload holds the full
+    -- detail (the "why/how"). Readers get summary by default and fetch payload on demand,
+    -- so the common case costs a fraction of the tokens. Null summary means fall back to
+    -- payload. (Keep this comment free of semicolons: _SCHEMA is split on the semicolon.)
+    summary       TEXT,
     payload       TEXT,
     metadata      JSONB       NOT NULL DEFAULT '{}'::jsonb,
     mentions      TEXT[]      NOT NULL DEFAULT '{}',
@@ -292,6 +297,10 @@ _REPLICA_IDENTITY = [
 _MIGRATIONS = [
     "ALTER TABLE messages         ADD COLUMN IF NOT EXISTS conversation_id UUID",
     "ALTER TABLE messages_archive ADD COLUMN IF NOT EXISTS conversation_id UUID",
+    # Concise agent-authored summary; payload keeps the full detail. Nullable — existing
+    # rows and callers that don't set it fall back to payload, so this is non-breaking.
+    "ALTER TABLE messages         ADD COLUMN IF NOT EXISTS summary TEXT",
+    "ALTER TABLE messages_archive ADD COLUMN IF NOT EXISTS summary TEXT",
     # Backfill live threads: each reply-tree (root = no resolvable parent) gets one UUID,
     # propagated down reply_to_id chains. Fills NULLs only, so re-running is a no-op.
     """
@@ -463,7 +472,17 @@ def get_agent_presence_diagnostics(active_within_seconds: int = 3600, sample_siz
 
 _MSG_COLS = (
     "id, agent_id, author, message_type, recipient, repo, branch, resource_path, "
-    "issue_ref, payload, metadata, mentions, reply_to_id, conversation_id::text, created_at"
+    "issue_ref, summary, payload, metadata, mentions, reply_to_id, conversation_id::text, created_at"
+)
+
+# Same columns as _MSG_COLS but payload is elided ONLY when a summary exists — used by the
+# token-frugal read paths (get_unread/get_conversation with include_payload=false). Agents
+# get the concise summary and refetch full payload on demand. Messages with no summary
+# (legacy rows, or callers that didn't set one) still return their payload, so no content
+# is ever silently lost.
+_MSG_COLS_CONCISE = _MSG_COLS.replace(
+    "issue_ref, summary, payload,",
+    "issue_ref, summary, CASE WHEN summary IS NULL THEN payload END AS payload,",
 )
 
 
@@ -480,6 +499,7 @@ def post_message(
     mentions: list[str],
     reply_to_id: int | None,
     author: str | None,
+    summary: str | None = None,
 ) -> dict:
     """Insert a message, refresh presence, and emit a NOTIFY for push delivery (FR1/FR2).
 
@@ -491,9 +511,9 @@ def post_message(
         row = conn.execute(
             f"""INSERT INTO messages
                  (agent_id, author, message_type, recipient, repo, branch,
-                  resource_path, issue_ref, payload, metadata, mentions, reply_to_id,
+                  resource_path, issue_ref, summary, payload, metadata, mentions, reply_to_id,
                   conversation_id)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                        -- inherit the parent's thread on a reply, else start a new one
                        COALESCE((SELECT conversation_id FROM messages WHERE id = %s),
                                 gen_random_uuid()))
@@ -507,6 +527,7 @@ def post_message(
                 branch,
                 resource_path,
                 issue_ref,
+                summary,
                 payload,
                 json.dumps(metadata),
                 mentions,
@@ -531,6 +552,7 @@ def post_message(
                         "repo": repo,
                         "branch": branch,
                         "resource_path": resource_path,
+                        "summary": summary,
                         "payload": notify_payload,
                         "mentions": mentions,
                         "reply_to_id": reply_to_id,
@@ -545,13 +567,20 @@ def post_message(
     return row
 
 
-def get_since(after_id: int, limit: int = 500, for_agent: str | None = None) -> list[dict]:
+def get_since(
+    after_id: int, limit: int = 500, for_agent: str | None = None, include_payload: bool = True
+) -> list[dict]:
     """Return messages with id > after_id (FR3).
 
     If ``for_agent`` is given, restrict to messages addressed to that agent — i.e. it is
     the recipient or is mentioned ("for me" filter).
+
+    ``include_payload`` False elides the (potentially large) payload, returning only the
+    concise summary — the token-frugal default for agent reads. Callers refetch full
+    payload on demand (e.g. get_conversation with include_payload=True).
     """
-    log.debug("get_since after_id=%s limit=%s for_agent=%s", after_id, limit, for_agent)
+    log.debug("get_since after_id=%s limit=%s for_agent=%s payload=%s", after_id, limit, for_agent, include_payload)
+    cols = _MSG_COLS if include_payload else _MSG_COLS_CONCISE
     where = "id > %s"
     params: list = [after_id]
     if for_agent is not None:
@@ -560,7 +589,7 @@ def get_since(after_id: int, limit: int = 500, for_agent: str | None = None) -> 
     params.append(limit)
     with get_pool().connection() as conn:
         return conn.execute(
-            f"SELECT {_MSG_COLS} FROM messages WHERE {where} ORDER BY id ASC LIMIT %s",
+            f"SELECT {cols} FROM messages WHERE {where} ORDER BY id ASC LIMIT %s",
             tuple(params),
         ).fetchall()
 
@@ -610,14 +639,22 @@ def search_messages(query: str, limit: int = 50) -> list[dict]:
         return conn.execute(sql, (query, query, limit)).fetchall()
 
 
-def get_conversation(conversation_id: str, limit: int = 500) -> list[dict]:
-    """Return every message in a conversation (live + archived), oldest first."""
+def get_conversation(
+    conversation_id: str, limit: int = 500, include_payload: bool = True
+) -> list[dict]:
+    """Return every message in a conversation (live + archived), oldest first.
+
+    Defaults to full payload — this is the "drill into the detail" path an agent uses
+    after seeing concise summaries elsewhere. Pass include_payload=False for a summary-only
+    thread overview.
+    """
+    cols = _MSG_COLS if include_payload else _MSG_COLS_CONCISE
     sql = f"""
         SELECT * FROM (
-            SELECT {_MSG_COLS}, 'live' AS source
+            SELECT {cols}, 'live' AS source
               FROM messages WHERE conversation_id = %s::uuid
             UNION ALL
-            SELECT {_MSG_COLS}, 'archive' AS source
+            SELECT {cols}, 'archive' AS source
               FROM messages_archive WHERE conversation_id = %s::uuid
         ) thread
         ORDER BY id ASC

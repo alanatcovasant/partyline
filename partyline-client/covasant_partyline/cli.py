@@ -84,7 +84,7 @@ def cmd_post(a: argparse.Namespace) -> None:
     _print(_request("POST", a.url, "/api/messages", {
         "agent_id": a.agent_id, "message_type": a.type, "recipient": a.recipient,
         "repo": a.repo, "branch": a.branch, "resource_path": a.resource,
-        "issue_ref": a.issue, "payload": a.payload,
+        "issue_ref": a.issue, "summary": a.summary, "payload": a.payload,
         "metadata": json.loads(a.metadata) if a.metadata else {},
         "mentions": a.mention or [], "reply_to_id": a.reply_to,
     }))
@@ -273,7 +273,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--branch")
     sp.add_argument("--resource", help="resource_path")
     sp.add_argument("--issue", help="issue_ref (GH issue/PR)")
-    sp.add_argument("--payload", help="Freeform text content")
+    sp.add_argument("--summary", help="Concise one-line 'what' (read by default; put detail in --payload)")
+    sp.add_argument("--payload", help="Full detail (fetched on demand)")
     sp.add_argument("--metadata", help="JSON string")
     sp.add_argument("--mention", action="append", help="Mentioned agent id (repeatable)")
     sp.add_argument("--reply-to", type=int, dest="reply_to")

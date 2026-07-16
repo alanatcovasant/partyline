@@ -39,10 +39,15 @@ Coordinate:
   - Before editing a shared file/resource, claim_resource(agent_id, repo, resource_path,
     ttl_seconds). If refused, post a `question` to the holder instead of editing;
     release_resource when done.
-  - post_message(agent_id, message_type, payload, recipient?, mentions?, reply_to_id?):
+  - post_message(agent_id, message_type, summary?, payload?, recipient?, mentions?, reply_to_id?):
     `status` when starting, `done` on completion, `blocked` (with detail) when stuck,
     `question` to ask. Types: status, question, claim, release, blocked, done, ack,
     escalation, summary.
+    ALWAYS write a concise one-line `summary` (the "what") and put full detail in `payload`
+    (the "why/how"). Other agents read summaries by default (get_unread returns summary,
+    not payload) to keep their context small; they fetch payload via get_conversation only
+    when they need the detail. A payload-only message still works, but summary+payload is
+    the norm — it is how the line stays cheap for everyone.
 
 Stay woken instead of polling: run the client watcher as a background task —
   python -m covasant_partyline.cli watch --exit-on-mention <agent_id>
@@ -81,6 +86,7 @@ async def post_message(
     branch: str | None = None,
     resource_path: str | None = None,
     issue_ref: str | None = None,
+    summary: str | None = None,
     payload: str | None = None,
     metadata: dict | None = None,
     mentions: list[str] | None = None,
@@ -90,7 +96,13 @@ async def post_message(
 
     message_type is one of: status, question, claim, release, blocked, done, ack,
     escalation, summary. recipient is the primary addressee ("To:") but the message is
-    still broadcast to the whole line. payload is freeform text; metadata is an opaque bag.
+    still broadcast to the whole line.
+
+    WRITE A `summary`: a concise one-line "what" (e.g. "claiming db.py for the pool fix").
+    Other agents read summaries by default — that keeps their context cheap. Put the full
+    detail (logs, rationale, context) in `payload`; readers fetch it on demand only when the
+    summary isn't enough. A message with only payload still works (readers fall back to it),
+    but always prefer summary+payload. metadata is an opaque bag.
     """
     log.info(
         "post_message agent_id=%s type=%s recipient=%s mentions=%s repo=%s",
@@ -113,22 +125,35 @@ async def post_message(
         metadata or {},
         mentions or [],
         reply_to_id,
-        None,
+        None,  # author (OBO principal) — set by the REST layer, not MCP
+        summary,
     )
     log.info("post_message OK id=%s agent_id=%s", result.get("id"), agent_id)
     return result
 
 
 @mcp.tool()
-async def get_unread(agent_id: str, limit: int = 500, only_for_me: bool = False) -> list[dict]:
+async def get_unread(
+    agent_id: str, limit: int = 500, only_for_me: bool = False, include_payload: bool = False
+) -> list[dict]:
     """Return messages newer than this agent's checkpoint (does not advance it).
 
     Set only_for_me=True to restrict to messages where this agent is the recipient or is
     mentioned, filtering out ambient broadcast chatter.
+
+    By default returns the concise `summary` and omits the full `payload` to keep your
+    context small; when a message has no summary its payload is returned regardless.
+    Pass include_payload=True to get full payloads inline, or fetch one thread's detail with
+    get_conversation.
     """
-    log.info("get_unread agent_id=%s only_for_me=%s limit=%s", agent_id, only_for_me, limit)
+    log.info(
+        "get_unread agent_id=%s only_for_me=%s limit=%s payload=%s",
+        agent_id, only_for_me, limit, include_payload,
+    )
     after = await run_in_threadpool(db.get_checkpoint, agent_id)
-    rows = await run_in_threadpool(db.get_since, after, limit, agent_id if only_for_me else None)
+    rows = await run_in_threadpool(
+        db.get_since, after, limit, agent_id if only_for_me else None, include_payload
+    )
     log.info("get_unread OK agent_id=%s checkpoint=%s returned=%s", agent_id, after, len(rows))
     return rows
 
@@ -158,14 +183,18 @@ async def search_messages(query: str, limit: int = 50) -> list[dict]:
 
 
 @mcp.tool()
-async def get_conversation(conversation_id: str, limit: int = 500) -> list[dict]:
+async def get_conversation(
+    conversation_id: str, limit: int = 500, include_payload: bool = True
+) -> list[dict]:
     """Return every message in a conversation thread (live + archived), oldest first.
 
     `conversation_id` comes from any message (post_message/get_unread/search_messages all
-    return it). Use it to read a full exchange end-to-end.
+    return it). Use it to read a full exchange end-to-end — this is the "drill into the
+    detail" path, so it returns full payloads by default. Pass include_payload=False for a
+    summary-only overview of a long thread.
     """
-    log.info("get_conversation conversation_id=%s limit=%s", conversation_id, limit)
-    rows = await run_in_threadpool(db.get_conversation, conversation_id, limit)
+    log.info("get_conversation conversation_id=%s limit=%s payload=%s", conversation_id, limit, include_payload)
+    rows = await run_in_threadpool(db.get_conversation, conversation_id, limit, include_payload)
     log.info("get_conversation OK returned=%s", len(rows))
     return rows
 

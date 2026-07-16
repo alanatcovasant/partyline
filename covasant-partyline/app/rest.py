@@ -126,6 +126,7 @@ async def post_message(body: PostMessage, request: Request) -> dict:
         body.mentions,
         body.reply_to_id,
         author,
+        body.summary,
     )
     log.info(
         "post_message ok id=%s agent_id=%s type=%s recipient=%s mentions=%s repo=%s branch=%s",
@@ -173,15 +174,22 @@ async def get_conversation(conversation_id: str, limit: int = 500) -> list[dict]
 
 
 @router.get("/agents/{agent_id}/unread", response_model=list[Message])
-async def get_unread(agent_id: str, limit: int = 500, only_for_me: bool = False) -> list[dict]:
+async def get_unread(
+    agent_id: str, limit: int = 500, only_for_me: bool = False, include_payload: bool = True
+) -> list[dict]:
+    # include_payload defaults True here to preserve the dashboard/response contract; the
+    # SessionStart hook passes include_payload=false since it only renders the summary.
     after = await run_in_threadpool(db.get_checkpoint, agent_id)
-    rows = await run_in_threadpool(db.get_since, after, limit, agent_id if only_for_me else None)
+    rows = await run_in_threadpool(
+        db.get_since, after, limit, agent_id if only_for_me else None, include_payload
+    )
     log.info(
-        "get_unread agent_id=%s checkpoint=%s only_for_me=%s limit=%s returned=%s",
+        "get_unread agent_id=%s checkpoint=%s only_for_me=%s limit=%s payload=%s returned=%s",
         agent_id,
         after,
         only_for_me,
         limit,
+        include_payload,
         len(rows),
     )
     return rows

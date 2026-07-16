@@ -8,6 +8,7 @@ type Message = {
   recipient?: string | null;
   repo?: string | null;
   resource_path?: string | null;
+  summary?: string | null;
   payload?: string | null;
   conversation_id?: string | null;
   created_at: string;
@@ -83,6 +84,30 @@ function fmtAge(seconds: number): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+// Render a message body: the concise `summary` as the main line, with the full `payload`
+// tucked behind a collapsible "details" disclosure. Falls back to payload-as-body when a
+// message has no summary (legacy rows / summary-less posts), so nothing is hidden.
+function MsgBody({ m }: { m: Message }) {
+  const summary = m.summary?.trim();
+  const payload = m.payload?.trim();
+  if (summary) {
+    // Only offer the expander when payload adds something beyond the summary.
+    const hasDetail = !!payload && payload !== summary;
+    return (
+      <>
+        <code>{summary}</code>
+        {hasDetail && (
+          <details className="msg-details">
+            <summary className="muted">details</summary>
+            <code>{payload}</code>
+          </details>
+        )}
+      </>
+    );
+  }
+  return payload ? <code>{payload}</code> : null;
 }
 
 const MESSAGE_TYPES = [
@@ -225,7 +250,7 @@ function Search() {
       <b>{m.agent_id}</b>
       {m.recipient && <span className="muted"> → {m.recipient}</span>}
       {m.source === "archive" && <span className="muted"> (archived)</span>}
-      {m.payload && <code>{m.payload}</code>}
+      <MsgBody m={m} />
       <time>{new Date(m.created_at).toLocaleString()}</time>
     </li>
   );
@@ -259,7 +284,7 @@ function Search() {
               <span className={`tag t-${m.message_type}`}>{m.message_type}</span>
               <b>{m.agent_id}</b>
               {m.source === "archive" && <span className="muted"> (archived)</span>}
-              {m.payload && <code>{m.payload}</code>}
+              <MsgBody m={m} />
               {m.conversation_id && (
                 <button type="button" className="link" onClick={() => openThread(m.conversation_id)}>
                   view thread →
@@ -332,7 +357,7 @@ function MessageStream({ agents, messages }: { agents: Agent[]; messages: Messag
             <b>{m.agent_id}</b>
             {m.recipient && <span className="muted"> → {m.recipient}</span>}
             {m.repo && <span className="muted"> [{m.repo}{m.resource_path ? `:${m.resource_path}` : ""}]</span>}
-            {m.payload && <code>{m.payload}</code>}
+            <MsgBody m={m} />
             <time title={new Date(m.created_at).toString()}>{new Date(m.created_at).toLocaleString()}</time>
           </li>
         ))}
@@ -360,6 +385,14 @@ export function App() {
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
   const [sseReconnects, setSseReconnects] = useState(0);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  // Background poll interval (ms); 0 = off. Persisted. Default 30s — SSE push delivers
+  // messages in real time, so this poll is only a metrics refresh + catch-up fallback.
+  // A slower poll (and pausing when the tab is hidden, below) lets Lakebase scale to zero
+  // instead of being kept warm by an idle open dashboard.
+  const [pollMs, setPollMs] = useState<number>(() => {
+    const v = Number(localStorage.getItem("partyline.pollMs"));
+    return Number.isFinite(v) && v >= 0 ? v : 30000;
+  });
   const lastId = useRef(0);
 
   // Pull messages newer than our cursor and append. Dedupes by id so the SSE push and
@@ -398,10 +431,24 @@ export function App() {
         .then(setDiag).catch(() => {});
       getJSON<Health>("/api/health").then(setHealth).catch(() => {});
     };
-    refresh();
-    const t = setInterval(refresh, 5000);
-    return () => clearInterval(t);
-  }, [pullNew]);
+    refresh(); // one immediate refresh on mount / when the interval changes
+    if (pollMs <= 0) return; // polling off — rely on SSE push only
+    let timer: number | undefined;
+    // Only poll while the tab is visible: a backgrounded dashboard stops hitting the DB,
+    // so an idle open tab no longer keeps Lakebase warm. Resume (and refresh once) on show.
+    const arm = () => {
+      window.clearInterval(timer);
+      if (document.hidden) return;
+      refresh();
+      timer = window.setInterval(refresh, pollMs);
+    };
+    arm();
+    document.addEventListener("visibilitychange", arm);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", arm);
+    };
+  }, [pullNew, pollMs]);
 
   // 1s tick so "Xs ago" ages stay live between polls.
   useEffect(() => {
@@ -431,6 +478,23 @@ export function App() {
         {health?.version && <span className="muted">v{health.version}</span>}
         <span className={connected ? "dot on" : "dot off"} />
         <span className="muted">{connected ? "live" : "disconnected"}</span>
+        <label className="poll-select muted" title="How often the dashboard refreshes metrics/agents from the database. Messages still arrive live via SSE regardless. A slower interval (or Off) lowers database load.">
+          refresh:{" "}
+          <select
+            value={pollMs}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setPollMs(v);
+              localStorage.setItem("partyline.pollMs", String(v));
+            }}
+          >
+            <option value={5000}>5s</option>
+            <option value={15000}>15s</option>
+            <option value={30000}>30s</option>
+            <option value={60000}>60s</option>
+            <option value={0}>off (live only)</option>
+          </select>
+        </label>
         <a className="ext-dl" href="/partyline-extension-latest.vsix" download title="Download the Covasant Partyline VS Code extension (.vsix)">
           ⬇ VS Code extension
         </a>

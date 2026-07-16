@@ -74,7 +74,11 @@ def main() -> None:
         return
 
     path = f"/api/agents/{urllib.parse.quote(agent_id)}/unread"
-    query = urllib.parse.urlencode({"only_for_me": "true", "limit": 50})
+    # include_payload=false: this peek only renders the concise summary (falling back to
+    # payload when a message has none), so don't pull full payloads over the wire.
+    query = urllib.parse.urlencode(
+        {"only_for_me": "true", "limit": 50, "include_payload": "false"}
+    )
     req = urllib.request.Request(
         f"{url}{path}?{query}", headers={"Authorization": f"Bearer {token}"}
     )
@@ -96,8 +100,9 @@ def main() -> None:
     for m in shown:
         frm = m.get("agent_id", "?")
         typ = m.get("message_type", "message")
-        payload = (m.get("payload") or "").replace("\n", " ")[:200]
-        lines.append(f"- #{m.get('id')} [{typ}] from {frm}: {payload}")
+        # Prefer the concise summary; fall back to payload when a message has no summary.
+        text = (m.get("summary") or m.get("payload") or "").replace("\n", " ")[:200]
+        lines.append(f"- #{m.get('id')} [{typ}] from {frm}: {text}")
     _emit("\n".join(lines))
 
 

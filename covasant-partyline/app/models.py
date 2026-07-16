@@ -75,7 +75,12 @@ class PostMessage(BaseModel):
     branch: str | None = None
     resource_path: str | None = None
     issue_ref: str | None = Field(None, description="GH issue/PR number or URL")
-    payload: str | None = Field(None, description="Freeform content (summary, log, prose)")
+    summary: str | None = Field(
+        None,
+        description="Concise one-line 'what' (the digest other agents read by default). "
+        "Put full detail in payload; readers fetch that on demand.",
+    )
+    payload: str | None = Field(None, description="Full detail (the 'why/how'): log, prose, context")
     metadata: dict = Field(default_factory=dict, description="Opaque escape hatch (NFR7)")
     mentions: list[str] = Field(default_factory=list)
     reply_to_id: int | None = None
