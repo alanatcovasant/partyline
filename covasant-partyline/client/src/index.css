@@ -44,6 +44,16 @@ header .poll-select select {
 .msg-details { margin-top: 0.2rem; }
 .msg-details > summary { cursor: pointer; font-size: 0.8em; list-style: revert; }
 .msg-details[open] > summary { margin-bottom: 0.2rem; }
+/* Message + conversation ids on each row. */
+.msg-ids { display: inline-flex; gap: 0.5rem; align-items: center; margin-left: 0.4rem; font-size: 0.8em; }
+.conv-id {
+  font: inherit; color: var(--muted); background: transparent; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 5px; padding: 0 0.35rem; line-height: 1.5;
+}
+.conv-id:hover { border-color: var(--muted); background: rgba(127, 127, 127, 0.08); }
+/* Archive-all: right-aligned in the filter row; muted until hovered (destructive). */
+.archive-all { margin-left: auto; white-space: nowrap; }
+.archive-all:hover:not(:disabled) { border-color: #dc2626; color: #dc2626; }
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .dot.on { background: #16a34a; }
 .dot.off { background: #9ca3af; }

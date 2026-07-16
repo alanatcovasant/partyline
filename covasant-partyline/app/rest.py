@@ -162,6 +162,19 @@ async def search_messages(q: str, limit: int = 50) -> list[dict]:
     return rows
 
 
+@router.post("/messages/archive-all")
+async def archive_all_messages() -> dict:
+    """Move ALL live messages into the archive and clear the live feed (operator action).
+
+    History is preserved (rows are moved, not dropped) and remains searchable via /api/search
+    and readable via /api/conversations. Destructive to the live view, so the UI confirms
+    first. Returns {archived, deleted} counts.
+    """
+    result = await run_in_threadpool(db.archive_all_messages)
+    log.warning("archive_all_messages archived=%s deleted=%s", result.get("archived"), result.get("deleted"))
+    return result
+
+
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(conversation_id: str, limit: int = 500) -> list[dict]:
     """Every message in a conversation thread (live + archived), oldest first."""

@@ -811,3 +811,27 @@ def get_metrics() -> dict:
                 (SELECT count(DISTINCT agent_id) FROM messages WHERE created_at > now() - interval '1 hour') AS unique_posters_1h
         """).fetchone()
         return row if row else {}
+
+
+def archive_all_messages() -> dict:
+    """Move every live message into messages_archive and clear the live table.
+
+    Same move-then-delete pattern as the retention job (src/covasant_partyline_jobs), but
+    for ALL messages regardless of age — an operator "archive everything now" action. Runs
+    in a single transaction so a failure rolls back both halves and no history is lost;
+    idempotent via ON CONFLICT. The app SP has DML on these tables (no owner-only DDL), so
+    this needs no privileged step. Returns counts for UI feedback.
+    """
+    log.info("archive_all_messages requested")
+    with get_pool().connection() as conn:
+        archived = conn.execute(
+            "INSERT INTO messages_archive SELECT * FROM messages ON CONFLICT (id) DO NOTHING"
+        ).rowcount
+        # reply_to_id is a self-FK; null out references before the wholesale delete. (Not
+        # strictly needed when deleting ALL rows, but keeps parity with the retention job
+        # and is safe.)
+        conn.execute("UPDATE messages SET reply_to_id = NULL WHERE reply_to_id IS NOT NULL")
+        deleted = conn.execute("DELETE FROM messages").rowcount
+        conn.commit()
+    log.info("archive_all_messages OK archived=%s deleted=%s", archived, deleted)
+    return {"archived": archived, "deleted": deleted}

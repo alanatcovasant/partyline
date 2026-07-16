@@ -86,6 +86,27 @@ function fmtAge(seconds: number): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
+// Compact conversation-id chip: shows the first 8 chars, full id on hover, and copies the
+// full id to the clipboard on click (agents paste it into get_conversation to read a thread).
+function ConversationId({ id }: { id: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="conv-id"
+      title={`conversation ${id} — click to copy`}
+      onClick={() => {
+        navigator.clipboard?.writeText(id).then(
+          () => { setCopied(true); window.setTimeout(() => setCopied(false), 1200); },
+          () => {},
+        );
+      }}
+    >
+      🧵 {copied ? "copied" : id.slice(0, 8)}
+    </button>
+  );
+}
+
 // Render a message body: the concise `summary` as the main line, with the full `payload`
 // tucked behind a collapsible "details" disclosure. Falls back to payload-as-body when a
 // message has no summary (legacy rows / summary-less posts), so nothing is hidden.
@@ -303,6 +324,35 @@ const PAGE_SIZE = 50;
 
 /** The message feed: newest-first, with type + text filtering and pagination over the
  *  loaded window. (Whole-history search lives in <Search />; this filters what's loaded.) */
+// Operator action: archive ALL live messages (moved to the archive, still searchable) and
+// clear the live feed. Destructive to the live view, so it confirms first; reloads on success.
+function ArchiveAllButton() {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    if (!window.confirm(
+      "Archive ALL messages?\n\nEvery live message is moved to the archive and the live feed is cleared. " +
+      "History stays searchable (search + conversations), but the live view resets for everyone.",
+    )) return;
+    setBusy(true);
+    try {
+      const r = await fetch("/api/messages/archive-all", { method: "POST" });
+      if (!r.ok) throw new Error(String(r.status));
+      const { archived } = await r.json();
+      window.alert(`Archived ${archived} message(s).`);
+      window.location.reload();
+    } catch (e) {
+      window.alert(`Archive failed: ${e}`);
+      setBusy(false);
+    }
+  };
+  return (
+    <button type="button" className="ghost archive-all" onClick={run} disabled={busy}
+      title="Move all live messages to the archive and clear the live feed">
+      {busy ? "archiving…" : "🗄 archive all"}
+    </button>
+  );
+}
+
 function MessageStream({ agents, messages }: { agents: Agent[]; messages: Message[] }) {
   const [ftype, setFtype] = useState("all");
   const [fq, setFq] = useState("");
@@ -312,7 +362,10 @@ function MessageStream({ agents, messages }: { agents: Agent[]; messages: Messag
     const needle = fq.trim().toLowerCase();
     return messages
       .slice()
-      .reverse() // newest first
+      // Newest first by id, not by array position: the seed and the after_id poll can
+      // append rows out of id-order (e.g. a mount-race poll that fetched from id 0), so a
+      // bare .reverse() could surface old messages on top. Sorting by id is deterministic.
+      .sort((a, b) => b.id - a.id)
       .filter((m) => ftype === "all" || m.message_type === ftype)
       .filter(
         (m) =>
@@ -349,6 +402,7 @@ function MessageStream({ agents, messages }: { agents: Agent[]; messages: Messag
           aria-label="Filter messages"
         />
         <span className="muted">{filtered.length} shown</span>
+        <ArchiveAllButton />
       </div>
       <ul>
         {shown.map((m) => (
@@ -358,6 +412,12 @@ function MessageStream({ agents, messages }: { agents: Agent[]; messages: Messag
             {m.recipient && <span className="muted"> → {m.recipient}</span>}
             {m.repo && <span className="muted"> [{m.repo}{m.resource_path ? `:${m.resource_path}` : ""}]</span>}
             <MsgBody m={m} />
+            <span className="msg-ids muted">
+              <span title={`message id ${m.id}`}>#{m.id}</span>
+              {m.conversation_id && (
+                <ConversationId id={m.conversation_id} />
+              )}
+            </span>
             <time title={new Date(m.created_at).toString()}>{new Date(m.created_at).toLocaleString()}</time>
           </li>
         ))}
@@ -394,11 +454,14 @@ export function App() {
     return Number.isFinite(v) && v >= 0 ? v : 30000;
   });
   const lastId = useRef(0);
+  const seeded = useRef(false);
 
   // Pull messages newer than our cursor and append. Dedupes by id so the SSE push and
-  // the 5s poll (below) can both call this without double-appending, and advances the
-  // cursor to the highest id seen.
+  // the poll (below) can both call this without double-appending, and advances the cursor
+  // to the highest id seen. Skips until the initial seed has set lastId, so a mount-race
+  // call can't fetch after_id=0 (the OLDEST rows) and clobber the newest-messages view.
   const pullNew = useCallback(() => {
+    if (!seeded.current) return;
     getJSON<Message[]>(`/api/messages?after_id=${lastId.current}&limit=200`)
       .then((rows) => {
         if (!rows.length) return;
@@ -406,7 +469,12 @@ export function App() {
         setMessages((prev) => {
           const seen = new Set(prev.map((m) => m.id));
           const fresh = rows.filter((m) => !seen.has(m.id));
-          return fresh.length ? [...prev, ...fresh].slice(-500) : prev;
+          if (!fresh.length) return prev;
+          // Keep the array id-sorted and retain the newest 500 BY ID — otherwise a poll
+          // that raced the seed (fetching from id 0) could append old rows and push the
+          // genuinely-newest messages out of the retained window.
+          const merged = [...prev, ...fresh].sort((a, b) => a.id - b.id);
+          return merged.slice(-500);
         });
       })
       .catch(() => {});
@@ -420,6 +488,8 @@ export function App() {
       .then((m) => {
         setMessages(m);
         lastId.current = m.length ? Math.max(...m.map((x) => x.id)) : 0;
+        seeded.current = true; // now safe to tail forward from the cursor
+        pullNew(); // catch anything posted between the seed and the listener arming
       })
       .catch(() => {});
     const refresh = () => {
