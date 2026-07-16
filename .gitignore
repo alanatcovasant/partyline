@@ -20,3 +20,5 @@ scratch/**
 
 # Captured Databricks Apps runtime/deploy log (artifact, not source)
 log.txt
+deploy.stdout.txt
+deploy.stderr.txt
