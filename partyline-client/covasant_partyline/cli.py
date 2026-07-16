@@ -133,6 +133,7 @@ def cmd_watch(a: argparse.Namespace) -> None:
     The read uses a socket timeout so a silently-dead connection never hangs: on read
     timeout / disconnect the loop reconnects (bounded by the overall --timeout) instead
     of blocking forever."""
+    import http.client
     import socket
     import time
 
@@ -171,7 +172,12 @@ def cmd_watch(a: argparse.Namespace) -> None:
                 # Stream closed cleanly (server side) — reconnect until the deadline.
             except (TimeoutError, socket.timeout):
                 continue  # idle/dead socket — reconnect (never hang)
-            except urllib.error.URLError as e:
+            except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+                # Any transient connect/stream failure — DNS blip, reset, half-open socket
+                # (ConnectionResetError/IncompleteRead are OSError/HTTPException, not
+                # URLError), the Databricks Apps proxy dropping a long stream, etc. Reconnect
+                # until the deadline instead of exiting 2, so a single armed watcher survives
+                # transient drops rather than dying on the first one.
                 if not a.exit_on_mention:
                     print(f"reconnecting ({getattr(e, 'reason', e)})", file=sys.stderr, flush=True)
                 time.sleep(2)  # brief backoff on transient network error
