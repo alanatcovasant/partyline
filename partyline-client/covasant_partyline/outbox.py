@@ -67,3 +67,65 @@ class TicketTable:
         with self._lock:
             entry = self._d.get(ticket)
             return dict(entry) if entry else {"status": "unknown"}
+
+
+def _yaml_scalar(v) -> str:
+    """Emit a YAML-safe scalar for the limited types spool records contain."""
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    s = str(v)
+    # Always double-quote strings and escape backslashes/quotes/newlines -> a single safe line.
+    s = s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
+    return f'"{s}"'
+
+
+def _yaml_doc(record: dict) -> str:
+    """Render one record as a top-level list item ('- key: val' with nested 'message')."""
+    lines = []
+    first = True
+    for k, v in record.items():
+        prefix = "- " if first else "  "
+        first = False
+        if isinstance(v, dict):
+            lines.append(f"{prefix}{k}:")
+            for sk, sv in v.items():
+                lines.append(f"    {sk}: {_yaml_scalar(sv)}")
+        else:
+            lines.append(f"{prefix}{k}: {_yaml_scalar(v)}")
+    return "\n".join(lines) + "\n"
+
+
+def spool_message(path: str, record: dict) -> bool:
+    """Append one YAML document to `path`. Best-effort lock; never raises."""
+    import time
+    try:
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        lock = path + ".lock"
+        # crude cross-platform advisory lock: create-exclusive with brief spin
+        acquired = False
+        for _ in range(50):
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                acquired = True
+                break
+            except FileExistsError:
+                time.sleep(0.02)
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(_yaml_doc(record))
+            return True
+        finally:
+            if acquired:
+                try:
+                    os.remove(lock)
+                except OSError:
+                    pass
+    except Exception:
+        return False

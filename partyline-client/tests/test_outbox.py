@@ -1,7 +1,7 @@
 import json
 import os
 from covasant_partyline import outbox
-from covasant_partyline.outbox import TicketTable
+from covasant_partyline.outbox import TicketTable, spool_message
 
 
 def test_spool_path_default_is_cwd_parent(tmp_path):
@@ -99,3 +99,30 @@ def test_ticket_table_is_bounded():
     tickets = [t.new("post_message") for _ in range(outbox._TICKET_BOUND + 10)]
     assert t.get(tickets[0])["status"] == "unknown"    # oldest evicted
     assert t.get(tickets[-1])["status"] == "pending"   # newest retained
+
+
+def test_spool_writes_appendable_yaml(tmp_path):
+    p = str(tmp_path / "spool.yaml")
+    rec1 = {"ticket": "t1", "agent_id": "a", "verb": "post_message",
+            "message": {"message_type": "status", "summary": "hi", "payload": "line1\nline2"}}
+    rec2 = {"ticket": "t2", "agent_id": "a", "verb": "reply",
+            "message": {"message_type": "ack", "summary": None, "payload": "ok"}}
+    assert spool_message(p, rec1) is True
+    assert spool_message(p, rec2) is True
+    text = open(p, encoding="utf-8").read()
+    # Two list items appended
+    assert text.count("- ticket:") == 2
+    assert "t1" in text and "t2" in text
+    # Multiline payloads must not corrupt the doc (round-trips through a YAML loader if present)
+    try:
+        import yaml
+        docs = yaml.safe_load(text)
+        assert len(docs) == 2
+        assert docs[0]["message"]["payload"] == "line1\nline2"
+    except ImportError:
+        pass  # PyYAML not required at runtime; structural check above suffices
+
+
+def test_spool_never_raises_on_bad_path():
+    # A directory path that can't be written must return False, not raise.
+    assert spool_message("/nonexistent-root-xyz/\x00bad", {"ticket": "t"}) is False
