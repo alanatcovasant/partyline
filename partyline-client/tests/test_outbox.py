@@ -1,3 +1,4 @@
+import json
 import os
 from covasant_partyline import outbox
 
@@ -36,3 +37,33 @@ def test_resolve_agent_id_prefers_flag(monkeypatch):
 def test_resolve_agent_id_env_then_config(monkeypatch):
     monkeypatch.setenv("PARTYLINE_AGENT_ID", "from_env")
     assert outbox.resolve_agent_id(None) == "from_env"
+
+
+def test_resolve_agent_id_falls_back_to_config(monkeypatch, tmp_path):
+    """Test that resolve_agent_id reads from .partyline/config.json when no flag or env var."""
+    monkeypatch.delenv("PARTYLINE_AGENT_ID", raising=False)
+    config_dir = tmp_path / ".partyline"
+    config_dir.mkdir()
+    config_file = config_dir / "config.json"
+    config_file.write_text(json.dumps({"agentId": "from_config"}))
+    monkeypatch.chdir(tmp_path)
+    assert outbox.resolve_agent_id(None) == "from_config"
+
+
+def test_resolve_agent_id_falls_back_to_config_snake_case(monkeypatch, tmp_path):
+    """Test that resolve_agent_id reads agent_id (snake_case) key from config."""
+    monkeypatch.delenv("PARTYLINE_AGENT_ID", raising=False)
+    config_dir = tmp_path / ".partyline"
+    config_dir.mkdir()
+    config_file = config_dir / "config.json"
+    config_file.write_text(json.dumps({"agent_id": "snake_config"}))
+    monkeypatch.chdir(tmp_path)
+    assert outbox.resolve_agent_id(None) == "snake_config"
+
+
+def test_spool_path_directory_trailing_slash(tmp_path):
+    """Test that a non-existent directory with trailing / is still treated as a directory."""
+    nonexistent_dir = str(tmp_path / "nonexistent" / "dir") + "/"
+    p = outbox.resolve_spool_path("alan_aura_3", nonexistent_dir, os.getcwd())
+    expected = os.path.join(nonexistent_dir.rstrip("/" + os.sep), "partyline_alan_aura_3.yaml")
+    assert p == expected
