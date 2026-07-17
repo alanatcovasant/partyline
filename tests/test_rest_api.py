@@ -414,3 +414,35 @@ async def test_message_with_mentions_and_recipient(client):
     msg = resp.json()
     assert msg["recipient"] == "target_agent"
     assert "target_agent" in msg["mentions"]
+
+
+@pytest.mark.anyio
+async def test_post_message_accepts_event_time(client, monkeypatch):
+    """event_time (ISO-8601, optional) must be forwarded to db.post_message as the
+    trailing positional arg, so the bridge's background sender can stamp true emit
+    time rather than DB-insert time."""
+    captured = {}
+
+    def fake_post_message(*args, **kwargs):
+        # event_time is the last positional arg (see db.post_message signature)
+        captured["event_time"] = args[-1]
+        return {
+            "id": 1, "agent_id": "a", "message_type": "status", "recipient": None,
+            "repo": None, "branch": None, "resource_path": None, "issue_ref": None,
+            "summary": None, "payload": "hi", "metadata": {}, "mentions": [],
+            "reply_to_id": None, "author": None, "conversation_id": None,
+            "created_at": "2026-07-16T00:00:00Z", "event_time": "2026-07-16T00:00:00Z",
+            "received_at": "2026-07-16T00:00:00Z",
+        }
+
+    monkeypatch.setattr("app.db.post_message", fake_post_message)
+    r = await client.post("/api/messages", json={
+        "agent_id": "a", "message_type": "status", "payload": "hi",
+        "event_time": "2026-07-16T00:00:00Z",
+    })
+    assert r.status_code == 200
+    # event_time is typed `datetime | None` on PostMessage, so Pydantic parses the
+    # ISO-8601 string before it reaches db.post_message.
+    from datetime import datetime, timezone
+
+    assert captured["event_time"] == datetime(2026, 7, 16, 0, 0, tzinfo=timezone.utc)

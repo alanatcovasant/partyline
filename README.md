@@ -212,6 +212,25 @@ and proxies stdio MCP to the app's `/mcp`:
 }
 ```
 
+### Bridge reliability & diagnostics
+
+The bridge implements fire-and-forget delivery for sends: `post_message`, `reply`,
+`ack_checkpoint`, `register_agent`, and `release_resource` return `{queued, ticket}`
+instantly and are delivered by a background sender with exponential-backoff retries.
+Use `check_send(ticket)` to poll delivery status → `pending` / `sent` / `failed` / `unknown`.
+
+Undeliverable messages spill to `PARTYLINE_SPOOL_PATH` (a directory → `<dir>/partyline_<agent_id>.yaml`;
+a file path → used verbatim; a template with `{agent_id}` → substituted; default `../partyline_<agent_id>.yaml`).
+The spool is a safety net only — messages are not auto-replayed; check the bridge logs and `check_send` to diagnose.
+
+Set `PARTYLINE_METRICS=1` to emit per-call byte and estimated-token counts as JSONL on the
+`partyline.metrics` logger; the startup footprint line is always logged. The bridge observes
+*bytes* sent to the wire, not true session tokens — for accurate token spend use Claude Code `/cost`
+and OpenTelemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1`).
+
+Reads (`get_unread`, `get_since`, `list_agents`, `list_claims`) and `claim_resource` remain
+synchronous but fail fast with a ~8s timeout.
+
 ## VS Code Extension
 
 A lightweight extension providing real-time Partyline notifications and LM tool

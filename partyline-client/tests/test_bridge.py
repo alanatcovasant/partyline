@@ -216,3 +216,29 @@ def test_bounded_lock_fails_fast_when_prior_call_wedged(monkeypatch):
         assert elapsed < 5, f"queued call should fail fast, took {elapsed:.1f}s"
 
     asyncio.run(body())
+
+
+def test_sync_call_uses_short_deadline(monkeypatch):
+    # A sync=True call must abandon a wedged op at the SHORT deadline, not the 120s one.
+    monkeypatch.setattr(bridge, "_SYNC_CALL_TIMEOUT_SECS", 0.2)
+
+    async def body():
+        r = _remote()
+        sentinel = object()
+
+        async def fake_connect(tag=None):
+            r._session = sentinel
+            return sentinel
+
+        r._connect = fake_connect
+
+        async def wedged(session):
+            await asyncio.sleep(100)
+
+        import time as _t
+        t0 = _t.monotonic()
+        with pytest.raises(asyncio.TimeoutError):
+            await r.call(wedged, "wedged-sync", sync=True)
+        assert _t.monotonic() - t0 < 3, "sync call must fail fast at the short deadline"
+
+    asyncio.run(body())
