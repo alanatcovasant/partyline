@@ -30,6 +30,14 @@ def test_bridge_info_reports_spool_when_sender_present():
     assert info["spooled_pending"] == 2
 
 
+def test_send_verbs_have_endpoints():
+    from covasant_partyline import bridge, sender
+    # Every send verb the bridge enqueues MUST have a sender REST endpoint,
+    # else send_once raises KeyError at delivery time.
+    assert bridge._SEND_VERBS == set(sender.VERB_ENDPOINTS), (
+        bridge._SEND_VERBS.symmetric_difference(set(sender.VERB_ENDPOINTS)))
+
+
 def test_effective_instructions_falls_back_to_static():
     # Before the async connect lands, remote.instructions is None -> the client must still
     # get a usable static how-to, not None.

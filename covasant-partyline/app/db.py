@@ -631,7 +631,7 @@ def get_recent(limit: int = 500) -> list[dict]:
     """
     with get_pool().connection() as conn:
         rows = conn.execute(
-            f"SELECT {_MSG_COLS} FROM messages ORDER BY event_time DESC, id DESC LIMIT %s",
+            f"SELECT {_MSG_COLS} FROM messages ORDER BY event_time DESC NULLS LAST, id DESC LIMIT %s",
             (limit,),
         ).fetchall()
     return list(reversed(rows))

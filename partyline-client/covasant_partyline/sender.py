@@ -103,7 +103,20 @@ class BackgroundSender:
         while True:
             attempts += 1
             try:
-                token = self._token_fn()
+                # Token acquisition shares the fate of the send itself: self._token_fn()
+                # is the bridge's _token(), which ultimately calls _auth_headers(cfg) —
+                # that raises SystemExit (a BaseException, NOT caught by `except Exception`)
+                # on PAT/unresolvable creds. Left uncaught, that would escape _deliver,
+                # escape run(), and silently kill the drain loop. Catch it here so a token
+                # failure is just another delivery failure: retry -> eventual spill on
+                # give-up, same as a network/HTTP error. CancelledError must still
+                # propagate (shutdown/cancellation), so it is excluded and re-raised.
+                try:
+                    token = self._token_fn()
+                except asyncio.CancelledError:
+                    raise
+                except (Exception, SystemExit) as exc:
+                    raise RuntimeError(f"token acquisition failed: {type(exc).__name__}: {exc}") from exc
                 result = await asyncio.to_thread(
                     send_once, self._base, token, item["verb"], item["args"], item["event_time"]
                 )

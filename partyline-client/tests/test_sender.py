@@ -15,6 +15,29 @@ def test_verb_body_builders_shape():
     assert body["last_read_message_id"] == 5
 
 
+def test_verb_bodies_validate_against_rest_models():
+    """Each send verb's body-builder must produce a dict that VALIDATES against the
+    corresponding app REST Pydantic model — the uncovered seam where a client-side body
+    could silently drift from the server-side model and raise at delivery time."""
+    import sys, pathlib
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "covasant-partyline"))
+    from app.models import PostMessage, RegisterAgent, Checkpoint, ReleaseRequest
+    from covasant_partyline import sender
+
+    et = "2026-07-16T00:00:00Z"
+    cases = {
+        "post_message": (PostMessage, {"agent_id": "a", "message_type": "status", "payload": "hi"}),
+        "reply":        (PostMessage, {"agent_id": "a", "message_type": "ack", "payload": "ok"}),
+        "register_agent": (RegisterAgent, {"agent_id": "a", "owner": "o", "repo": "r"}),
+        "ack_checkpoint": (Checkpoint, {"agent_id": "a", "last_read_message_id": 5}),
+        "release_resource": (ReleaseRequest, {"agent_id": "a", "repo": "r", "resource_path": "p"}),
+    }
+    for verb, (model, args) in cases.items():
+        path, build = sender.VERB_ENDPOINTS[verb]
+        body = build(args, et)
+        model(**body)  # raises pydantic ValidationError if the shape is wrong
+
+
 def test_sender_marks_sent_on_success(monkeypatch):
     tickets = outbox.TicketTable()
 
@@ -103,6 +126,36 @@ def test_stop_during_backoff_spills_inflight(monkeypatch):
     tk = asyncio.run(body())
     assert tickets.get(tk)["status"] == "failed", "ticket must not stay pending forever"
     assert spills, "in-flight message must be spilled, not lost"
+    assert bs.spill_flag["pending"] >= 1
+
+
+def test_token_fn_systemexit_does_not_kill_loop(monkeypatch):
+    """A SystemExit from token_fn (e.g. bridge._auth_headers on PAT/unresolvable creds)
+    must be treated like any other delivery failure — retried, then spilled on give-up —
+    never allowed to escape _deliver/run() and silently kill the drain loop."""
+    tickets = outbox.TicketTable()
+    spills = []
+
+    def token_fn():
+        raise SystemExit("no creds")
+
+    monkeypatch.setattr(outbox, "spool_message", lambda p, r: spills.append((p, r)) or True)
+    monkeypatch.setattr(sender, "_GIVEUP_SECS", 0.3)
+    monkeypatch.setattr(sender, "_BACKOFF_START", 0.05)
+    monkeypatch.setattr(sender, "_BACKOFF_CAP", 0.1)
+    bs = sender.BackgroundSender("http://x", token_fn, tickets, spool_path="/tmp/x.yaml")
+
+    async def body():
+        tk = bs.enqueue("post_message", {"agent_id": "a", "payload": "hi"}, "2026-07-16T00:00:00Z")
+        task = asyncio.ensure_future(bs.run())
+        await asyncio.sleep(1.0)
+        assert not task.done(), "run() task must still be alive after a token SystemExit"
+        task.cancel()
+        return tk
+
+    tk = asyncio.run(body())
+    assert tickets.get(tk)["status"] == "failed"
+    assert spills, "message must be spooled after give-up"
     assert bs.spill_flag["pending"] >= 1
 
 
