@@ -492,7 +492,8 @@ def get_agent_presence_diagnostics(active_within_seconds: int = 3600, sample_siz
 
 _MSG_COLS = (
     "id, agent_id, author, message_type, recipient, repo, branch, resource_path, "
-    "issue_ref, summary, payload, metadata, mentions, reply_to_id, conversation_id::text, created_at"
+    "issue_ref, summary, payload, metadata, mentions, reply_to_id, conversation_id::text, "
+    "created_at, event_time, received_at"
 )
 
 # Same columns as _MSG_COLS but payload is elided ONLY when a summary exists — used by the
@@ -520,6 +521,7 @@ def post_message(
     reply_to_id: int | None,
     author: str | None,
     summary: str | None = None,
+    event_time=None,  # datetime | ISO-str | None; agent emit time (None -> now())
 ) -> dict:
     """Insert a message, refresh presence, and emit a NOTIFY for push delivery (FR1/FR2).
 
@@ -532,11 +534,12 @@ def post_message(
             f"""INSERT INTO messages
                  (agent_id, author, message_type, recipient, repo, branch,
                   resource_path, issue_ref, summary, payload, metadata, mentions, reply_to_id,
-                  conversation_id)
+                  conversation_id, event_time, received_at)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                        -- inherit the parent's thread on a reply, else start a new one
                        COALESCE((SELECT conversation_id FROM messages WHERE id = %s),
-                                gen_random_uuid()))
+                                gen_random_uuid()),
+                       COALESCE(%s::timestamptz, now()), now())
                RETURNING {_MSG_COLS}""",
             (
                 agent_id,
@@ -553,6 +556,7 @@ def post_message(
                 mentions,
                 reply_to_id,
                 reply_to_id,  # again: for the COALESCE subquery that resolves the thread
+                event_time,
             ),
         ).fetchone()
         _heartbeat(conn, agent_id)
@@ -578,6 +582,7 @@ def post_message(
                         "reply_to_id": reply_to_id,
                         "conversation_id": row["conversation_id"],
                         "created_at": str(row["created_at"]),
+                        "event_time": str(row["event_time"]),
                     }
                 ),
             ),
@@ -609,7 +614,8 @@ def get_since(
     params.append(limit)
     with get_pool().connection() as conn:
         return conn.execute(
-            f"SELECT {cols} FROM messages WHERE {where} ORDER BY id ASC LIMIT %s",
+            f"SELECT * FROM (SELECT {cols} FROM messages WHERE {where} "
+            f"ORDER BY id ASC LIMIT %s) w ORDER BY event_time ASC, id ASC",
             tuple(params),
         ).fetchall()
 
@@ -625,7 +631,7 @@ def get_recent(limit: int = 500) -> list[dict]:
     """
     with get_pool().connection() as conn:
         rows = conn.execute(
-            f"SELECT {_MSG_COLS} FROM messages ORDER BY id DESC LIMIT %s",
+            f"SELECT {_MSG_COLS} FROM messages ORDER BY event_time DESC, id DESC LIMIT %s",
             (limit,),
         ).fetchall()
     return list(reversed(rows))
