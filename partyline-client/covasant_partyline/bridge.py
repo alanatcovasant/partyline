@@ -105,6 +105,11 @@ _CALL_TIMEOUT_SECS = 120.0
 # one wedged call blocked EVERY later call until the client's ~1800s idle timeout. Slightly
 # above _CALL_TIMEOUT_SECS so a legitimately in-flight call can finish and release first.
 _LOCK_ACQUIRE_TIMEOUT_SECS = 150.0
+# Fast-fail ceilings for the SYNCHRONOUS path (reads + claim_resource). A stale-token or
+# cold-app read fails in seconds so the agent retries cheaply, instead of riding the long
+# fire-and-forget-era 120s deadline. Sends no longer use this path at all.
+_SYNC_CALL_TIMEOUT_SECS = 8.0
+_SYNC_LOCK_ACQUIRE_TIMEOUT_SECS = 10.0
 # Bound the connect/initialize handshake so a cold or mid-restart app (Databricks Apps
 # scale to zero) can't stall the bridge forever — without this, a hung initialize() blocks
 # until the MCP client's own idle timeout (~30min) and reads as "Connection closed".
@@ -384,28 +389,35 @@ class _Remote:
         self._connected_at = None
         self._token_expiry = None
 
-    async def call(self, op, label: str = "?"):
+    async def call(self, op, label: str = "?", sync: bool = False):
         """Run ``op(session)``, reconnecting with fresh credentials on failure.
 
-        Hard-bounded end to end: a call can block at most _LOCK_ACQUIRE_TIMEOUT_SECS
-        (waiting its turn) plus _CALL_TIMEOUT_SECS (the op itself) — both well under the
+        Hard-bounded end to end: a call can block at most the lock-acquire ceiling
+        (waiting its turn) plus the call ceiling (the op itself) — both well under the
         MCP client's ~1800s idle timeout. A wedged remote therefore surfaces as a fast
         error the client can reconnect from, instead of a silent 30-minute hang.
+
+        ``sync=True`` selects the short fast-fail ceilings (_SYNC_CALL_TIMEOUT_SECS /
+        _SYNC_LOCK_ACQUIRE_TIMEOUT_SECS) for the synchronous read/claim path, so those
+        calls fail in seconds rather than riding the long ceilings. Default ``sync=False``
+        preserves the existing long-ceiling behavior for all other callers.
         """
         tag = f"{label}#{next(_call_seq)}"
-        log.debug("[%s] acquiring lock ...", tag)
+        lock_timeout = _SYNC_LOCK_ACQUIRE_TIMEOUT_SECS if sync else _LOCK_ACQUIRE_TIMEOUT_SECS
+        call_timeout = _SYNC_CALL_TIMEOUT_SECS if sync else _CALL_TIMEOUT_SECS
+        log.debug("[%s] acquiring lock (sync=%s) ...", tag, sync)
         t_wait = time.monotonic()
         try:
             # Bounded acquire (was unbounded): if a prior call wedged the connection, fail
             # fast so the client reconnects rather than queueing behind it until 1800s.
-            await asyncio.wait_for(self._lock.acquire(), timeout=_LOCK_ACQUIRE_TIMEOUT_SECS)
+            await asyncio.wait_for(self._lock.acquire(), timeout=lock_timeout)
         except asyncio.TimeoutError:
             log.error(
                 "[%s] bridge busy >%.0fs (a prior call is wedged holding the lock) — failing "
-                "fast to trigger a client reconnect", tag, _LOCK_ACQUIRE_TIMEOUT_SECS,
+                "fast to trigger a client reconnect", tag, lock_timeout,
             )
             raise RuntimeError(
-                f"partyline bridge busy for >{_LOCK_ACQUIRE_TIMEOUT_SECS:.0f}s; the remote app "
+                f"partyline bridge busy for >{lock_timeout:.0f}s; the remote app "
                 "may be restarting — please retry."
             )
         lock_wait = time.monotonic() - t_wait
@@ -415,11 +427,11 @@ class _Remote:
             log.debug("[%s] lock acquired in %.3fs", tag, lock_wait)
 
         try:
-            return await self._call_bounded(op, tag)
+            return await self._call_bounded(op, tag, call_timeout)
         finally:
             self._lock.release()
 
-    async def _call_bounded(self, op, tag: str):
+    async def _call_bounded(self, op, tag: str, call_timeout: float = _CALL_TIMEOUT_SECS):
         """Attempt ``op`` (reconnecting once on error) under a hard wall-clock deadline.
 
         The attempt runs in its own task and is ``shield``-ed: if the deadline fires we
@@ -459,11 +471,11 @@ class _Remote:
 
         task = asyncio.ensure_future(_attempt())
         try:
-            result = await asyncio.wait_for(asyncio.shield(task), timeout=_CALL_TIMEOUT_SECS)
+            result = await asyncio.wait_for(asyncio.shield(task), timeout=call_timeout)
         except asyncio.TimeoutError:
             log.error(
                 "[%s] HARD DEADLINE %.0fs exceeded (remote wedged) — abandoning the task and "
-                "dropping the session so the next call reconnects", tag, _CALL_TIMEOUT_SECS,
+                "dropping the session so the next call reconnects", tag, call_timeout,
             )
             # Best-effort cancel and detach: do NOT await it (it may be ignoring the
             # cancel). Drop the session/age so the NEXT call reconnects into a fresh
