@@ -182,7 +182,18 @@ class BackgroundSender:
         while not self._q.empty() and time.monotonic() < deadline:
             item = self._q.get_nowait()
             try:
-                token = self._token_fn()
+                # Same gap as _deliver: self._token_fn() can raise SystemExit (a
+                # BaseException, NOT caught by `except Exception`) on PAT/unresolvable
+                # creds. Left uncaught, that would escape drain_and_stop during the
+                # shutdown-grace window instead of spilling the item. Catch it here so
+                # a token failure during drain is just another delivery failure.
+                # CancelledError must still propagate.
+                try:
+                    token = self._token_fn()
+                except asyncio.CancelledError:
+                    raise
+                except (Exception, SystemExit) as exc:
+                    raise RuntimeError(f"token acquisition failed: {type(exc).__name__}: {exc}") from exc
                 result = await asyncio.to_thread(
                     send_once, self._base, token, item["verb"], item["args"], item["event_time"]
                 )

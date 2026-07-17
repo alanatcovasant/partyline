@@ -159,6 +159,30 @@ def test_token_fn_systemexit_does_not_kill_loop(monkeypatch):
     assert bs.spill_flag["pending"] >= 1
 
 
+def test_drain_token_systemexit_spills(monkeypatch):
+    """drain_and_stop's in-flight send attempt must guard token_fn() against SystemExit
+    too, mirroring the _deliver hardening: a SystemExit from token_fn (e.g. bridge
+    ._auth_headers on PAT/unresolvable creds) during the shutdown-grace window must
+    result in a spill, not propagate out of drain_and_stop."""
+    tickets = outbox.TicketTable()
+    spills = []
+
+    def token_fn():
+        raise SystemExit("no creds")
+
+    monkeypatch.setattr(outbox, "spool_message", lambda p, r: spills.append((p, r)) or True)
+    bs = sender.BackgroundSender("http://x", token_fn, tickets, spool_path="/tmp/x.yaml")
+
+    async def body():
+        tk = bs.enqueue("post_message", {"agent_id": "a", "payload": "hi"}, "2026-07-16T00:00:00Z")
+        await bs.drain_and_stop(grace=1.0)
+        return tk
+
+    tk = asyncio.run(body())
+    assert tickets.get(tk)["status"] == "failed"
+    assert spills, "message must be spooled after a token SystemExit during drain"
+
+
 def test_cancel_inflight_spills(monkeypatch):
     """Cancelling run() while a delivery is in flight must spill, not lose, the message."""
     tickets = outbox.TicketTable()
