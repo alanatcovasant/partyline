@@ -242,7 +242,14 @@ CREATE TABLE IF NOT EXISTS messages (
     mentions      TEXT[]      NOT NULL DEFAULT '{}',
     reply_to_id   BIGINT      REFERENCES messages(id),
     conversation_id UUID,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- event_time: when the agent EMITTED the event (set by the bridge at enqueue; the
+    --   truthful "when did this happen", since a queued/retried/reposted send may insert
+    --   much later). received_at: when the APP accepted the POST. Both nullable so existing
+    --   rows and non-bridge callers keep working; post_message defaults event_time to now().
+    --   (Keep this comment semicolon-free: _SCHEMA is split on the semicolon.)
+    event_time    TIMESTAMPTZ,
+    received_at   TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_messages_issue_ref ON messages (issue_ref);
 -- Serves the "latest status per agent" lateral join in list_agents (dashboard/extension
@@ -323,6 +330,18 @@ _MIGRATIONS = [
     # Thread lookup (get_conversation).
     "CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id, id)",
     "CREATE INDEX IF NOT EXISTS idx_archive_conversation  ON messages_archive (conversation_id, id)",
+    # Three-clock timestamps for already-provisioned DBs (fresh DBs get these from _SCHEMA
+    # above; the archive there inherits via LIKE ... INCLUDING ALL, but an EXISTING archive
+    # was materialized before the columns existed, so ALTER it explicitly too). Nullable +
+    # NULL-only backfill so this is non-breaking and idempotent.
+    "ALTER TABLE messages         ADD COLUMN IF NOT EXISTS event_time  TIMESTAMPTZ",
+    "ALTER TABLE messages_archive ADD COLUMN IF NOT EXISTS event_time  TIMESTAMPTZ",
+    "ALTER TABLE messages         ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ",
+    "ALTER TABLE messages_archive ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ",
+    "UPDATE messages         SET event_time  = created_at WHERE event_time  IS NULL",
+    "UPDATE messages         SET received_at = created_at WHERE received_at IS NULL",
+    "UPDATE messages_archive SET event_time  = created_at WHERE event_time  IS NULL",
+    "UPDATE messages_archive SET received_at = created_at WHERE received_at IS NULL",
 ]
 
 

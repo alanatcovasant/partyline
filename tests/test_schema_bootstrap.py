@@ -85,3 +85,25 @@ def test_non_privilege_errors_still_raise(monkeypatch):
 
     with pytest.raises(psycopg.errors.SyntaxError):
         _run(monkeypatch, Boom())  # only InsufficientPrivilege is tolerated
+
+
+def test_schema_create_table_declares_three_clocks():
+    # The base CREATE TABLE is the source of truth: fresh DBs get the columns here, and
+    # messages_archive (LIKE messages INCLUDING ALL) only inherits them if declared here.
+    from app.db import _SCHEMA
+    norm = " ".join(_SCHEMA.split())
+    assert "event_time TIMESTAMPTZ" in norm
+    assert "received_at TIMESTAMPTZ" in norm
+
+
+def test_migrations_add_three_clock_columns():
+    from app.db import _MIGRATIONS
+    joined = " ".join(" ".join(m.split()) for m in _MIGRATIONS)
+    # event_time + received_at added to both live and archive tables (existing DBs)
+    assert "ALTER TABLE messages ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ" in joined
+    assert "ALTER TABLE messages_archive ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ" in joined
+    assert "ALTER TABLE messages ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ" in joined
+    assert "ALTER TABLE messages_archive ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ" in joined
+    # existing rows backfilled so ordering stays sane
+    assert "SET event_time = created_at" in joined
+    assert "SET received_at = created_at" in joined
