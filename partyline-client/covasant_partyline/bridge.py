@@ -191,6 +191,45 @@ _BRIDGE_INFO_TOOL = mcp_types.Tool(
 )
 
 
+_SEND_VERBS = {"post_message", "reply", "ack_checkpoint", "register_agent", "release_resource"}
+_SYNC_VERBS = {"get_unread", "get_since", "get_conversation", "search_messages",
+               "list_agents", "list_claims", "claim_resource"}
+_LOCAL_VERBS = {_BRIDGE_INFO_TOOL.name, "check_send"}
+
+
+def dispatch_kind(name: str) -> str:
+    """Pure classifier: which of the four dispatch tiers a tool name belongs to.
+
+    - "local": handled entirely in-process (bridge_info, check_send) — never proxied.
+    - "send":  fire-and-forget — enqueued to the local outbox, returns {queued, ticket}.
+    - "sync":  reads/claim — proxied with the fast-fail (sync=True) ceilings.
+    - "proxy": everything else — proxied with the original long-ceiling behavior.
+    """
+    if name in _LOCAL_VERBS:
+        return "local"
+    if name in _SEND_VERBS:
+        return "send"
+    if name in _SYNC_VERBS:
+        return "sync"
+    return "proxy"
+
+
+_CHECK_SEND_TOOL = mcp_types.Tool(
+    name="check_send",
+    description=(
+        "Check the delivery status of a fire-and-forget send by its ticket (the uuid "
+        "returned by post_message/reply/ack_checkpoint/register_agent/release_resource). "
+        "Returns pending | sent {message_id} | failed {spooled_to} | unknown. Handled "
+        "locally by the bridge — instant, works even when the app is unreachable."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {"ticket": {"type": "string"}},
+        "required": ["ticket"], "additionalProperties": False,
+    },
+)
+
+
 def _auth_headers(cfg: Config) -> dict[str, str]:
     """Resolve Databricks OAuth auth headers (Authorization: Bearer ...).
 
@@ -511,14 +550,26 @@ async def _serve(cfg: Config, mcp_url: str) -> None:
             exc_info=True,
         )
 
-    async def _proxied(desc: str, op, label: str):
+    async def _proxied(desc: str, op, label: str, sync: bool = False):
         """Run a proxied op and make any failure loud at the boundary — one ERROR record
-        naming the operation, with a traceback, before it reaches the MCP framework."""
+        naming the operation, with a traceback, before it reaches the MCP framework.
+
+        ``sync=True`` forwards to ``remote.call``'s fast-fail ceilings (reads/claim);
+        default ``False`` preserves the original long-ceiling behavior."""
         try:
-            return await remote.call(op, label=label)
+            return await remote.call(op, label=label, sync=sync)
         except Exception as exc:
             log.error("%s FAILED (%s: %s)", desc, type(exc).__name__, exc, exc_info=True)
             raise
+
+    def _drain_spill_prefix(sender) -> str:
+        """One-line warning prepended to the next tool result when sends have spooled."""
+        n = sender.spill_flag.get("pending", 0)
+        if not n:
+            return ""
+        path = sender.spill_flag.get("path")
+        sender.spill_flag["pending"] = 0
+        return f"⚠ {n} partyline message(s) spooled to {path} (app unreachable)"
 
     # Forward the upstream server's instructions so the agent's client sees the how-to.
     proxy = Server("covasant-partyline-bridge", instructions=remote.instructions)
@@ -535,18 +586,31 @@ async def _serve(cfg: Config, mcp_url: str) -> None:
                 type(exc).__name__, exc, exc_info=True,
             )
             upstream = []
-        return list(upstream) + [_BRIDGE_INFO_TOOL]
+        return list(upstream) + [_BRIDGE_INFO_TOOL, _CHECK_SEND_TOOL]
 
     @proxy.call_tool()
     async def call_tool(name: str, arguments: dict):
+        kind = dispatch_kind(name)
         if name == _BRIDGE_INFO_TOOL.name:
-            # Handled locally — never proxied. Works even if the upstream is down.
-            info = _bridge_info(remote)
-            log.info("-> call_tool(%s) [local] -> %s", name, info)
+            info = _bridge_info(remote, sender=sender_ref["s"])
             return [mcp_types.TextContent(type="text", text=json.dumps(info, indent=2, default=str))], info
+        if name == "check_send":
+            status = tickets.get(arguments.get("ticket", ""))
+            return [mcp_types.TextContent(type="text", text=json.dumps(status, default=str))], status
+        if kind == "send":
+            import datetime as dt
+            event_time = dt.datetime.now(dt.timezone.utc).isoformat()
+            ticket = sender_ref["s"].enqueue(name, dict(arguments or {}), event_time)
+            out = {"queued": True, "ticket": ticket}
+            prefix = _drain_spill_prefix(sender_ref["s"])
+            text = (prefix + "\n" if prefix else "") + json.dumps(out)
+            log.info("-> call_tool(%s) [queued ticket=%s]", name, ticket)
+            return [mcp_types.TextContent(type="text", text=text)], out
+        # sync reads/claim: fast-fail; everything else: normal proxy
         log.info("-> call_tool(%s) args=%s", name, list(arguments.keys()) if arguments else [])
         result = await _proxied(
-            f"call_tool({name})", lambda s: s.call_tool(name, arguments), f"call_tool/{name}"
+            f"call_tool({name})", lambda s: s.call_tool(name, arguments), f"call_tool/{name}",
+            sync=(kind == "sync"),
         )
         log.info("<- call_tool(%s) OK", name)
         # Forward content plus any structured payload the tool returned.
