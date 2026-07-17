@@ -281,6 +281,57 @@ unread (you haven't seen it) but sorts back into history at its original emit ti
   anything still unsent spills to the spool file. A clean shutdown never silently drops
   queued messages.
 
+## Token-cost diagnostics
+
+The bridge is the one place every partyline interaction flows through, so it is the right
+place to instrument cost — with one hard caveat: **the bridge sees bytes, not tokens.** It
+never talks to a model, so it cannot emit a true token count. Bytes-over-the-wire is a
+faithful, deterministic proxy (every tool result becomes context tokens at a stable ratio),
+and the dominant cost — the always-on schema + instructions tax paid on every turn — is
+fully measurable here with no guessing. The bridge answers "which partyline surface is fat,
+and by how much"; Claude Code's own `/cost` + OTel is the ground truth for "what did the
+session actually spend". We instrument the first and document how to read the second.
+
+Gated by env **`PARTYLINE_METRICS=1`** (default off, no log noise for everyone), **except
+the startup footprint line, which is always logged** — it is one line, the most important
+number, and free. All metrics go to a dedicated `partyline.metrics` logger as structured
+JSONL on stderr (already captured by the client's mcp-logs). No new dependencies, nothing
+new to collect.
+
+### A. Startup footprint report (the always-on tax)
+
+At bridge start, and included in `partyline_bridge_info`, compute and log the serialized
+size of the advertised tool list (each tool's `name` + `description` + `inputSchema`) and
+the `INSTRUCTIONS` block, in **bytes and estimated tokens**, with a **per-tool breakdown**.
+This is the per-turn, per-agent floor paid on every turn whether or not partyline is used —
+the number that likely dominates fleet cost, and the direct input to the future
+footprint-reduction spec. Logged always (not gated).
+
+### B. Per-call size accounting
+
+With `PARTYLINE_METRICS=1`, every tool call (proxied and local) logs one structured line:
+`{tool, in_bytes, out_content_bytes, out_structured_bytes, est_tokens, duration_ms,
+outcome}`. Per-verb totals accumulate over the session and dump as a summary on shutdown
+(e.g. "get_unread: 12 calls, 40KB returned, ~10k est tokens").
+
+### C. Send-path outcome metrics
+
+Since sends are fire-and-forget, log each ticket's lifecycle with `PARTYLINE_METRICS=1`:
+`queued → sent|failed`, attempt count, delivery latency, spooled?. This proves the old
+hang-and-retry token burn is gone and flags a silently-churning sender.
+
+### D. Token estimate, labeled as such
+
+Estimate via `tiktoken` if importable, else a chars/4 heuristic — no per-message network
+call. Always tagged `est_` so it is never mistaken for a real count.
+
+### E. Client-side ground truth (documented, not built)
+
+Session token truth comes from Claude Code `/cost` and OTel
+(`CLAUDE_CODE_ENABLE_TELEMETRY=1`), correlated by agent/session — the bridge structurally
+cannot produce it. The spec/README documents this as the companion measurement to the
+bridge's byte accounting.
+
 ## Error handling summary
 
 - Send enqueue: cannot fail from the agent's perspective (returns a ticket).
@@ -307,6 +358,10 @@ unread (you haven't seen it) but sorts back into history at its original emit ti
   `event_time`/`received_at` = `created_at` for existing rows; archive table altered too.
 - **Startup:** stdio loop serves `initialize` before the background connect completes
   (simulate cold app).
+- **Diagnostics:** startup footprint report computes non-zero byte/est-token totals with a
+  per-tool breakdown and is logged even without `PARTYLINE_METRICS`; per-call + send-path
+  metric lines emit only when `PARTYLINE_METRICS=1`; `est_`-tagged estimate falls back to
+  chars/4 when `tiktoken` is absent.
 - **Live verification (per CLAUDE.md):** exercise against the deployed app via
   `databricks bundle run`; post a fire-and-forget message while the app is scaled to zero,
   confirm instant return + eventual delivery (or spool), then clean up any test
