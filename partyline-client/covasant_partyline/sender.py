@@ -112,10 +112,16 @@ class BackgroundSender:
                 return
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                if time.monotonic() - t0 >= _GIVEUP_SECS:
-                    self._spill(item, attempts, last_error)
+                if self._stop.is_set() or time.monotonic() - t0 >= _GIVEUP_SECS:
+                    self._spill(item, attempts, last_error or "bridge shutting down")
                     return
-                await asyncio.sleep(backoff)
+                # Interruptible backoff: wake at once if shutdown is signaled mid-wait, and spill.
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
+                    self._spill(item, attempts, last_error or "bridge shutting down")
+                    return
+                except asyncio.TimeoutError:
+                    pass  # normal backoff elapsed -> retry
                 backoff = min(backoff * 2, _BACKOFF_CAP)
 
     def _spill(self, item: dict, attempts: int, error: str) -> None:
@@ -143,10 +149,22 @@ class BackgroundSender:
                 item = await asyncio.wait_for(self._q.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
-            await self._deliver(item)
+            try:
+                await self._deliver(item)
+            except asyncio.CancelledError:
+                # Cancelled while a delivery was in flight — do not lose the message.
+                self._spill(item, 0, "sender cancelled in flight")
+                raise
+            except Exception as exc:
+                # _deliver contains its own errors; this is belt-and-suspenders so an
+                # unexpected bookkeeping failure can never kill the drain loop.
+                log.error("sender: unexpected error delivering %s (%s) — spilling",
+                          item.get("verb"), exc)
+                self._spill(item, 0, f"unexpected: {type(exc).__name__}: {exc}")
 
     async def drain_and_stop(self, grace: float = 5.0) -> None:
         """Flush remaining queued items within `grace`, then spill whatever is left."""
+        self._stop.set()
         deadline = time.monotonic() + grace
         while not self._q.empty() and time.monotonic() < deadline:
             item = self._q.get_nowait()
@@ -161,4 +179,3 @@ class BackgroundSender:
         while not self._q.empty():  # grace expired: spill the rest
             item = self._q.get_nowait()
             self._spill(item, 0, "bridge shutdown grace expired")
-        self._stop.set()

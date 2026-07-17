@@ -62,3 +62,78 @@ def test_sender_spills_after_giveup(monkeypatch):
     assert tickets.get(tk)["status"] == "failed"
     assert spills, "message must be spooled after give-up"
     assert bs.spill_flag["pending"] >= 1
+
+
+def test_stop_during_backoff_spills_inflight(monkeypatch):
+    """Shutdown mid-backoff must spill the in-flight message, not lose it.
+
+    send_once always fails, so _deliver enters its backoff sleep after the first
+    attempt. drain_and_stop() sets _stop first (queue is already empty by then),
+    which must wake the interruptible backoff wait and force a spill — proving
+    the STOP path (not give-up) is what spills.
+    """
+    tickets = outbox.TicketTable()
+    spills = []
+
+    def always_fail(*a, **k):
+        raise RuntimeError("app down")
+
+    monkeypatch.setattr(sender, "send_once", always_fail)
+    monkeypatch.setattr(outbox, "spool_message", lambda p, r: spills.append((p, r)) or True)
+    # Give-up window is large so it can't be what spills; backoff is short so we
+    # reliably land inside the sleep before triggering stop.
+    monkeypatch.setattr(sender, "_GIVEUP_SECS", 60.0)
+    monkeypatch.setattr(sender, "_BACKOFF_START", 0.05)
+    monkeypatch.setattr(sender, "_BACKOFF_CAP", 5.0)
+    bs = sender.BackgroundSender("http://x", lambda: "tok", tickets, spool_path="/tmp/x.yaml")
+
+    async def body():
+        tk = bs.enqueue("post_message", {"agent_id": "a", "payload": "hi"}, "2026-07-16T00:00:00Z")
+        task = asyncio.ensure_future(bs.run())
+        # Let the first attempt fail and enter backoff.
+        await asyncio.sleep(0.15)
+        await bs.drain_and_stop(grace=1.0)
+        try:
+            await asyncio.wait_for(task, timeout=2.0)
+        except asyncio.TimeoutError:
+            task.cancel()
+            raise
+        return tk
+
+    tk = asyncio.run(body())
+    assert tickets.get(tk)["status"] == "failed", "ticket must not stay pending forever"
+    assert spills, "in-flight message must be spilled, not lost"
+    assert bs.spill_flag["pending"] >= 1
+
+
+def test_cancel_inflight_spills(monkeypatch):
+    """Cancelling run() while a delivery is in flight must spill, not lose, the message."""
+    tickets = outbox.TicketTable()
+    spills = []
+
+    def always_fail(*a, **k):
+        raise RuntimeError("app down")
+
+    monkeypatch.setattr(sender, "send_once", always_fail)
+    monkeypatch.setattr(outbox, "spool_message", lambda p, r: spills.append((p, r)) or True)
+    monkeypatch.setattr(sender, "_GIVEUP_SECS", 60.0)
+    monkeypatch.setattr(sender, "_BACKOFF_START", 5.0)
+    monkeypatch.setattr(sender, "_BACKOFF_CAP", 5.0)
+    bs = sender.BackgroundSender("http://x", lambda: "tok", tickets, spool_path="/tmp/x.yaml")
+
+    async def body():
+        tk = bs.enqueue("post_message", {"agent_id": "a", "payload": "hi"}, "2026-07-16T00:00:00Z")
+        task = asyncio.ensure_future(bs.run())
+        # Let the first attempt fail and settle into the (long) backoff sleep.
+        await asyncio.sleep(0.15)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return tk
+
+    tk = asyncio.run(body())
+    assert tickets.get(tk)["status"] == "failed", "ticket must not stay pending forever"
+    assert spills, "in-flight message must be spilled, not lost"
+    assert bs.spill_flag["pending"] >= 1
