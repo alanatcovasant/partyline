@@ -1148,6 +1148,11 @@ def log_footprint(tools: list, instructions: str | None) -> dict:
     return fp
 
 
+def est_tokens_from_bytes(n: int) -> int:
+    """Estimate tokens from a byte count without materializing the text (chars/4 proxy)."""
+    return math.ceil(n / 4) if n > 0 else 0
+
+
 def log_call(tool: str, in_bytes: int, out_content_bytes: int, out_structured_bytes: int,
              duration_ms: float, outcome: str) -> None:
     if not metrics_enabled():
@@ -1155,7 +1160,7 @@ def log_call(tool: str, in_bytes: int, out_content_bytes: int, out_structured_by
     log.info(json.dumps({
         "tool": tool, "in_bytes": in_bytes,
         "out_content_bytes": out_content_bytes, "out_structured_bytes": out_structured_bytes,
-        "est_tokens": est_tokens("x" * (out_content_bytes + out_structured_bytes)),
+        "est_tokens": est_tokens_from_bytes(out_content_bytes + out_structured_bytes),
         "duration_ms": round(duration_ms, 1), "outcome": outcome,
     }))
 ```
