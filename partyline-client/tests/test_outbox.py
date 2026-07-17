@@ -1,6 +1,7 @@
 import json
 import os
 from covasant_partyline import outbox
+from covasant_partyline.outbox import TicketTable
 
 
 def test_spool_path_default_is_cwd_parent(tmp_path):
@@ -67,3 +68,34 @@ def test_spool_path_directory_trailing_slash(tmp_path):
     p = outbox.resolve_spool_path("alan_aura_3", nonexistent_dir, os.getcwd())
     expected = os.path.join(nonexistent_dir.rstrip("/" + os.sep), "partyline_alan_aura_3.yaml")
     assert p == expected
+
+
+def test_ticket_lifecycle_pending_to_sent():
+    t = TicketTable()
+    tk = t.new("post_message")
+    assert t.get(tk)["status"] == "pending"
+    t.mark_sent(tk, 42)
+    got = t.get(tk)
+    assert got["status"] == "sent" and got["message_id"] == 42
+
+
+def test_ticket_failed_records_spool():
+    t = TicketTable()
+    tk = t.new("reply")
+    t.mark_failed(tk, "connect timeout", "/tmp/partyline_a.yaml")
+    got = t.get(tk)
+    assert got["status"] == "failed"
+    assert got["spooled_to"] == "/tmp/partyline_a.yaml"
+    assert got["error"] == "connect timeout"
+
+
+def test_unknown_ticket():
+    assert TicketTable().get("nope")["status"] == "unknown"
+
+
+def test_ticket_table_is_bounded():
+    from covasant_partyline import outbox
+    t = TicketTable()
+    tickets = [t.new("post_message") for _ in range(outbox._TICKET_BOUND + 10)]
+    assert t.get(tickets[0])["status"] == "unknown"    # oldest evicted
+    assert t.get(tickets[-1])["status"] == "pending"   # newest retained

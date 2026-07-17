@@ -35,3 +35,35 @@ def resolve_spool_path(agent_id: str, env_value: str | None, cwd: str) -> str:
     if os.path.isdir(env_value) or env_value.endswith((os.sep, "/")):
         return os.path.join(env_value.rstrip("/" + os.sep), f"partyline_{agent_id}.yaml")
     return env_value
+
+
+class TicketTable:
+    """Bounded, thread-safe map of ticket -> delivery status (in-memory; not persisted)."""
+
+    def __init__(self) -> None:
+        self._d: "OrderedDict[str, dict]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def new(self, verb: str) -> str:
+        import uuid
+        ticket = str(uuid.uuid4())
+        with self._lock:
+            self._d[ticket] = {"status": "pending", "verb": verb}
+            while len(self._d) > _TICKET_BOUND:
+                self._d.popitem(last=False)  # evict oldest
+        return ticket
+
+    def mark_sent(self, ticket: str, message_id: int | None) -> None:
+        with self._lock:
+            if ticket in self._d:
+                self._d[ticket].update(status="sent", message_id=message_id)
+
+    def mark_failed(self, ticket: str, error: str, spooled_to: str) -> None:
+        with self._lock:
+            if ticket in self._d:
+                self._d[ticket].update(status="failed", error=error, spooled_to=spooled_to)
+
+    def get(self, ticket: str) -> dict:
+        with self._lock:
+            entry = self._d.get(ticket)
+            return dict(entry) if entry else {"status": "unknown"}
