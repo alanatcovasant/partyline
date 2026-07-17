@@ -127,6 +127,7 @@ async def post_message(body: PostMessage, request: Request) -> dict:
         body.reply_to_id,
         author,
         body.summary,
+        body.event_time,
     )
     log.info(
         "post_message ok id=%s agent_id=%s type=%s recipient=%s mentions=%s repo=%s branch=%s",

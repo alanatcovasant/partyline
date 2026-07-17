@@ -84,6 +84,9 @@ class PostMessage(BaseModel):
     metadata: dict = Field(default_factory=dict, description="Opaque escape hatch (NFR7)")
     mentions: list[str] = Field(default_factory=list)
     reply_to_id: int | None = None
+    event_time: datetime | None = Field(
+        None, description="Agent emit time (ISO-8601). Defaults server-side to now() when omitted."
+    )
 
 
 class Message(PostMessage):
@@ -93,6 +96,7 @@ class Message(PostMessage):
         None, description="Thread id: inherited from reply_to_id's message, else new"
     )
     created_at: datetime
+    received_at: datetime | None = None
 
 
 # --------------------------------------------------------------------------- #
