@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import datetime as dt
 import itertools
 import json
@@ -71,6 +72,10 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
+
+from . import metrics as metrics_mod
+from . import outbox as outbox_mod
+from . import sender as sender_mod
 
 _LOG_LEVEL = os.getenv("PARTYLINE_BRIDGE_LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -91,6 +96,10 @@ _call_seq = itertools.count(1)
 
 # Process start (monotonic) for uptime reporting in the startup banner and bridge_info tool.
 _STARTED_AT = time.monotonic()
+
+# Footprint logging needs *some* instructions text even when the startup connect fails before
+# capturing the upstream server's real instructions; metrics_mod.log_footprint tolerates None.
+INSTRUCTIONS_FALLBACK: str | None = None
 
 # Diagnostics thresholds (seconds)
 _LOCK_WARN_SECS = 5.0
@@ -147,13 +156,16 @@ def _trace_tb() -> bool:
     return log.isEnabledFor(logging.DEBUG)
 
 
-def _bridge_info(remote: "_Remote | None" = None) -> dict:
+def _bridge_info(remote: "_Remote | None" = None, sender=None) -> dict:
     """Identify THIS bridge build/process and (if given) its live connection state.
 
     Surfaced two ways so it's easy to tell which build is actually running in an agent's
     environment: logged in the startup banner, and callable at runtime via the local
     ``partyline_bridge_info`` MCP tool. ``module_path`` + ``version`` pin down exactly
-    which installed file is serving the session (catches build/version skew)."""
+    which installed file is serving the session (catches build/version skew). ``sender``
+    (the ``BackgroundSender``, when constructed) additionally reports the outbox spool
+    path and how many messages are currently spooled — visible even when the upstream
+    line is unreachable."""
     info: dict = {
         "component": "covasant-partyline MCP bridge",
         "version": _bridge_version(),
@@ -175,6 +187,9 @@ def _bridge_info(remote: "_Remote | None" = None) -> dict:
             info["token_expiry"] = remote._token_expiry.isoformat()
             info["token_valid_for_secs"] = round(remaining, 1)
             info["token_valid"] = remaining > 0
+    if sender is not None:
+        info["spool_path"] = getattr(sender, "spool_path", None) or getattr(sender, "_spool_path", None)
+        info["spooled_pending"] = sender.spill_flag.get("pending", 0)
     return info
 
 
@@ -260,6 +275,12 @@ def _auth_headers(cfg: Config) -> dict[str, str]:
             "DATABRICKS_CLIENT_ID/SECRET, or authenticate a U2M OAuth profile."
         )
     return dict(headers)
+
+
+def _base_url_from_mcp(mcp_url: str) -> str:
+    """The REST base is the app root: the mcp URL minus its trailing /mcp."""
+    u = mcp_url.rstrip("/")
+    return u[:-4] if u.endswith("/mcp") else u
 
 
 def _resolve_mcp_url(cfg: Config, url: str | None, app_name: str | None) -> str:
@@ -533,22 +554,17 @@ class _Remote:
         return result
 
 
-async def _serve(cfg: Config, mcp_url: str) -> None:
+async def _serve(cfg: Config, mcp_url: str, base_url: str, agent_id: str, spool_path: str) -> None:
     remote = _Remote(cfg, mcp_url)
-    # Try to connect eagerly to surface misconfiguration early and to capture the upstream
-    # instructions — but do NOT die if it fails. When the bridge (re)spawns while the app
-    # is mid-restart, a fatal startup connect would exit the process, so the MCP client
-    # burns a 30s connect-timeout and retries repeatedly. Serving regardless lets the
-    # bridge stay up and reconnect lazily on the first real call once the app is back.
-    try:
-        await remote.call(lambda s: s.list_tools(), label="startup/list_tools")
-        log.info("Startup connect OK — upstream reachable, serving proxy")
-    except Exception:
-        log.warning(
-            "Startup connect failed (app may be starting/restarting) — serving anyway; "
-            "will connect on the first tool call.",
-            exc_info=True,
-        )
+    tickets = outbox_mod.TicketTable()
+
+    def _token() -> str | None:
+        headers = _auth_headers(cfg)
+        auth = headers.get("Authorization", "")
+        return auth[7:] if auth.startswith("Bearer ") else None
+
+    sender = sender_mod.BackgroundSender(base_url, _token, tickets, spool_path, agent_id=agent_id)
+    sender_ref = {"s": sender}
 
     async def _proxied(desc: str, op, label: str, sync: bool = False):
         """Run a proxied op and make any failure loud at the boundary — one ERROR record
@@ -598,7 +614,6 @@ async def _serve(cfg: Config, mcp_url: str) -> None:
             status = tickets.get(arguments.get("ticket", ""))
             return [mcp_types.TextContent(type="text", text=json.dumps(status, default=str))], status
         if kind == "send":
-            import datetime as dt
             event_time = dt.datetime.now(dt.timezone.utc).isoformat()
             ticket = sender_ref["s"].enqueue(name, dict(arguments or {}), event_time)
             out = {"queued": True, "ticket": ticket}
@@ -626,11 +641,44 @@ async def _serve(cfg: Config, mcp_url: str) -> None:
             f"get_prompt({name})", lambda s: s.get_prompt(name, arguments), f"get_prompt/{name}"
         )
 
+    async def _startup_connect():
+        """Best-effort background connect: surfaces misconfiguration early and captures the
+        upstream instructions/tool footprint — but never blocks `stdio_server()` from
+        serving the `initialize` handshake immediately. If the app is cold/restarting this
+        just logs a warning; the bridge stays up and connects lazily on the first real call."""
+        try:
+            tools = (await remote.call(lambda s: s.list_tools(), label="startup/list_tools", sync=True)).tools
+            proxy.instructions = remote.instructions or proxy.instructions
+            metrics_mod.log_footprint(
+                list(tools) + [_BRIDGE_INFO_TOOL, _CHECK_SEND_TOOL],
+                remote.instructions or INSTRUCTIONS_FALLBACK,
+            )
+            log.info("Startup connect OK — upstream reachable")
+        except Exception:
+            log.warning(
+                "Startup connect failed — serving anyway; will connect on first call",
+                exc_info=True,
+            )
+
     opts = proxy.create_initialization_options()
     log.info("stdio proxy ready — serving MCP over stdin/stdout")
     try:
         async with stdio_server() as (r, w):
-            await proxy.run(r, w, opts)
+            bg = asyncio.create_task(sender.run(), name="partyline-sender")
+            sc = asyncio.create_task(_startup_connect(), name="partyline-startup")
+            try:
+                await proxy.run(r, w, opts)
+            finally:
+                # Drain the QUEUE first (grace window for outstanding items), then cancel
+                # and AWAIT the sender task so an item already dequeued/mid-HTTP-call gets
+                # spilled by run()'s CancelledError guard instead of being silently lost.
+                await sender.drain_and_stop(grace=5.0)
+                bg.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await bg
+                sc.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await sc
         log.info("stdio loop ended (client closed the connection) — shutting down")
     except Exception:
         log.error("stdio proxy loop crashed", exc_info=True)
@@ -644,6 +692,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--url", help="Full https URL of the app's /mcp endpoint")
     p.add_argument("--app-name", help="Databricks App name (resolved to URL via SDK)")
     p.add_argument("--host", help="Databricks workspace host (overrides DATABRICKS_HOST)")
+    p.add_argument("--agent-id", help="Agent id on the line (else PARTYLINE_AGENT_ID / .partyline/config.json)")
     args = p.parse_args(argv)
 
     log.info(
@@ -659,12 +708,16 @@ def main(argv: list[str] | None = None) -> None:
         )
         _auth_headers(cfg)  # fail fast on PAT/missing credentials before serving
         mcp_url = _resolve_mcp_url(cfg, args.url, args.app_name)
+        base_url = _base_url_from_mcp(mcp_url)
+        agent_id = outbox_mod.resolve_agent_id(args.agent_id) or "unknown_agent"
+        spool_path = outbox_mod.resolve_spool_path(agent_id, os.getenv("PARTYLINE_SPOOL_PATH"), os.getcwd())
+        log.info("agent_id=%s base_url=%s spool_path=%s", agent_id, base_url, spool_path)
         log.info(
             "timeouts: connect=%.0fs call=%.0fs lock=%.0fs token_max_age=%.0fs",
             _CONNECT_TIMEOUT_SECS, _CALL_TIMEOUT_SECS, _LOCK_ACQUIRE_TIMEOUT_SECS, _TOKEN_MAX_AGE_SECS,
         )
         log.info("Bridge serving -> %s", mcp_url)
-        asyncio.run(_serve(cfg, mcp_url))
+        asyncio.run(_serve(cfg, mcp_url, base_url, agent_id, spool_path))
     except SystemExit as exc:
         # Config errors raise SystemExit with a human message — echo it into the log stream
         # (not just raw interpreter stderr) so the MCP client's captured logs show the reason.
