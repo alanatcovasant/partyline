@@ -243,11 +243,12 @@ CREATE TABLE IF NOT EXISTS messages (
     reply_to_id   BIGINT      REFERENCES messages(id),
     conversation_id UUID,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- event_time: when the agent EMITTED the event (set by the bridge at enqueue; the
-    --   truthful "when did this happen", since a queued/retried/reposted send may insert
-    --   much later). received_at: when the APP accepted the POST. Both nullable so existing
-    --   rows and non-bridge callers keep working; post_message defaults event_time to now().
-    --   (Keep this comment semicolon-free: _SCHEMA is split on the semicolon.)
+    -- event_time: when the agent EMITTED the event (set by the bridge at enqueue) —
+    --   the truthful "when did this happen", since a queued/retried/reposted send may
+    --   insert much later. received_at: when the APP accepted the POST. Both nullable so
+    --   existing rows and non-bridge callers keep working — post_message defaults
+    --   event_time to now(). (Keep this comment semicolon-free: _SCHEMA is split on the
+    --   semicolon.)
     event_time    TIMESTAMPTZ,
     received_at   TIMESTAMPTZ
 );

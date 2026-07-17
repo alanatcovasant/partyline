@@ -107,3 +107,21 @@ def test_migrations_add_three_clock_columns():
     # existing rows backfilled so ordering stays sane
     assert "SET event_time = created_at" in joined
     assert "SET received_at = created_at" in joined
+
+
+def test_schema_split_produces_only_valid_statements():
+    # A semicolon inside an _SCHEMA comment would corrupt _SCHEMA.split(";"),
+    # truncating a CREATE TABLE mid-comment and yielding garbage fragments that
+    # crash init_schema() on a fresh DB. Guard against that whole class of bug.
+    from app.db import _SCHEMA
+
+    # "--" is included because a full-line SQL comment legitimately precedes a
+    # statement in a few places (e.g. before idx_messages_agent_status) — Postgres
+    # ignores such comments, so that's valid SQL, not a garbage fragment. A semicolon
+    # truncating mid-comment instead lands on bare prose (e.g. "the"), which is not in
+    # this list and still fails, so this doesn't mask the bug under test.
+    _KEYWORDS = ("CREATE", "ALTER", "DROP", "COMMENT", "GRANT", "INSERT", "UPDATE", "DO", "SET", "--")
+    statements = [s.strip() for s in _SCHEMA.split(";") if s.strip()]
+    for stmt in statements:
+        first = stmt.split(None, 1)[0].upper()
+        assert first in _KEYWORDS, f"fragment does not start with a DDL keyword: {stmt[:60]!r}"
