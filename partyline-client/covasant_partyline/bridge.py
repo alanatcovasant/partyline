@@ -97,9 +97,28 @@ _call_seq = itertools.count(1)
 # Process start (monotonic) for uptime reporting in the startup banner and bridge_info tool.
 _STARTED_AT = time.monotonic()
 
-# Footprint logging needs *some* instructions text even when the startup connect fails before
-# capturing the upstream server's real instructions; metrics_mod.log_footprint tolerates None.
-INSTRUCTIONS_FALLBACK: str | None = None
+# Static how-to shipped at `initialize` before the background startup connect lands (or on a
+# cold app where it never does) — so the MCP client always gets usable instructions instead of
+# None. Startup is intentionally non-blocking (see `_startup_connect`): this fallback, not an
+# eager await, is what guarantees non-None instructions at handshake time.
+INSTRUCTIONS_FALLBACK: str = """Covasant Partyline — inter-agent coordination line.
+
+Identity: pick a self-declared agent_id (`<owner>_<repo>_<instance>`, e.g. alan_partyline_1)
+and keep it stable for the whole session.
+
+Session start: call `register_agent` (agent_id, owner, repo, branch), then
+`get_unread(only_for_me=true)` to catch up, then `ack_checkpoint` once processed.
+
+Coordinate: `claim_resource(repo, resource_path, ttl_seconds=...)` before editing a shared
+file/surface; `release_resource` when done. Use `post_message` (concise `summary` + full
+`payload`) to broadcast; address via `recipient` or `mentions`. Message types: status,
+question, claim, release, blocked, done, ack, escalation, summary.
+
+Fire-and-forget sends: `post_message`, `reply`, `ack_checkpoint`, `register_agent`, and
+`release_resource` return instantly with `{queued, ticket}` — they do not confirm delivery.
+Call `check_send(ticket)` to check status: pending | sent | failed | unknown. Reads
+(`get_unread`, `get_since`, `get_conversation`, `search_messages`, `list_agents`,
+`list_claims`) and `claim_resource` are synchronous and return real results directly."""
 
 # Diagnostics thresholds (seconds)
 _LOCK_WARN_SECS = 5.0
@@ -275,6 +294,12 @@ def _auth_headers(cfg: Config) -> dict[str, str]:
             "DATABRICKS_CLIENT_ID/SECRET, or authenticate a U2M OAuth profile."
         )
     return dict(headers)
+
+
+def _effective_instructions(remote_instructions: str | None) -> str:
+    """Upstream instructions when captured, else the static fallback — so the MCP
+    client always gets a usable how-to at initialize even before the async connect lands."""
+    return remote_instructions or INSTRUCTIONS_FALLBACK
 
 
 def _base_url_from_mcp(mcp_url: str) -> str:
@@ -587,8 +612,10 @@ async def _serve(cfg: Config, mcp_url: str, base_url: str, agent_id: str, spool_
         sender.spill_flag["pending"] = 0
         return f"⚠ {n} partyline message(s) spooled to {path} (app unreachable)"
 
-    # Forward the upstream server's instructions so the agent's client sees the how-to.
-    proxy = Server("covasant-partyline-bridge", instructions=remote.instructions)
+    # Forward the upstream server's instructions so the agent's client sees the how-to; fall
+    # back to the static INSTRUCTIONS_FALLBACK when the background connect hasn't landed yet
+    # (or never does) so `initialize` never ships None instructions.
+    proxy = Server("covasant-partyline-bridge", instructions=_effective_instructions(remote.instructions))
 
     @proxy.list_tools()
     async def list_tools():

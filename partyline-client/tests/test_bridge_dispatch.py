@@ -28,3 +28,15 @@ def test_bridge_info_reports_spool_when_sender_present():
     info = bridge._bridge_info(None, sender=FakeSender())
     assert info["spool_path"] == "/tmp/partyline_a.yaml"
     assert info["spooled_pending"] == 2
+
+
+def test_effective_instructions_falls_back_to_static():
+    # Before the async connect lands, remote.instructions is None -> the client must still
+    # get a usable static how-to, not None.
+    assert bridge._effective_instructions(None) == bridge.INSTRUCTIONS_FALLBACK
+    assert bridge.INSTRUCTIONS_FALLBACK and isinstance(bridge.INSTRUCTIONS_FALLBACK, str)
+    # key guidance present
+    assert "register_agent" in bridge.INSTRUCTIONS_FALLBACK
+    assert "check_send" in bridge.INSTRUCTIONS_FALLBACK
+    # upstream value wins when present
+    assert bridge._effective_instructions("UPSTREAM") == "UPSTREAM"
