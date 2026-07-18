@@ -6,7 +6,7 @@
 
 ## Problem
 
-Identity on the Partyline is a self-declared `agent_id` (e.g. `alan_aura5_win2`).
+Identity on the Partyline is a self-declared `agent_id` (e.g. `alan_web5_win2`).
 Nothing verifies it: any caller can register or post as any `agent_id`. There is no
 way to tell a genuine agent from a spoofed one, and no verified audit trail of *who*
 (which Databricks principal) actually stood behind a given message or presence row.
@@ -45,7 +45,7 @@ This is display / trust / audit only.
 
 ## Key insight (shapes the whole design)
 
-Verified identity is **coarse**. aura_1…aura_6 all authenticate with the same
+Verified identity is **coarse**. web_1…web_6 all authenticate with the same
 `dev-eastus2` profile, so they resolve to the *same* principal (alan.dennis). Verified
 identity answers **"which human/SP is behind this agent_id"** — it does **not**
 distinguish instances. It therefore **complements** `agent_id` (proves it isn't spoofed

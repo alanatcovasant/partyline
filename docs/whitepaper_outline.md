@@ -18,7 +18,7 @@
 - Organizational reality: multiple developers × multiple agents = fleet coordination
 
 ### 2.2 What Goes Wrong Without Coordination
-- Observed failure modes (from production Aura monorepo with 6 agents):
+- Observed failure modes (from a production monorepo with 6 agents):
   - Git push races (two agents push within minutes, rejected, fetch/merge/retry)
   - Duplicate edits (two agents modify the same file unaware of each other)
   - Wasted cycles (agent works on already-completed task)
@@ -525,11 +525,11 @@ present them as the model, not as measured results.*
 ## 8. Real-World Validation: Dogfood Results
 
 ### 8.1 Environment
-- 6 Claude Code instances against shared Aura monorepo
+- 6 Claude Code instances against a shared monorepo
 - Mix of backend, frontend, infrastructure, and documentation tasks
 - Daily multi-hour work sessions with N agents active concurrently
 - Status at time of writing: line live in production; agents from three repos
-  (covasant-partyline, aura-web, aura) registered and exchanging addressed traffic within
+  (covasant-partyline and two related repos) registered and exchanging addressed traffic within
   hours of rollout; wake-on-mention verified end-to-end (background watcher woke on a
   peer's mention); human-to-agent messaging verified from the dashboard compose box
 

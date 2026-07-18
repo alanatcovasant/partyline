@@ -22,38 +22,25 @@ from .config import settings
 
 log = logging.getLogger("partyline.mcp")
 
+# Kept deliberately short: a client that surfaces `instructions` re-sends it to the model
+# every turn (a per-turn token cost), so this is the minimum an agent needs to act
+# correctly — the full protocol, CLI equivalents, and wake-up options live in the
+# using-partyline skill (served at /skills/using-partyline.md), fetched on demand.
 INSTRUCTIONS = """\
-Covasant Partyline — inter-agent coordination line for a fleet of coding agents
-(Claude Code, GitHub Copilot) and their humans working related repos in parallel.
+Covasant Partyline — inter-agent coordination line for a fleet of coding agents working
+related repos in parallel. Everything is broadcast; recipient/mentions filter attention,
+not privacy. Identity is a self-declared agent_id <owner>_<repo>_<instance>; keep it stable.
 
-Everything is broadcast; targeting (recipient / mentions) is filtering, not privacy.
-Your identity is your self-declared agent_id in the form <owner>_<repo>_<instance>
-(e.g. alan_aura_3). Keep it stable for the whole session.
+Session start: register_agent → get_unread(agent_id, only_for_me=true) → ack_checkpoint
+after handling. Before editing a shared file, claim_resource (release_resource when done);
+if refused, post a `question` to the holder. Post as you work with post_message — status
+when starting, done on completion, blocked (with detail) when stuck, question to ask
+(types: status, question, claim, release, blocked, done, ack, escalation, summary). Prefer
+a one-line `summary` (the "what") plus fuller `payload` (the "why/how"): readers get
+summaries by default, which keeps the line cheap.
 
-Session start, in order:
-  1. register_agent(agent_id, owner, repo, branch?) — presence; refreshed on every call.
-  2. get_unread(agent_id, only_for_me=true) — messages addressed to you (recipient/mention).
-  3. ack_checkpoint(agent_id, last_read_message_id) — advance your cursor after handling.
-
-Coordinate:
-  - Before editing a shared file/resource, claim_resource(agent_id, repo, resource_path,
-    ttl_seconds). If refused, post a `question` to the holder instead of editing;
-    release_resource when done.
-  - post_message(agent_id, message_type, summary?, payload?, recipient?, mentions?, reply_to_id?):
-    `status` when starting, `done` on completion, `blocked` (with detail) when stuck,
-    `question` to ask. Types: status, question, claim, release, blocked, done, ack,
-    escalation, summary.
-    ALWAYS write a concise one-line `summary` (the "what") and put full detail in `payload`
-    (the "why/how"). Other agents read summaries by default (get_unread returns summary,
-    not payload) to keep their context small; they fetch payload via get_conversation only
-    when they need the detail. A payload-only message still works, but summary+payload is
-    the norm — it is how the line stays cheap for everyone.
-
-Stay woken instead of polling: run the client watcher as a background task —
-  python -m covasant_partyline.cli watch --exit-on-mention <agent_id>
-It exits the moment a message addressed to you arrives; that exit wakes you. On wake,
-call get_unread(only_for_me=true), handle, ack, and re-arm. (Requires the
-covasant-partyline client package and a Databricks profile.)
+Full protocol, CLI equivalents, and wake-up options: the using-partyline skill at
+/skills/using-partyline.md.
 """
 
 mcp = FastMCP("covasant-partyline", instructions=INSTRUCTIONS)
@@ -69,7 +56,7 @@ async def register_agent(
 ) -> dict:
     """Register (or refresh) this agent instance. Call once before posting/claiming.
 
-    agent_id is a unique instance name (e.g. 'alan_aura_3'); owner is the developer/team.
+    agent_id is a unique instance name (e.g. 'alan_web_1'); owner is the developer/team.
     """
     log.info("register_agent agent_id=%s owner=%s repo=%s branch=%s", agent_id, owner, repo, branch)
     result = await run_in_threadpool(db.register_agent, agent_id, owner, repo, branch, display_name)

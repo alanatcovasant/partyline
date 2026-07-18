@@ -44,7 +44,7 @@ class ClaimScope(str, Enum):
 class RegisterAgent(BaseModel):
     """Register (or refresh) an agent instance (§6, §10)."""
 
-    agent_id: str = Field(..., description="Unique instance name, e.g. 'alan_aura_3'")
+    agent_id: str = Field(..., description="Unique instance name, e.g. 'alan_web_1'")
     owner: str = Field(..., description="Developer or team identity (self-declared)")
     repo: str = Field(..., description="Repository the agent works against")
     branch: str | None = None

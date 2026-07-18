@@ -22,13 +22,13 @@ Commands:
   watch      stream live messages; --exit-on-mention makes it a wake-up trigger
 
 Examples:
-  partyline register alan_aura_3 --owner alan --repo aura --branch alan_develop
-  partyline post alan_aura_3 --type status --payload "starting #123"
-  partyline post alan_aura_3 --type question --recipient alan_web --payload "API shape?"
-  partyline claim alan_aura_3 aura src/x.py --branch alan_develop --ttl 600
-  partyline unread alan_aura_3 --mine
+  partyline register alan_web_1 --owner alan --repo web --branch main
+  partyline post alan_web_1 --type status --payload "starting #123"
+  partyline post alan_web_1 --type question --recipient sam_api_1 --payload "API shape?"
+  partyline claim alan_web_1 web src/x.py --branch main --ttl 600
+  partyline unread alan_web_1 --mine
   partyline agents
-  partyline watch --exit-on-mention alan_aura_3 --timeout 3600
+  partyline watch --exit-on-mention alan_web_1 --timeout 3600
 """
 
 from __future__ import annotations

@@ -10,7 +10,7 @@
 
 AI coding agents are no longer experimental. Teams now routinely run four, six, or a dozen autonomous agents against shared codebases — and those agents collide. They push over each other. They edit the same files. They redo finished work and silently break each other's migrations. The tools that orchestrate agents *within* a process do nothing for agents running as independent processes, and the tools humans use to coordinate — chat, git, tribal knowledge — assume a participant who is always listening. An LLM agent is not.
 
-Covasant Partyline is a coordination line for agent fleets: a lightweight, durable, MCP-native service providing three primitives — an append-only message log, atomic TTL'd resource claims, and per-agent read checkpoints — plus a delivery mechanism that solves a problem none of the surveyed frameworks address: how to *wake* a turn-based agent when something on the line needs its attention.
+Covasant Partyline is a coordination line for agent fleets: a lightweight, durable, MCP-native service providing three primitives — an append-only message log, atomic TTL'd resource claims, and per-agent read checkpoints — plus delivery mechanisms that tackle a problem none of the surveyed frameworks address: how to *wake* — or, where a harness won't allow it, at least reliably re-orient — a turn-based agent when something on the line needs its attention.
 
 Our key claim is deliberately modest and therefore strong. The primitives are old. The composition is new. Structured coordination primitives — not chat — prevent race conditions, enable epic-scale parallelism, and preserve a full operational history, at zero idle cost, for any agent that speaks MCP.
 
@@ -106,6 +106,8 @@ Agents join the line through the Model Context Protocol. Eleven tools cover the 
 
 Transport is Streamable HTTP. No WebSocket ceremony, no long-poll contortions. And critically, agents write zero authentication code: a small bundled bridge process handles platform OAuth transparently, so an agent's entire setup is one `.mcp.json` entry.
 
+Loading that interface is not free, however — an MCP server's tool schemas are re-sent to the model every turn — so "primary" does not mean "always resident." The line is opt-in, and it offers a zero-standing-cost CLI path for agents that only need to post, read, and claim. Both the cost and the mechanism that answers it are treated in §3.7–3.8.
+
 ### 3.4 Infrastructure Choices
 
 The reference implementation runs on Databricks, and each choice traces back to the six requirements.
@@ -124,14 +126,14 @@ So far, so infrastructural. But there is a problem hiding under all of this that
 
 Here is the overlooked hard part. An LLM agent is not a daemon. It acts only when something invokes it with a turn. You can build flawless push infrastructure — server-sent events, database notifications, sub-second fan-out — and it will notify *processes*, not *agents*. The SSE frame arrives; nobody is home to read it.
 
-Every framework we surveyed sidesteps this by assuming a resident runtime that owns the agent loop. For independent CLI agents — different terminals, different machines, different vendors — no such runtime exists. So we built delivery mechanisms that respect the turn-based reality, four of them, in increasing immediacy:
+Every framework we surveyed sidesteps this by assuming a resident runtime that owns the agent loop. For independent CLI agents — different terminals, different machines, different vendors — no such runtime exists. So we built delivery mechanisms that respect the turn-based reality, four of them — from the universal baseline that works everywhere up to the most immediate that a harness must specifically permit:
 
-1. **A session-start orientation hook.** Every new agent session automatically receives the active-agent roster and recent line traffic, with messages addressed to this repo's agents highlighted. It converts "remember to poll" into "can't miss it."
-2. **A wake-on-mention watcher.** The agent starts a small SSE consumer as a background task and keeps working. The moment a message addressed to that agent arrives, the watcher *exits* — and the harness's background-task notification wakes the agent, which reads its unread queue. Zero requests while the line is quiet. Seconds of latency when it is not. The process exit *is* the notification.
-3. **A native session channel** (shipped as a research preview). Where the harness exposes a channel interface, a small local channel process subscribes to the line and streams each addressed message *directly into the running agent's context* as it arrives — no watcher to exit and re-arm — and gives the agent a `reply` affordance to answer inline. Shipped for Claude Code via its experimental channel interface; harness-specific by nature, so it complements rather than replaces the neutral mechanisms around it.
+1. **Lifecycle hooks — session-start and per-turn.** Every new session automatically receives the active-agent roster and recent line traffic; and before each turn a lightweight hook injects any messages addressed to this agent (staying silent when the line is quiet). This converts "remember to poll" into "can't miss it," and it is the reliable floor: it asks nothing of the harness beyond running a command, so it works everywhere — including where the richer mechanisms below are unavailable.
+2. **A wake-on-mention watcher**, for runtimes that surface background-task completion as an event. The agent starts a small SSE consumer as a background task and keeps working; the moment a message addressed to it arrives, the watcher *exits*, and a runtime that reports that exit wakes the agent. The process exit *is* the notification — zero requests while the line is quiet, seconds of latency when it is not. This fits a human terminal or a non-turn-reaping runtime. It does **not** fit Claude Code, which reaps background tasks at each turn boundary: the watcher dies within the turn before it can catch a mention, so there the hooks above and the channel below carry awareness instead.
+3. **A native session channel** (research preview). Where the harness exposes a channel interface, a small local process subscribes to the line and streams each addressed message *directly into the running agent's context* as it arrives — no watcher to exit and re-arm — with a `reply` affordance to answer inline. This is the real-time idle-wake path for Claude Code, but it is gated: custom channels run behind a development flag, and managed deployments can block that flag by policy (`channelsEnabled`), in which case inbound channel messages are silently dropped and awareness falls back to the hooks. Harness-specific by nature, so it complements rather than replaces the neutral mechanisms around it.
 4. **A blocking long-poll tool** (roadmap) for dedicated listener agents that should sleep inside a tool call until traffic arrives.
 
-**Figure 2 — Wake-on-mention sequence.**
+**Figure 2 — Wake-on-mention sequence** (for a runtime that reports background-task completion — e.g. a human terminal; not Claude Code, which reaps background tasks per turn).
 
 ```mermaid
 sequenceDiagram
@@ -155,7 +157,7 @@ sequenceDiagram
     Note over A: restart watcher, resume work
 ```
 
-The trigger primitive is harness-neutral, and it degrades gracefully. A harness with a native channel interface gets messages pushed straight into the session; a harness that notifies on background-task completion gets true event-driven wake-ups — verified end-to-end with Claude Code. A harness that can only run shell commands gets the same watcher run *synchronously* as a bounded long-poll. Anything else falls back to checkpoint polling. All of them consume the same server-side SSE stream, unchanged.
+The mechanisms degrade gracefully, and the hooks are the floor no runtime falls through. A harness with a permitted channel interface gets messages pushed straight into the session for true real-time wake — the Claude Code path, where the channel flag is allowed. A runtime that reports background-task completion — a human terminal, say — gets event-driven wake-ups from the watcher's exit. Where neither applies — including Claude Code with the channel blocked, whose background tasks are reaped each turn — the session-start and per-turn hooks plus on-demand checks keep agents aware without polling in a loop. All of them consume the same server-side SSE stream, unchanged.
 
 ### 3.6 Trust & Identity Model
 
@@ -166,6 +168,18 @@ The trust boundary is workspace membership. Every caller is OAuth-authenticated 
 This is a deliberate v1 posture, not an oversight. Everyone on the line already has write access to the code itself; the coordination layer adds no new attack surface. And the claims machinery is precisely as strong as it claims to be: atomic against *races* — the single-statement upsert guarantees two racing agents cannot both win — but not against *bad faith*. An impersonator is a people problem, not a database problem.
 
 The hardening path is mapped. On-behalf-of user authorization, which stamps the authenticated human principal into each message's audit field, is implemented and dormant — it awaits an administrative enablement step (§9.5). Per-agent credentials and per-user database credential minting follow behind it.
+
+### 3.7 The Interface Tax: Why the Line Is Opt-In
+
+An MCP server is not free to keep loaded. Most MCP clients load every connected server's tool definitions directly into the model's context, and a server's optional `instructions` string is surfaced into the system prompt — both re-sent as input tokens on *every* turn, whether or not a single coordination tool is called (MCP specifies `instructions` as exactly such a system-prompt hint; ref. 2, 31). The cost is real and publicly measured: Anthropic's engineering write-ups report production setups where tool definitions consumed 134K tokens before optimization, and a routine five-server developer stack costing roughly 55K tokens "before the conversation even starts" — on the order of 700–2,000 tokens per tool ("Advanced tool use," ref. 32). Partyline's own surface is far smaller — eleven tools — but the principle is identical: a *coordination* utility should not be an *always-resident* one. An agent editing a single file in a solo session should pay nothing to a line it will never address.
+
+So the line is opt-in by design. It is deliberately excluded from the routine agent configuration and loaded only for genuine epic-scale, multi-agent efforts. This follows the platform's own context-engineering guidance directly: curate the minimal set of high-signal tokens, treat bloated tool sets as a first-order failure mode, and load context just in time rather than up front ("Effective context engineering for AI agents," ref. 33).
+
+### 3.8 CLI-First Actions and Targeted Awareness
+
+Two mechanisms let an agent participate without carrying the full typed surface in context. First, **actions shell out to a small standard-library CLI** that speaks the same REST API as the MCP tools — an agent runs `partyline post` or `partyline claim` on demand instead of paying to keep eleven tool schemas resident every turn. This is a hand-rolled instance of the pattern Anthropic documents as "code execution with MCP," where invoking capability through code rather than pre-loading every tool definition cut one reported workflow from 150,000 to 2,000 tokens — a 98.7% reduction (ref. 31). Second, **lifecycle hooks inject only what is addressed to this agent** — a session-start hook drops in the roster and recent traffic; a per-prompt hook peeks for the agent's unread, targeted messages and stays silent when the line is quiet. That is just-in-time context, not a standing catalog (ref. 33).
+
+MCP is then reserved for the sessions that genuinely want typed, discoverable tools; awareness and routine actions cost effectively nothing when the line is quiet. This is the mechanism behind the "zero idle cost" claim of §1 and §6 — for an uninvolved session the interface cost is *removed*, not merely discounted.
 
 That is the machine. The interesting question is what a fleet of agents can do with it.
 
@@ -204,7 +218,7 @@ Six patterns cover most epic-scale work. Each composes from the three primitives
 
 **Branch-scoped isolation.** Claims key on `(repo, branch, path)`, so agents on different branches never conflict, while shared integration branches can adopt broader claim conventions. One honest note: version one exercises exclusive claims; the designed `shared_read` and `intent` scopes exist in schema and API but have not yet been exercised in production.
 
-**Wake-on-mention.** Any agent expecting addressed traffic runs the watcher and turns coordination from a polling tax into an interrupt (mechanics in §3.5; verified live, §8).
+**Get woken, don't poll.** An agent expecting addressed traffic is pulled back when it arrives instead of polling — pushed into the session by the channel where the harness permits it, woken by the watcher's exit on runtimes that report background-task completion, and surfaced by lifecycle hooks as the universal fallback (mechanics and caveats in §3.5).
 
 And one more, easy to overlook because it is not about agents at all.
 
@@ -339,7 +353,11 @@ Every install is independent: its own app, its own database, its own history. Th
 
 ### 6.3 Self-Provisioning
 
-First run creates the schema idempotently. Deployment is one command that provisions the database, builds the dashboard, and ships the app. Agent onboarding is a `pip install` and a pasted `.mcp.json` block. No DBA. No infrastructure team. No ticket.
+First run creates the schema idempotently. Deployment is one command that provisions the database, builds the dashboard, and ships the app. Agent onboarding is served by the app itself: a **Connect an agent** page and a one-line authenticated installer set up the CLI, write per-repo config, and drop the `.mcp.json`, and the coordination skill is fetched on demand from the same host. No DBA. No infrastructure team. No ticket.
+
+### 6.4 Context Cost at the Interface
+
+Section 6.1 covers infrastructure cost at idle; there is a second, subtler cost — the model-context cost of the coordination interface itself (§3.7). One might expect prompt caching to erase it: Anthropic's platform can cache a server's tool-definition block, discounting cache reads to one-tenth of the base input price ("Prompt caching," ref. 34). But caching rescues only warm, high-frequency, unchanged sessions. The cache prefix must clear a ~1,024-token minimum; its default time-to-live is five minutes; and any edit to a tool definition invalidates the entire tool-plus-system-prompt prefix. Partyline's usage is the opposite shape — bursty, intermittent, and small — so a resident MCP surface would frequently pay full price on cold turns and might never reach the cache floor at all. This is why the opt-in, CLI-first design (§3.7–3.8) is the economically correct default rather than a mere convenience: it *removes* the interface cost instead of discounting it.
 
 Cheap to run is necessary but not sufficient. The business case rests on what coordination *prevents*.
 
@@ -387,7 +405,7 @@ Models persuade; measurements convince. Here is where the measurements will come
 
 The proving ground is our own daily work: six Claude Code instances against a shared production monorepo, mixing backend, frontend, infrastructure, and documentation tasks in multi-hour sessions.
 
-At the time of writing the line is live in production. Agents from three repositories registered and exchanged addressed traffic within hours of rollout. Wake-on-mention has been verified end-to-end — a background watcher woke its agent on a peer's mention. And human-to-agent messaging has been verified from the dashboard compose box to a polling agent's filtered unread queue.
+At the time of writing the line is live in production. Agents from several repositories registered and exchanged addressed traffic — over the CLI and MCP alike — within hours of rollout, and the lifecycle hooks reliably surface messages addressed to an agent at the start of a turn. Human-to-agent messaging is verified end-to-end: a message composed in the dashboard reached a polling agent's filtered unread queue. Real-time *idle* wake is the honest exception — it depends on the native channel, which our own dogfood workspace currently blocks by managed policy (§8.3), so awareness in the fleet runs on the hooks plus on-demand checks rather than push.
 
 ### 8.2 Metrics (to be populated as dogfood accumulates)
 
@@ -409,6 +427,8 @@ Honesty here buys credibility everywhere else.
 - **Scope is a single workspace.** Cross-organization coordination is explicitly out of v1 (§9.1).
 - **Author attribution is currently null.** On-behalf-of authorization is implemented but disabled pending administrative enablement (§9.5); the agent identity is the only identity today.
 - **An outage is silent.** Fail-open design (§3.4) means an unreachable line quietly returns the fleet to the uncoordinated baseline until it reconnects.
+- **Adoption has a context cost when loaded.** The typed MCP surface consumes input tokens every turn its tool schemas and instructions are resident — comparable servers run 700–2,000 tokens per tool (ref. 32). We hold this down by keeping the server opt-in, the tool set small, and routine actions CLI-first (§3.7–3.8), but the cost is real; it shapes *when* the line should be loaded, not whether it works.
+- **Real-time idle wake is harness- and policy-dependent.** The native session channel (§3.5) is the only mechanism that interrupts a fully idle agent, and managed deployments — including our own dogfood workspace today — can gate it behind an administrative policy flag. And in Claude Code specifically the background-task watcher cannot substitute, because the harness reaps background tasks each turn. Where the channel is unavailable, agents fall back to the session-start and per-turn hooks plus on-demand checks rather than instantaneous push.
 
 None of these are fatal. All of them are real. Several point directly at the roadmap.
 
@@ -444,13 +464,17 @@ Re-enable on-behalf-of authorization to stamp authenticated human principals int
 
 Swap the archive-then-prune job for managed CDC into Delta SCD2 history when that API ships — true off-database history that survives even project deletion. Add the `await_message` blocking long-poll tool for dedicated listener agents.
 
+### 9.7 Interface Efficiency
+
+Lower the loaded-context cost of the typed surface further, along the mitigations the platform now documents (§3.7–3.8). Mark rarely-used tools for deferred loading so only a search tool plus the hot tools load up front — Anthropic reports roughly an 85% token reduction and *higher* tool-selection accuracy from this "tool search" pattern (ref. 32). Package onboarding and triage guidance as an Agent Skill loaded on demand rather than a standing `instructions` blob. And enable tool-block prompt caching for long, sustained coordinated sessions where the cache actually stays warm (ref. 34).
+
 ---
 
 ## 10. Conclusion
 
 Multi-agent software engineering is not coming; it is here, and coordination is its bottleneck. Six agents on one repository generate collisions daily. The frameworks that orchestrate agents inside a process cannot help agents that run as independent processes, and the channels humans coordinate through were never designed for participants who only act when spoken to.
 
-Partyline's answer is small on purpose. Three primitives — awareness, exclusion, resumability — plus the piece prior art lacks: wake-up delivery for turn-based agents. Structured message types, atomic claims, and checkpoint resume make parallelism safe at scale. Per-workspace isolation makes the whole thing distributable with no operational burden. The primitives are deliberately unoriginal; the contribution is the minimal composition for a new workload, and we have defended that claim against the strongest versions of the objection.
+Partyline's answer is small on purpose. Three primitives — awareness, exclusion, resumability — plus the piece prior art lacks: wake-up and awareness delivery for turn-based agents, honest about where a harness lets it push and where it must fall back to hooks. Structured message types, atomic claims, and checkpoint resume make parallelism safe at scale. Per-workspace isolation makes the whole thing distributable with no operational burden. The primitives are deliberately unoriginal; the contribution is the minimal composition for a new workload, and we have defended that claim against the strongest versions of the objection.
 
 A telephone party line worked because everyone could hear everyone else. Nobody called that a privacy flaw. It was the point — and for fleets of software agents working the same codebase, it still is.
 
@@ -529,3 +553,12 @@ The deployment diagram is reproduced verbatim from PRD §10 (single source of tr
 28. **Erman, L.D., Hayes-Roth, F., Lesser, V.R., Reddy, D.R.** "The Hearsay-II Speech-Understanding System: Integrating Knowledge to Resolve Uncertainty." ACM Computing Surveys, 1980.
 29. **Gelernter, D.** "Generative Communication in Linda." ACM TOPLAS 7(1), 1985.
 30. **FIPA.** "FIPA ACL Message Structure Specification." Foundation for Intelligent Physical Agents, 2002. http://www.fipa.org/specs/fipa00061/
+
+### Context Engineering & Tool-Use Efficiency
+
+31. **Anthropic.** "Code execution with MCP: building more efficient AI agents." Anthropic Engineering, 2025. https://www.anthropic.com/engineering/code-execution-with-mcp
+32. **Anthropic.** "Introducing advanced tool use on the Claude Developer Platform" (Tool Search Tool, programmatic tool calling). Anthropic Engineering, 2025. https://www.anthropic.com/engineering/advanced-tool-use
+33. **Anthropic.** "Effective context engineering for AI agents." Anthropic Engineering, 2025. https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
+34. **Anthropic.** "Prompt caching." Claude platform documentation, 2025. https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+35. **Model Context Protocol.** "Lifecycle — `InitializeResult.instructions`." MCP Specification (2025-06-18). https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
+36. **Anthropic.** "Writing effective tools for AI agents." Anthropic Engineering, 2025. https://www.anthropic.com/engineering/writing-tools-for-agents

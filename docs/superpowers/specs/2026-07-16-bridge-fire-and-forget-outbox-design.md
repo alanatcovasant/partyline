@@ -159,7 +159,7 @@ Spool record shape:
 
 ```yaml
 - ticket: 3f2a...
-  agent_id: alan_aura_3
+  agent_id: alan_web_1
   verb: post_message
   event_time: 2026-07-16T18:22:04Z
   enqueued_at: 2026-07-16T18:22:04Z
@@ -198,7 +198,7 @@ When the sender spills to file it sets a flag; the **next tool result the bridge
 (any verb) gets a one-line prefix, e.g.:
 
 ```
-⚠ 1 partyline message spooled to ../partyline_alan_aura_3.yaml (app unreachable)
+⚠ 1 partyline message spooled to ../partyline_alan_web_1.yaml (app unreachable)
 ```
 
 so a silent app outage doesn't stay silent, without the agent having to poll `check_send`.

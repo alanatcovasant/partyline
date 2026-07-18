@@ -13,16 +13,16 @@ from covasant_partyline import hook
 
 AGENTS = [
     {"agent_id": "alan_partyline_1", "repo": "covasant-partyline"},
-    {"agent_id": "alan_aura-web_1", "repo": "aura-web"},
+    {"agent_id": "alan_frontend_1", "repo": "frontend"},
 ]
 MESSAGES = [
     {
-        "id": 7, "agent_id": "alan_aura-web_1", "message_type": "status",
+        "id": 7, "agent_id": "alan_frontend_1", "message_type": "status",
         "recipient": None, "mentions": [], "payload": "ambient chatter",
         "created_at": "2099-01-01T00:00:00Z",
     },
     {
-        "id": 8, "agent_id": "alan_aura-web_1", "message_type": "question",
+        "id": 8, "agent_id": "alan_frontend_1", "message_type": "question",
         "recipient": "alan_partyline_1", "mentions": ["alan_partyline_1"],
         "payload": "addressed to this repo", "created_at": "2099-01-01T00:01:00Z",
     },
@@ -56,7 +56,7 @@ def test_highlights_addressed_messages(monkeypatch, capsys):
 
 def test_lists_active_agents(monkeypatch, capsys):
     out = _run_hook(monkeypatch, capsys, AGENTS, MESSAGES)
-    assert "alan_partyline_1" in out and "alan_aura-web_1" in out
+    assert "alan_partyline_1" in out and "alan_frontend_1" in out
 
 
 def test_silent_when_line_is_quiet(monkeypatch, capsys):

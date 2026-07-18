@@ -85,6 +85,15 @@ basename "$CLIENT_WHL" > covasant-partyline/client/dist/partyline-client-latest.
 cp install.sh install.ps1 covasant-partyline/client/dist/
 echo "    hosted client wheel $(basename "$CLIENT_WHL") + install.sh/install.ps1"
 
+echo "==> 2.8/4 Publishing using-partyline skill for agents to fetch"
+# Snapshot the canonical skill markdown (single source of truth: the plugin skill file)
+# next to the app package, where the /skills/using-partyline.md route reads it. It is
+# gitignored and force-synced via databricks.yml sync.include as a single explicit file —
+# the same proven pattern as __version__.py. (Do NOT drop it under client/dist: dist is
+# gitignored, and bundle sync won't discover a brand-new subdirectory created under it.)
+cp partyline-plugin/skills/using-partyline/SKILL.md covasant-partyline/app/using-partyline.md
+echo "    hosted skill -> /skills/using-partyline.md"
+
 echo "==> 3/4 Deploying bundle (target=$TARGET)"
 databricks bundle deploy -t "$TARGET" --profile "$PROFILE"
 

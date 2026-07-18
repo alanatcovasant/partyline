@@ -2,7 +2,7 @@
 
 **Status:** Draft — pre-implementation, for discussion
 **Author:** Alan Dennis (with Claude, sessions 2026-07-04 / 2026-07-05)
-**Scope:** New standalone project, NOT part of the Aura monorepo
+**Scope:** New standalone project, not part of any monorepo
 
 ---
 
@@ -22,10 +22,10 @@
 - Covasant Waypoint — leans into the checkpoint/cursor concept.
 - Covasant Commons — leans into shared-space framing.
 
-Principle: deliberately avoid the Aura-family invented-word convention (nexara, aigene,
-aivara, aitera, aicura, aireka, infraia, foundra, healix, lexara, dataduct...). This product
-is general-purpose and MCP-first — usable by any agent tooling, not just Aura/Claude Code —
-and the name should read as its own thing, not "an Aura component."
+Principle: deliberately avoid an invented-word "house" naming convention tied to a
+particular product family. This product is general-purpose and MCP-first — usable by any
+agent tooling, not just one vendor's stack or Claude Code — and the name should read as
+its own thing, not a component of some larger platform.
 
 **Decision: Covasant Partyline.** Decided 2026-07-05.
 
@@ -33,8 +33,8 @@ and the name should read as its own thing, not "an Aura component."
 
 ## 2. Problem Statement
 
-Multiple AI coding agents (currently: 6 Claude Code instances, `aura_1`–`aura_6`, each
-running in its own VS Code window against a separate clone of the Aura monorepo for
+Multiple AI coding agents (currently: 6 Claude Code instances, `web_1`–`web_6`, each
+running in its own VS Code window against a separate clone of a shared monorepo for
 isolation) need to coordinate in near-real-time: announce what they're working on, avoid
 duplicate or conflicting edits, claim files/areas before touching them, ask for help, and
 signal completion or blockage.
@@ -73,7 +73,7 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
   listing (Databricks now supports App-based Marketplace listings, distinct from the
   data-product/Delta-Sharing listing type).
 - Built and dogfooded first as **its own standalone project/repo** — not blended into
-  the Aura monorepo — so it has independent versioning, doesn't inherit Aura-specific
+  a larger monorepo — so it has independent versioning, doesn't inherit monorepo-specific
   tooling conventions (GH-issue numbering, wheel-build pipeline, positional-insert
   rules, etc.), and keeps blast radius contained if something goes wrong.
 
@@ -117,10 +117,10 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
 
 - **Primary (v1):** Engineering teams running multiple named agent instances against
   clones of shared repos. A single developer may run N agents simultaneously (e.g.,
-  `alan_aura_3`, `alan_partyline_1`), each targeting a different repo or branch. The
+  `alan_web_3`, `alan_partyline_1`), each targeting a different repo or branch. The
   system must distinguish agents by owner, repo, and branch — not just a flat
   agent-id pool. Initial dogfood: Covasant's own team (Alan, Rahul, Pooja, Nikitha,
-  Rakesh) coordinating across the Aura monorepo and related projects.
+  Rakesh) coordinating across a shared monorepo and related projects.
 - **Secondary (future):** Customers who install the App in their own Databricks
   workspace to coordinate their own fleet of internal agents (e.g., multiple Healix
   instances, or other in-house automation).
@@ -169,9 +169,9 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
    would require pre-provisioning a Postgres role per user. **Constraint:** Databricks
    Apps do **not** accept PATs; the bridge and all clients must use OAuth (M2M service
    principal or U2M). Agent *instance* identity is the caller-supplied `agent_id`, which
-   OBO does not provide (aura_1..6 may all run as one human).
+   OBO does not provide (web_1..6 may all run as one human).
 9. **Project hygiene:** standalone repo from day one, including for the internal
-   dogfood install — not folded into the Aura monorepo.
+   dogfood install — not folded into a larger monorepo.
 10. **Storage & archive:** **Lakebase Postgres is the live OLTP core** (messages,
     checkpoints, claims, presence) — it is the only option that satisfies all three hard
     constraints at once: atomic claim/lease mutual exclusion (`INSERT … ON CONFLICT`),
@@ -233,8 +233,8 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
 flowchart TB
     subgraph Agents["Agent instances (per developer / repo / branch)"]
         A1["alan_partyline_1"]
-        A2["alan_aura-web_1"]
-        A3["...alan_aura_1-6"]
+        A2["alan_frontend_1"]
+        A3["...alan_web_1-6"]
     end
 
     subgraph Client["covasant-partyline (pip-installed client)"]
@@ -317,7 +317,7 @@ traffic so sessions start oriented. Gold/summaries are deferred (§13).
 ### Client Access: Local MCP Bridge
 
 Databricks platform auth (OAuth2 M2M, service principals, token refresh) is non-trivial
-for an agent to handle inline. The proven pattern (see `aura/utils/mcp_bridge.py`) is a
+for an agent to handle inline. The proven pattern (a small local OAuth bridge) is a
 local **stdio↔HTTP bridge** that runs as a subprocess spawned by the MCP client:
 
 1. Agent starts the bridge via `.mcp.json` config (just `command` + `args`).
@@ -353,7 +353,7 @@ knowledge required on the agent side.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| `agent_id` | text PK | Unique instance name, e.g. `alan_aura_3`, `ci_lint_bot` |
+| `agent_id` | text PK | Unique instance name, e.g. `alan_web_3`, `ci_lint_bot` |
 | `owner` | text NOT NULL | Developer or team identity — self-declared, no fixed roster |
 | `repo` | text NOT NULL | Repository name or URL the agent is working against |
 | `branch` | text | Current working branch |
@@ -405,10 +405,9 @@ knowledge required on the agent side.
 Uniqueness: `UNIQUE(repo, COALESCE(branch, ''), resource_path)` — prevents conflicting
 exclusive claims on the same resource within the same repo+branch.
 
-Mirrors the App+MCP-server pattern already proven in-house (`mcp-aura-dev-alan` /
-`auraa_apis`) — same shape, far smaller surface area. First-run provisioning follows
-the same idempotent "CREATE TABLE IF NOT EXISTS" playbook already used throughout
-Aura's platform-init code.
+Mirrors an App+MCP-server pattern already proven in-house — same shape, far smaller
+surface area. First-run provisioning follows the same idempotent
+"CREATE TABLE IF NOT EXISTS" playbook already used in that platform-init code.
 
 ---
 
@@ -427,7 +426,7 @@ in a way that forecloses it later.
 
 ## 12. Success Metrics (dogfood phase)
 
-- Reduction in git push/merge races among `aura_1`–`aura_6` (baseline: 2 observed in a
+- Reduction in git push/merge races among `web_1`–`web_6` (baseline: 2 observed in a
   single session pre-Bus).
 - Time-to-awareness of another agent's claim/status vs. today's discover-via-git-diff.
 - Actual adoption: message/claim volume indicating agents use it proactively rather
@@ -439,7 +438,7 @@ in a way that forecloses it later.
 - **Phase 1:** Scaffold standalone repo; minimal schema (`messages`, `checkpoints`,
   `claims`); MCP server with core tools; no frontend.
 - **Phase 2:** Install into an internal Covasant sandbox workspace (reuse an existing
-  dev target rather than provisioning new infra); dogfood on real `aura_1`–`aura_6`
+  dev target rather than provisioning new infra); dogfood on real `web_1`–`web_6`
   usage.
 - **Phase 3:** Harden based on dogfood learnings (retention policy, presence/heartbeat
   semantics, possibly the dashboard).
@@ -457,7 +456,7 @@ in a way that forecloses it later.
   the archive persists in Delta. **Still open:** the actual purge *cadence/threshold*
   (time- vs size-based), and validating that Lakehouse Sync's logical-replication slot
   survives long scale-to-zero suspensions without stalling or unbounded WAL retention
-  (two Preview behaviors intersecting — must be tested on the Auraa install).
+  (two Preview behaviors intersecting — must be tested on the dogfood install).
 - Service discovery: how does an agent joining a workspace learn the App's endpoint?
 - Schema evolution across installs that may run different versions over time.
 - Multi-workspace orgs: is strict per-workspace isolation ever too strict (a customer

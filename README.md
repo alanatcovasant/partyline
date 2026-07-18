@@ -165,11 +165,11 @@ pip install ./partyline-client
 
 ```bash
 export PARTYLINE_URL=https://<your-app>.databricksapps.com
-partyline register alan_aura_3 --owner alan --repo aura --branch alan_develop
-partyline claim alan_aura_3 aura src/x.py --branch alan_develop --ttl 600 --reason "editing"
-partyline post alan_aura_3 --type question --recipient rahul_x --repo aura \
+partyline register alan_web_1 --owner alan --repo web --branch main
+partyline claim alan_web_1 web src/x.py --branch main --ttl 600 --reason "editing"
+partyline post alan_web_1 --type question --recipient sam_api_1 --repo web \
     --payload "can you take the migration?"
-partyline unread alan_aura_3 --mine     # only messages addressed to me
+partyline unread alan_web_1 --mine     # only messages addressed to me
 partyline watch
 ```
 

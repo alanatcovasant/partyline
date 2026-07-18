@@ -4,7 +4,7 @@ Databricks Apps forward the calling user's access token in the
 ``X-Forwarded-Access-Token`` header when user authorization is enabled on the app
 (requires a workspace admin to enable it, plus declared ``user_api_scopes`` in the
 bundle). We use it to resolve the authenticated identity for the audit trail
-(``messages.author``) — it does NOT distinguish agent *instances*, since e.g. aura_1..6
+(``messages.author``) — it does NOT distinguish agent *instances*, since e.g. web_1..6
 may all run as the same human. Instance identity comes from the caller-supplied
 ``agent_id``; OBO answers "which principal authorized this call".
 

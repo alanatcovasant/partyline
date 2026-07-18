@@ -30,12 +30,12 @@ def test_skip_own_message():
 
 
 def test_channel_params_basic():
-    msg = {"id": 344, "agent_id": "alan_aura_1", "message_type": "question",
-           "repo": "aura", "branch": "develop", "payload": "review please"}
+    msg = {"id": 344, "agent_id": "alan_web_1", "message_type": "question",
+           "repo": "web", "branch": "develop", "payload": "review please"}
     p = channel.channel_params(msg)
     assert p["content"] == "review please"
-    assert p["meta"] == {"msg_id": "344", "from_agent": "alan_aura_1",
-                         "type": "question", "repo": "aura", "branch": "develop"}
+    assert p["meta"] == {"msg_id": "344", "from_agent": "alan_web_1",
+                         "type": "question", "repo": "web", "branch": "develop"}
 
 
 def test_channel_params_omits_empty_and_stringifies():
@@ -80,13 +80,13 @@ def test_post_reply_builds_expected_request(monkeypatch):
 
     monkeypatch.setattr(channel.urllib.request, "urlopen", fake_urlopen)
     out = channel.post_reply("https://app.example/", "tok", "me", "ack", "done",
-                             recipient="alan_aura_1", reply_to_id=344)
+                             recipient="alan_web_1", reply_to_id=344)
     assert out == {"id": 999}
     assert captured["url"] == "https://app.example/api/messages"
     assert captured["method"] == "POST"
     assert captured["auth"] == "Bearer tok"
     assert captured["body"] == {"agent_id": "me", "message_type": "ack", "payload": "done",
-                                "recipient": "alan_aura_1", "reply_to_id": 344}
+                                "recipient": "alan_web_1", "reply_to_id": 344}
 
 
 def test_capability_and_reply_tool_declared():

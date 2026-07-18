@@ -41,7 +41,7 @@ async def test_register_agent_idempotent(client):
     payload = {
         "agent_id": "test_agent_idem",
         "owner": "alan",
-        "repo": "aura",
+        "repo": "web",
         "branch": "develop",
     }
     resp1 = await client.post("/api/agents", json=payload)
@@ -385,7 +385,7 @@ async def test_message_with_mentions_and_recipient(client):
         json={
             "agent_id": "sender_agent",
             "owner": "alan",
-            "repo": "aura",
+            "repo": "web",
         },
     )
     await client.post(
@@ -393,7 +393,7 @@ async def test_message_with_mentions_and_recipient(client):
         json={
             "agent_id": "target_agent",
             "owner": "rahul",
-            "repo": "aura",
+            "repo": "web",
         },
     )
 
@@ -405,7 +405,7 @@ async def test_message_with_mentions_and_recipient(client):
             "recipient": "target_agent",
             "mentions": ["target_agent"],
             "payload": "Can you review my changes to db.py?",
-            "repo": "aura",
+            "repo": "web",
             "branch": "develop",
             "resource_path": "src/db.py",
         },

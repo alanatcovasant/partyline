@@ -30,7 +30,8 @@ from uuid import uuid4
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 
 from . import __build_timestamp__, __git_commit__, __version__, db
@@ -161,6 +162,23 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Covasant Partyline", version=__version__, lifespan=lifespan)
 app.include_router(rest_router)
 app.mount("/mcp", mcp_app)
+
+
+# The canonical using-partyline skill, served so any agent (or human) can fetch it on
+# demand instead of carrying it in context. deploy.sh snapshots the plugin skill file to
+# app/using-partyline.md (gitignored + force-synced like __version__.py — see databricks.yml
+# sync.include). Registered before the SPA mount at "/" so this path wins.
+_SKILL_MD = Path(__file__).resolve().parent / "using-partyline.md"
+
+
+@app.get("/skills/using-partyline.md")
+async def using_partyline_skill() -> Response:
+    if not _SKILL_MD.is_file():
+        raise HTTPException(status_code=404, detail="skill not published in this build")
+    return Response(
+        _SKILL_MD.read_text(encoding="utf-8"),
+        media_type="text/markdown; charset=utf-8",
+    )
 
 
 @app.middleware("http")

@@ -148,7 +148,7 @@ _CONNECT_TIMEOUT_SECS = 30.0
 # place. A call that arrives after the token has expired rides a stale, half-open session:
 # the observed multi-minute hang (only broken by the hard deadline below). Reconnecting
 # under this ceiling means every call uses a freshly-minted token — the same "always
-# re-authenticate" guarantee Aura's per-request bridge (utils/mcp_bridge.py) gets for free.
+# re-authenticate" guarantee a bridge that re-mints on every request would get for free.
 _TOKEN_MAX_AGE_SECS = 40 * 60  # 2400s, comfortably under the ~1h token lifetime
 # Preferred over the age heuristic when the SDK exposes the token's real expiry: reconnect
 # once the baked token is within this margin of its ACTUAL expiry, so a call never rides a

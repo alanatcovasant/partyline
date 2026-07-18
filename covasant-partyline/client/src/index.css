@@ -164,3 +164,42 @@ ul { list-style: none; margin: 0; padding: 0; }
   vertical-align: bottom;
 }
 .agent-grid time { color: var(--muted); font-size: 0.9em; white-space: nowrap; }
+
+/* View tabs (Dashboard | Connect an agent) + right-aligned header cluster */
+.view-tabs { display: inline-flex; gap: 0.25rem; }
+.view-tabs button {
+  background: transparent; color: var(--muted); border: 1px solid transparent;
+  border-radius: 6px; padding: 0.25rem 0.6rem; font: inherit; cursor: pointer;
+}
+.view-tabs button:hover { color: var(--fg); background: rgba(127, 127, 127, 0.08); }
+.view-tabs button.active { color: var(--fg); border-color: var(--line); background: var(--card); font-weight: 600; }
+.header-right { margin-left: auto; display: inline-flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; justify-content: flex-end; }
+.header-right .poll-select, .header-right .ext-dl { margin-left: 0; }
+
+/* Connect-an-agent (getting started) view */
+.connect { max-width: 760px; }
+.connect > h2 { font-size: 1.15rem; text-transform: none; letter-spacing: 0; color: var(--fg); margin: 0 0 0.4rem; }
+.connect-lead { margin: 0 0 0.75rem; }
+.connect-lead a, .connect-links a, .connect-url a { color: var(--accent); text-decoration: none; }
+.connect-lead a:hover, .connect-links a:hover { text-decoration: underline; }
+.connect-url { margin: 0 0 1rem; }
+.connect-step h3 { font-size: 0.95rem; margin: 0 0 0.5rem; }
+.connect-step p { margin: 0.4rem 0; }
+.connect-step .tag { margin-left: 0.35rem; vertical-align: middle; }
+.tag.opt { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.connect-links { display: flex; flex-direction: column; gap: 0.45rem; }
+
+/* Copy-enabled code snippet */
+.snippet { position: relative; margin: 0.5rem 0; }
+.snippet pre {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 1.5rem 0.8rem 0.7rem; margin: 0; overflow-x: auto; font-size: 0.82em; line-height: 1.5;
+}
+.snippet code { color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; }
+.snippet-lang { position: absolute; top: 0.4rem; left: 0.7rem; font-size: 0.7em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; pointer-events: none; }
+.copy-btn {
+  position: absolute; top: 0.35rem; right: 0.4rem; z-index: 1;
+  background: var(--card); color: var(--muted); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.1rem 0.5rem; font-size: 0.75em; cursor: pointer;
+}
+.copy-btn:hover { color: var(--fg); border-color: var(--muted); }

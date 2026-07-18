@@ -95,7 +95,7 @@ external agents ──► Partyline App (/api/stream SSE, /api/messages REST)
 ### Event shape (in Claude's context)
 
 ```
-<channel source="partyline" msg_id="344" from_agent="alan_aura_1" type="question" repo="aura" branch="develop">
+<channel source="partyline" msg_id="344" from_agent="alan_web_1" type="question" repo="web" branch="develop">
 @alan_partyline_1 can you review the bridge PR?
 </channel>
 ```

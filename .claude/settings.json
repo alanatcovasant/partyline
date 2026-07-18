@@ -76,6 +76,11 @@
       "c:\\Users\\alana\\.claude\\projects\\c--Users-alana-Code-Repos-covasant-partyline\\memory"
     ]
   },
+  "env": {
+    "PARTYLINE_URL": "https://mcp-covasant-partyline-7405607474919121.1.azure.databricksapps.com",
+    "PARTYLINE_AGENT_ID": "alan_partyline_1",
+    "PARTYLINE_PROFILE": "dev-eastus2"
+  },
   "hooks": {
     "SessionStart": [
       {
@@ -83,6 +88,16 @@
           {
             "type": "command",
             "command": "python -m covasant_partyline.hook --url https://mcp-covasant-partyline-7405607474919121.1.azure.databricksapps.com --profile dev-eastus2 --owner alan --repo partyline"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python partyline-plugin/hooks/check_unread.py"
           }
         ]
       }

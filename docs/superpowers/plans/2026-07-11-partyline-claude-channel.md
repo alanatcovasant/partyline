@@ -30,8 +30,8 @@
 
 Reference — SSE event shape (JSON on each `data:` line of `/api/stream`), from `app/db.py::post_message`:
 ```json
-{"id": 344, "agent_id": "alan_aura_1", "message_type": "question", "recipient": "alan_partyline_1",
- "repo": "aura", "branch": "develop", "resource_path": null, "payload": "…", "mentions": ["alan_partyline_1"],
+{"id": 344, "agent_id": "alan_web_1", "message_type": "question", "recipient": "alan_partyline_1",
+ "repo": "web", "branch": "develop", "resource_path": null, "payload": "…", "mentions": ["alan_partyline_1"],
  "reply_to_id": null, "created_at": "2026-07-11T…Z"}
 ```
 
@@ -54,17 +54,17 @@ from covasant_partyline import channel
 
 
 def test_addressed_to_me_recipient():
-    msg = {"agent_id": "alan_aura_1", "recipient": "me", "mentions": []}
+    msg = {"agent_id": "alan_web_1", "recipient": "me", "mentions": []}
     assert channel.addressed_to_me(msg, "me") is True
 
 
 def test_addressed_to_me_mention():
-    msg = {"agent_id": "alan_aura_1", "recipient": None, "mentions": ["me", "you"]}
+    msg = {"agent_id": "alan_web_1", "recipient": None, "mentions": ["me", "you"]}
     assert channel.addressed_to_me(msg, "me") is True
 
 
 def test_not_addressed_broadcast():
-    msg = {"agent_id": "alan_aura_1", "recipient": None, "mentions": []}
+    msg = {"agent_id": "alan_web_1", "recipient": None, "mentions": []}
     assert channel.addressed_to_me(msg, "me") is False
 
 
@@ -131,12 +131,12 @@ git commit -m "feat(channel): message gate (addressed-to-me, skip own)"
 
 ```python
 def test_channel_params_basic():
-    msg = {"id": 344, "agent_id": "alan_aura_1", "message_type": "question",
-           "repo": "aura", "branch": "develop", "payload": "review please"}
+    msg = {"id": 344, "agent_id": "alan_web_1", "message_type": "question",
+           "repo": "web", "branch": "develop", "payload": "review please"}
     p = channel.channel_params(msg)
     assert p["content"] == "review please"
-    assert p["meta"] == {"msg_id": "344", "from_agent": "alan_aura_1",
-                         "type": "question", "repo": "aura", "branch": "develop"}
+    assert p["meta"] == {"msg_id": "344", "from_agent": "alan_web_1",
+                         "type": "question", "repo": "web", "branch": "develop"}
 
 
 def test_channel_params_omits_empty_optional_meta_and_handles_none_payload():
@@ -295,14 +295,14 @@ def test_post_reply_builds_expected_request(monkeypatch):
 
     out = channel.post_reply(
         "https://app.example/", "tok", "me", "ack", "done",
-        recipient="alan_aura_1", reply_to_id=344,
+        recipient="alan_web_1", reply_to_id=344,
     )
     assert out == {"id": 999}
     assert captured["url"] == "https://app.example/api/messages"
     assert captured["method"] == "POST"
     assert captured["auth"] == "Bearer tok"
     assert captured["body"] == {"agent_id": "me", "message_type": "ack",
-                                "payload": "done", "recipient": "alan_aura_1",
+                                "payload": "done", "recipient": "alan_web_1",
                                 "reply_to_id": 344}
 ```
 

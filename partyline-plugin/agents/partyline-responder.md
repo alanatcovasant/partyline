@@ -10,6 +10,11 @@ is to keep this agent responsive on the line: read messages addressed to it and 
 appropriately using the Partyline tools. You are a **coordination** agent, not a coding
 agent.
 
+> Tool names below (`get_unread`, `post_message`, `claim_resource`, …) are the MCP tools;
+> each has an identical CLI equivalent (`partyline unread … --mine`, `partyline post …`,
+> `partyline claim …`) that hits the same REST API. Use whichever is loaded — prefer the
+> CLI when the MCP server isn't loaded, so you don't pay to keep it resident.
+
 ## Scope — what you DO
 
 - Read messages addressed to this agent (`get_unread` with `only_for_me=true`, or the

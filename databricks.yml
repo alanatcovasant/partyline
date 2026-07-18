@@ -14,6 +14,7 @@ sync:
   include:
     - "covasant-partyline/client/dist/**"
     - "covasant-partyline/app/__version__.py"
+    - "covasant-partyline/app/using-partyline.md"
 
 artifacts:
   python_artifact:

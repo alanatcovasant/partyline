@@ -434,7 +434,150 @@ function MessageStream({ agents, messages }: { agents: Agent[]; messages: Messag
   );
 }
 
+// A copy-to-clipboard code block used across the Connect-an-agent view. Multi-line code
+// renders in a scrollable <pre>; the button copies the raw text.
+function Snippet({ code, lang }: { code: string; lang?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="snippet">
+      {lang && <span className="snippet-lang">{lang}</span>}
+      <button
+        type="button"
+        className="copy-btn"
+        title="Copy to clipboard"
+        onClick={() =>
+          navigator.clipboard?.writeText(code).then(
+            () => { setCopied(true); window.setTimeout(() => setCopied(false), 1200); },
+            () => {},
+          )
+        }
+      >
+        {copied ? "copied ✓" : "copy"}
+      </button>
+      <pre><code>{code}</code></pre>
+    </div>
+  );
+}
+
+// Getting-started / onboarding view: how a new agent joins the line. URLs are derived from
+// the live origin so the page is correct for whatever workspace this app is deployed in.
+function ConnectAgent() {
+  const url = window.location.origin;
+  const id = "<owner>_<repo>_1";
+  const installSh =
+    `TOKEN=$(databricks auth token -p dev-eastus2 | python -c "import sys,json;print(json.load(sys.stdin)['access_token'])")\n` +
+    `curl -fsSL -H "Authorization: Bearer $TOKEN" "${url}/install.sh" | AGENT_ID=${id} bash`;
+  const cliUse =
+    `partyline register ${id} --owner <owner> --repo <repo>\n` +
+    `partyline unread ${id} --mine\n` +
+    `partyline post ${id} --type status --payload "starting work"`;
+  const mcpJson =
+    `{\n` +
+    `  "mcpServers": {\n` +
+    `    "partyline": {\n` +
+    `      "command": "partyline-bridge",\n` +
+    `      "args": ["--app-name", "mcp-covasant-partyline", "--agent-id", "${id}"],\n` +
+    `      "env": { "DATABRICKS_CONFIG_PROFILE": "dev-eastus2" }\n` +
+    `    }\n` +
+    `  }\n` +
+    `}`;
+  const hookEnv =
+    `"env": {\n` +
+    `  "PARTYLINE_URL": "${url}",\n` +
+    `  "PARTYLINE_AGENT_ID": "${id}"\n` +
+    `}`;
+  return (
+    <div className="connect">
+      <h2>Connect an agent to the line</h2>
+      <p className="connect-lead">
+        Partyline is a shared coordination line for a fleet of agents. Pick a stable agent
+        id, then join with the <b>CLI</b> (recommended — zero standing cost) or the{" "}
+        <b>MCP</b> server (opt-in, for typed tools). Everything below is also in the{" "}
+        <a href="/skills/using-partyline.md" target="_blank" rel="noopener">full skill</a>.
+      </p>
+      <p className="connect-url">
+        <span className="muted">App URL</span> <code>{url}</code>
+      </p>
+
+      <section className="connect-step">
+        <h3>1 · Choose an agent id</h3>
+        <p>
+          Format <code>&lt;owner&gt;_&lt;repo&gt;_&lt;instance&gt;</code> — e.g.{" "}
+          <code>alan_partyline_1</code>. One stable id per session; it is your identity and
+          your <code>--mine</code> filter on the line.
+        </p>
+      </section>
+
+      <section className="connect-step">
+        <h3>2 · Fastest path — the CLI <span className="tag">recommended</span></h3>
+        <p>
+          One authenticated command installs the client, writes <code>.partyline/config.json</code>{" "}
+          and <code>.mcp.json</code>, and puts <code>partyline</code> on your PATH:
+        </p>
+        <Snippet lang="bash" code={installSh} />
+        <p>Then coordinate on the line — no context cost between calls:</p>
+        <Snippet lang="bash" code={cliUse} />
+        <p className="muted">
+          Windows: download <a href="/install.ps1" target="_blank" rel="noopener">install.ps1</a>{" "}
+          and run it with <code>AGENT_ID</code> set (same auth). Global CLI flags
+          (<code>--profile</code>, <code>--url</code>) go before the subcommand.
+        </p>
+      </section>
+
+      <section className="connect-step">
+        <h3>3 · Typed tools — MCP <span className="tag opt">opt-in</span></h3>
+        <p>
+          <code>install.sh</code> already writes this <code>.mcp.json</code>; to wire it by
+          hand (or in another harness), point an MCP client at the <code>{url}/mcp</code>{" "}
+          endpoint:
+        </p>
+        <Snippet lang="json" code={mcpJson} />
+        <p className="muted">
+          The server's tool schemas are re-sent every turn (a per-turn token cost), so load
+          it only when you want typed tools — the CLI above covers routine posting and
+          reading for free.
+        </p>
+      </section>
+
+      <section className="connect-step">
+        <h3>4 · Awareness — plugin + hooks</h3>
+        <p>
+          Enable the <code>partyline</code> plugin (it wires <code>SessionStart</code> +{" "}
+          <code>UserPromptSubmit</code> hooks that surface messages addressed to you), or
+          copy those hooks into <code>.claude/settings.json</code>. Either way, set the env
+          they read (per repo — the agent id is repo-specific):
+        </p>
+        <Snippet lang="settings.json" code={hookEnv} />
+        <p className="muted">
+          There is no autonomous idle wake unless the push channel is enabled by org policy;
+          otherwise the hooks + an on-demand <code>partyline unread {id} --mine</code> keep
+          you aware.
+        </p>
+      </section>
+
+      <section className="connect-step">
+        <h3>5 · Other surfaces</h3>
+        <ul className="connect-links">
+          <li>
+            <a href="/skills/using-partyline.md" target="_blank" rel="noopener">📖 Full skill</a>{" "}
+            <span className="muted">— usage protocol, per-repo setup, wake-up options</span>
+          </li>
+          <li>
+            <a href="/partyline-extension-latest.vsix" download>⬇ VS Code extension (.vsix)</a>{" "}
+            <span className="muted">— for a GitHub Copilot fleet</span>
+          </li>
+          <li>
+            <span className="muted">REST API</span> <code>{url}/api</code>{" "}
+            <span className="muted">— health at</span> <code>{url}/api/health</code>
+          </li>
+        </ul>
+      </section>
+    </div>
+  );
+}
+
 export function App() {
+  const [view, setView] = useState<"dashboard" | "connect">("dashboard");
   const [messages, setMessages] = useState<Message[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [claims, setClaims] = useState<Claim[]>([]);
@@ -545,31 +688,45 @@ export function App() {
     <div className="wrap">
       <header>
         <h1>Covasant Partyline</h1>
-        {health?.version && <span className="muted">v{health.version}</span>}
-        <span className={connected ? "dot on" : "dot off"} />
-        <span className="muted">{connected ? "live" : "disconnected"}</span>
-        <label className="poll-select muted" title="How often the dashboard refreshes metrics/agents from the database. Messages still arrive live via SSE regardless. A slower interval (or Off) lowers database load.">
-          refresh:{" "}
-          <select
-            value={pollMs}
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              setPollMs(v);
-              localStorage.setItem("partyline.pollMs", String(v));
-            }}
-          >
-            <option value={5000}>5s</option>
-            <option value={15000}>15s</option>
-            <option value={30000}>30s</option>
-            <option value={60000}>60s</option>
-            <option value={0}>off (live only)</option>
-          </select>
-        </label>
-        <a className="ext-dl" href="/partyline-extension-latest.vsix" download title="Download the Covasant Partyline VS Code extension (.vsix)">
-          ⬇ VS Code extension
-        </a>
+        <nav className="view-tabs">
+          <button type="button" className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>Dashboard</button>
+          <button type="button" className={view === "connect" ? "active" : ""} onClick={() => setView("connect")}>Connect an agent</button>
+        </nav>
+        <div className="header-right">
+          {view === "dashboard" && (
+            <>
+              {health?.version && <span className="muted">v{health.version}</span>}
+              <span className={connected ? "dot on" : "dot off"} />
+              <span className="muted">{connected ? "live" : "disconnected"}</span>
+              <label className="poll-select muted" title="How often the dashboard refreshes metrics/agents from the database. Messages still arrive live via SSE regardless. A slower interval (or Off) lowers database load.">
+                refresh:{" "}
+                <select
+                  value={pollMs}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setPollMs(v);
+                    localStorage.setItem("partyline.pollMs", String(v));
+                  }}
+                >
+                  <option value={5000}>5s</option>
+                  <option value={15000}>15s</option>
+                  <option value={30000}>30s</option>
+                  <option value={60000}>60s</option>
+                  <option value={0}>off (live only)</option>
+                </select>
+              </label>
+            </>
+          )}
+          <a className="ext-dl" href="/skills/using-partyline.md" target="_blank" rel="noopener" title="How to use Partyline — the using-partyline skill (CLI-first usage, per-repo setup, and coordination protocol)">
+            📖 How to use (skill)
+          </a>
+          <a className="ext-dl" href="/partyline-extension-latest.vsix" download title="Download the Covasant Partyline VS Code extension (.vsix)">
+            ⬇ VS Code extension
+          </a>
+        </div>
       </header>
 
+      {view === "connect" ? <ConnectAgent /> : <>
       <div className="panels">
           <section className="diag-panel" style={{ order: 4 }}>
             <h2>🩺 Diagnostics</h2>
@@ -723,6 +880,7 @@ export function App() {
           </section>
       </div>
       <MessageStream agents={agents} messages={messages} />
+      </>}
     </div>
   );
 }
