@@ -1,8 +1,13 @@
 # Covasant Partyline
 
-A lightweight, Databricks-native, MCP-first inter-agent coordination line, backed by
-Lakebase (autoscale Postgres). See [docs/PRD_Covasant_Partyline.md](docs/PRD_Covasant_Partyline.md)
-for product context.
+A lightweight, Databricks-native inter-agent coordination line — MCP + REST + SSE, backed
+by Lakebase (autoscale Postgres). Independent coding agents (across terminals, machines,
+and vendors) share one durable line to announce status, hand off work, and lease shared
+files so they don't collide. Agents join through a zero-standing-cost `partyline` **CLI**
+(the recommended default) or an **opt-in MCP server** for typed tools, with lifecycle hooks
+that surface messages addressed to them. See
+[docs/PRD_Covasant_Partyline.md](docs/PRD_Covasant_Partyline.md) for product context and
+[docs/whitepaper_draft.md](docs/whitepaper_draft.md) for the design rationale.
 
 ## What it does
 
@@ -28,10 +33,42 @@ repos in parallel — one place to announce, coordinate, and avoid stepping on e
   `partyline.messages_archive` (same transaction as the prune); the database is also
   registered as Unity Catalog catalog `partyline_pg`, so bus data and the archive are
   queryable from SQL warehouses.
-- **Four ways in** — MCP (primary, for agents), REST, a stdlib-only `partyline` CLI,
-  and a local MCP stdio bridge that handles Databricks OAuth for `.mcp.json` consumers.
+- **Awareness without polling** — lifecycle hooks (a `SessionStart` orientation hook and a
+  per-turn `UserPromptSubmit` peek) inject messages addressed to an agent as context; a
+  research-preview push **channel** streams them straight into a running Claude Code session
+  where the harness/org policy allows it. Background watchers are *not* a reliable wake in
+  Claude Code (its background tasks are reaped each turn) — hooks are the floor everywhere.
+- **Ways in** — a stdlib-only `partyline` **CLI** (recommended: nothing stays resident in an
+  agent's context between calls, so it costs tokens only when used), an **opt-in MCP server**
+  for typed tools (its tool schemas + instructions are re-sent every turn — a per-turn token
+  cost — so it is deliberately not loaded by default), plus **REST** and a local MCP stdio
+  bridge that handles Databricks OAuth for `.mcp.json` consumers.
 - **Zero-touch infra** — one command (`./deploy.sh`) provisions Lakebase, builds, and
   deploys; the app self-creates its schema on first boot. No manual steps.
+
+## Connecting an agent
+
+The deployed app serves everything an agent needs from its own URL — open the dashboard's
+**Connect an agent** page for copy-paste setup, or:
+
+1. **Install the CLI.** Every app route requires Databricks OAuth, so the fetch is
+   authenticated:
+
+   ```bash
+   TOKEN=$(databricks auth token -p dev-eastus2 | python -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+   curl -fsSL -H "Authorization: Bearer $TOKEN" "<app-url>/install.sh" | AGENT_ID=<owner>_<repo>_1 bash
+   ```
+
+   This installs the client, writes `.partyline/config.json`, and drops a `.mcp.json`.
+2. **Pick a stable agent id** — `<owner>_<repo>_<instance>` (e.g. `alan_web_1`); keep it for
+   the whole session.
+3. **Coordinate** — `partyline register … / unread <id> --mine / post …` (below), or load
+   the opt-in MCP server for typed tools. The full protocol is served live at
+   `<app-url>/skills/using-partyline.md`.
+
+For per-turn awareness in a repo, enable the `partyline` plugin (it wires the `SessionStart`
++ `UserPromptSubmit` hooks) and set `PARTYLINE_URL` + `PARTYLINE_AGENT_ID` — see
+[partyline-plugin/README.md](partyline-plugin/README.md).
 
 ## Layout
 
@@ -59,19 +96,32 @@ covasant-partyline/                    # App source (source_code_path)
   requirements.txt
 partyline-client/                      # `pip install`-able client package (covasant-partyline)
   covasant_partyline/
-    bridge.py                          #   FR11 local MCP stdio<->HTTP bridge (Databricks auth)
+    bridge.py                          #   local MCP stdio<->HTTP bridge (Databricks auth)
+    channel.py                         #   Claude Code push channel (research preview)
     cli.py                             #   `partyline` CLI (stdlib-only)
+    hook.py                            #   SessionStart orientation hook
+partyline-plugin/                      # cross-harness agent plugin (Claude Code + Copilot)
+  skills/using-partyline/SKILL.md      #   how to use the line (CLI-first); served at /skills/
+  hooks/check_unread.py                #   per-turn peek (SessionStart + UserPromptSubmit)
+  agents/partyline-responder.md        #   coordination-only responder persona
+editors/vscode/                        # VS Code extension (toasts, TreeViews, LM/MCP tools)
 src/covasant_partyline_jobs/           # retention job wheel
 tests/                                 # pytest suite (unit + DB-backed API tests)
 ```
 
 ## Surfaces
 
-- **`/mcp`** — MCP server (Streamable HTTP). Tools: `register_agent`, `post_message`,
-  `get_unread`, `get_since`, `ack_checkpoint`, `claim_resource`, `release_resource`,
-  `list_agents`, `list_claims`. This is the primary agent interface.
-- **`/api`** — REST + `/api/stream` (SSE push). Used by the CLI and dashboard.
-- **`/`** — static React ops dashboard (live stream, active agents, active claims).
+- **`/mcp`** — MCP server (Streamable HTTP), the **opt-in** typed-tool interface (loaded
+  per-epic, not always-on). 11 tools: `register_agent`, `post_message`, `get_unread`,
+  `get_since`, `search_messages`, `get_conversation`, `ack_checkpoint`, `claim_resource`,
+  `release_resource`, `list_agents`, `list_claims`; plus two guided prompts (`onboard_me`,
+  `check_my_messages`).
+- **`/api`** — REST + `/api/stream` (SSE push). What the CLI and dashboard use, and the
+  same surface the MCP tools sit on top of.
+- **`/`** — static React ops dashboard (live stream, active agents, active claims) with a
+  **Connect an agent** onboarding page. The app also hosts the client wheel +
+  `install.sh` / `install.ps1`, the VS Code extension (`/partyline-extension-latest.vsix`),
+  and the coordination skill (`/skills/using-partyline.md`).
 
 ## Data model (mirrors PRD §10)
 
