@@ -91,10 +91,14 @@ function resolveConfig(): PartylineConfig {
 }
 
 /**
- * Attempt to get a Databricks auth token via CLI.
- * Falls back to empty string if CLI is unavailable.
+ * Attempt to get a Databricks auth token (and its expiry) via CLI.
+ * Falls back to an empty token / null expiry if the CLI is unavailable.
+ *
+ * The `expiry` is what lets refresh be scheduled from the token's *actual* remaining
+ * life: `databricks auth token` returns a cached token whose life may be far less than
+ * the ~1h nominal TTL, so a fixed timer can miss it. See scheduleTokenRefresh.
  */
-async function getDatabricksToken(profile?: string): Promise<string> {
+async function getTokenAndExpiry(profile?: string): Promise<{ token: string; expiryMs: number | null }> {
   return new Promise((resolve) => {
     const args = ["auth", "token"];
     if (profile) { args.push("-p", profile); }
@@ -103,20 +107,69 @@ async function getDatabricksToken(profile?: string): Promise<string> {
         diagnosticsChannel.appendLine(
           `[${new Date().toISOString()}] [token] databricks auth token failed: ${err.message}`
         );
-        resolve("");
+        resolve({ token: "", expiryMs: null });
         return;
       }
       try {
         const parsed = JSON.parse(stdout);
-        resolve(parsed.access_token || "");
+        const parsedExpiry = parsed.expiry ? Date.parse(parsed.expiry) : NaN;
+        resolve({
+          token: parsed.access_token || "",
+          expiryMs: Number.isNaN(parsedExpiry) ? null : parsedExpiry,
+        });
       } catch {
         diagnosticsChannel.appendLine(
           `[${new Date().toISOString()}] [token] Failed to parse databricks CLI output`
         );
-        resolve("");
+        resolve({ token: "", expiryMs: null });
       }
     });
   });
+}
+
+/** Back-compat wrapper: just the token (for the initial acquire path). */
+async function getDatabricksToken(profile?: string): Promise<string> {
+  return (await getTokenAndExpiry(profile)).token;
+}
+
+/**
+ * Delay (ms) until the next token refresh, from the token's actual expiry: refresh
+ * MARGIN before it expires, clamped to [MIN, MAX]. A fixed 45-min interval used to miss
+ * cached tokens with <45 min of life, so the SSE stream died at the real expiry. Unknown
+ * expiry → a conservative default well under the ~1h TTL.
+ */
+function nextTokenRefreshDelayMs(expiryMs: number | null): number {
+  const MIN = 60_000;              // never busy-loop
+  const MAX = 45 * 60_000;         // backstop cap
+  const MARGIN = 5 * 60_000;       // refresh 5 min before expiry
+  const DEFAULT = 20 * 60_000;     // unknown expiry → conservative
+  if (!expiryMs) { return DEFAULT; }
+  return Math.max(MIN, Math.min(MAX, expiryMs - Date.now() - MARGIN));
+}
+
+/**
+ * Self-rescheduling token refresh: re-mint, push to the client, then schedule the next
+ * refresh from the *new* token's expiry. Replaces the old fixed 45-min setInterval.
+ */
+function scheduleTokenRefresh(profile: string | undefined, delayMs: number) {
+  tokenRefreshTimer = setTimeout(async () => {
+    const { token: freshToken, expiryMs } = await getTokenAndExpiry(profile);
+    if (freshToken && client) {
+      client.updateToken(freshToken);
+      diagnosticsChannel.appendLine(
+        `[${new Date().toISOString()}] [token] Refreshed token from Databricks CLI` +
+        (expiryMs ? ` (expires ${new Date(expiryMs).toISOString()})` : "")
+      );
+      diagnosticsProvider.setToken(`Databricks CLI (${profile}) · refreshed`);
+      diagnosticsProvider.pushEvent("token", "refreshed from Databricks CLI");
+    } else {
+      diagnosticsChannel.appendLine(
+        `[${new Date().toISOString()}] [token] Refresh failed (no token from CLI); will retry`
+      );
+    }
+    // Reschedule from the fresh token's expiry (or a short default if the refresh failed).
+    scheduleTokenRefresh(profile, nextTokenRefreshDelayMs(expiryMs));
+  }, delayMs);
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -224,11 +277,14 @@ async function connect(
   );
 
   // Auto-acquire token from Databricks CLI if none configured
+  let initialExpiryMs: number | null = null;
   if (!token) {
     diagnosticsChannel.appendLine(
       `[${new Date().toISOString()}] [token] No token configured, attempting databricks auth token -p ${profile}`
     );
-    token = await getDatabricksToken(profile);
+    const acquired = await getTokenAndExpiry(profile);
+    token = acquired.token;
+    initialExpiryMs = acquired.expiryMs;  // seed refresh from the token's real remaining life
     if (!token) {
       vscode.window.showWarningMessage(
         "Partyline: No token available. Set partyline.token, PARTYLINE_TOKEN env, or ensure `databricks` CLI is on PATH."
@@ -259,18 +315,9 @@ async function connect(
     diagnosticsProvider.setResponder(`on · ${m.replace(/^\[responder\]\s*/, "").slice(0, 60)}`);
   });
 
-  // Schedule token refresh every 45 minutes (tokens expire ~1hr)
-  tokenRefreshTimer = setInterval(async () => {
-    const freshToken = await getDatabricksToken(profile);
-    if (freshToken && client) {
-      client.updateToken(freshToken);
-      diagnosticsChannel.appendLine(
-        `[${new Date().toISOString()}] [token] Refreshed token from Databricks CLI`
-      );
-      diagnosticsProvider.setToken(`Databricks CLI (${profile}) · refreshed`);
-      diagnosticsProvider.pushEvent("token", "refreshed from Databricks CLI");
-    }
-  }, 45 * 60 * 1000);
+  // Refresh the token before it expires, scheduled from its actual remaining life (not a
+  // fixed 45-min guess that could miss a short-lived cached token — the ~1h drop bug).
+  scheduleTokenRefresh(profile, nextTokenRefreshDelayMs(initialExpiryMs));
 
   client.onMessage((msg) => {
     messagesProvider.addMessage(msg);
@@ -352,7 +399,7 @@ async function connect(
 
 function disconnect() {
   if (tokenRefreshTimer) {
-    clearInterval(tokenRefreshTimer);
+    clearTimeout(tokenRefreshTimer);  // self-rescheduling setTimeout (was setInterval)
     tokenRefreshTimer = undefined;
   }
   if (activeMetricsProvider) {

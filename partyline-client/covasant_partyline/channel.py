@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import sys
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
@@ -76,6 +77,14 @@ class Settings:
     agent_id: str
     url: str
     token: str | None
+    profile: str | None = None  # CLI profile for re-minting the token on each reconnect
+
+
+def current_token(settings: "Settings") -> str | None:
+    """A fresh bearer token for the next (re)connect / reply — re-minted per call so the
+    stream survives Databricks OAuth expiry (~1h). Delegates to cli.resolve_stream_token;
+    settings.token is only the fallback when the profile mint is unavailable."""
+    return cli.resolve_stream_token(settings.url, settings.profile, settings.token)
 
 
 # --------------------------------------------------------------------------- #
@@ -164,7 +173,7 @@ def build_server(settings: "Settings"):
             raise ValueError(f"unknown tool: {name}")
         out = post_reply(
             settings.url,
-            settings.token,
+            current_token(settings),  # fresh token — a reply an hour in must not 401 on a stale one
             settings.agent_id,
             arguments["message_type"],
             arguments["payload"],
@@ -209,8 +218,11 @@ def resolve_settings(argv=None) -> "Settings":
     if not agent_id:
         raise SystemExit("partyline-channel: set --agent-id or PARTYLINE_AGENT_ID")
     url = a.url or os.getenv("PARTYLINE_URL") or cfg.get("url") or "http://localhost:8000"
-    token = os.getenv("PARTYLINE_TOKEN")
-    if not token and not url.startswith("http://localhost"):
+    # Resolve the profile even when PARTYLINE_TOKEN is set: it's what lets the stream
+    # re-mint a fresh token on every reconnect (Settings.profile → current_token), which
+    # is the fix for the ~1h expiry drops. Only a localhost app stays profile-less.
+    profile = None
+    if not url.startswith("http://localhost"):
         profile = (
             a.profile
             or cfg.get("databricksProfile")
@@ -218,21 +230,28 @@ def resolve_settings(argv=None) -> "Settings":
             or os.getenv("DATABRICKS_CONFIG_PROFILE")
             or "dev-eastus2"
         )
-        token = cli._mint_token(profile)
-    return Settings(agent_id=agent_id, url=url, token=token)
+    token = os.getenv("PARTYLINE_TOKEN") or (cli._mint_token(profile) if profile else None)
+    return Settings(agent_id=agent_id, url=url, token=token, profile=profile)
 
 
 async def _subscribe_and_push(settings: "Settings", write_stream) -> None:
     """Read /api/stream in a worker thread; push each addressed message to the session.
-    Reconnects with backoff on error; never raises out (that would kill the stdio server)."""
+    Reconnects with backoff on error; never raises out (that would kill the stdio server).
+
+    The token is re-minted per connection (not captured once), so the stream survives
+    Databricks OAuth expiry (~1h) instead of 401'ing forever on a stale token."""
     stream_url = settings.url.rstrip("/") + "/api/stream"
-    headers = {"Accept": "text/event-stream"}
-    if settings.token:
-        headers["Authorization"] = f"Bearer {settings.token}"
 
     def _read_once():
+        # Fresh token every (re)connect — this is what keeps the stream alive past ~1h.
+        headers = {"Accept": "text/event-stream"}
+        token = current_token(settings)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         req = urllib.request.Request(stream_url, headers=headers)
         with urllib.request.urlopen(req, timeout=90) as resp:
+            log.info("SSE connected url=%s agent=%s authenticated=%s",
+                     stream_url, settings.agent_id, bool(token))
             for msg in iter_data_events(line.decode(errors="replace") for line in resp):
                 if addressed_to_me(msg, settings.agent_id):
                     # Hop back to the event loop to send on the anyio stream.
@@ -241,8 +260,19 @@ async def _subscribe_and_push(settings: "Settings", write_stream) -> None:
     while True:
         try:
             await anyio.to_thread.run_sync(_read_once)
+            log.info("SSE stream ended cleanly (server side); reconnecting in 2s")
+        except urllib.error.HTTPError as exc:
+            # Distinguish auth failure (expired/invalid token — the classic ~1h drop) from
+            # other HTTP errors, so logs point straight at the cause. current_token()
+            # re-mints on the next loop, so a genuine expiry self-heals from here.
+            if exc.code in (401, 403):
+                log.warning("SSE auth rejected HTTP %s (token expired/invalid?); "
+                            "re-minting and reconnecting in 2s", exc.code)
+            else:
+                log.warning("SSE HTTP error %s; reconnecting in 2s", exc.code)
+            await anyio.sleep(2)
         except Exception as exc:  # transient network error / stream end — reconnect
-            log.warning("stream error (%s); reconnecting in 2s", exc)
+            log.warning("SSE stream error (%s); reconnecting in 2s", exc)
             await anyio.sleep(2)
 
 

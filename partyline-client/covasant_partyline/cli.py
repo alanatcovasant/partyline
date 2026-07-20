@@ -138,16 +138,19 @@ def cmd_watch(a: argparse.Namespace) -> None:
     import time
 
     url = a.url.rstrip("/") + "/api/stream"
-    headers = {"Accept": "text/event-stream"}
-    token = os.getenv("PARTYLINE_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     deadline = time.monotonic() + a.timeout if a.timeout else None
     if not a.exit_on_mention:
         print(f"watching {url} (Ctrl-C to stop)")
 
     try:
         while deadline is None or time.monotonic() < deadline:
+            # Re-mint the token on every (re)connect so the stream survives Databricks
+            # OAuth expiry (~1h). Capturing it once — as this used to — meant that once
+            # the token expired, every reconnect 401'd forever and the watcher went deaf.
+            headers = {"Accept": "text/event-stream"}
+            token = resolve_stream_token(a.url, getattr(a, "profile", None), os.getenv("PARTYLINE_TOKEN"))
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
             req = urllib.request.Request(url, headers=headers)
             try:
                 with urllib.request.urlopen(req, timeout=_WATCH_READ_TIMEOUT) as resp:
@@ -172,6 +175,14 @@ def cmd_watch(a: argparse.Namespace) -> None:
                 # Stream closed cleanly (server side) — reconnect until the deadline.
             except (TimeoutError, socket.timeout):
                 continue  # idle/dead socket — reconnect (never hang)
+            except urllib.error.HTTPError as e:
+                # 401/403 = expired/invalid token — the classic ~1h drop. The next loop
+                # iteration re-mints, so this self-heals; surface it clearly meanwhile.
+                if not a.exit_on_mention:
+                    hint = " — token expired/invalid, re-minting" if e.code in (401, 403) else ""
+                    print(f"reconnecting after HTTP {e.code}{hint}", file=sys.stderr, flush=True)
+                time.sleep(2)
+                continue
             except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
                 # Any transient connect/stream failure — DNS blip, reset, half-open socket
                 # (ConnectionResetError/IncompleteRead are OSError/HTTPException, not
@@ -237,6 +248,30 @@ def _mint_token(profile: str) -> str | None:
         return json.loads(out).get("access_token")
     except (OSError, subprocess.SubprocessError, ValueError, KeyError):
         return None
+
+
+def resolve_stream_token(url: str, profile: str | None, fallback: str | None = None) -> str | None:
+    """A *fresh* bearer token for a (re)connect on a long-lived stream.
+
+    Databricks OAuth tokens live ~1h (and the CLI hands out a *cached* token whose
+    remaining life may be far less), so a token captured once and reused on every
+    reconnect is why SSE connections silently died after "an hour or so, maybe less":
+    once it expired, the Apps auth proxy 401'd every reconnect forever. Call this once
+    per (re)connect instead:
+
+      - prefer re-minting from the CLI profile (``databricks auth token`` auto-refreshes
+        from its cache, so this is cheap and always current);
+      - fall back to PARTYLINE_TOKEN / the initial token when there is no profile or the
+        CLI mint fails (e.g. no databricks CLI on the box);
+      - stay tokenless for a localhost app (unauthenticated dev server).
+    """
+    if url.startswith("http://localhost"):
+        return None
+    if profile:
+        minted = _mint_token(profile)
+        if minted:
+            return minted
+    return os.getenv("PARTYLINE_TOKEN") or fallback
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -334,10 +369,14 @@ def main(argv: list[str] | None = None) -> None:
     # app-specific config profile wins over the ambient DATABRICKS_CONFIG_PROFILE (which
     # often targets another workspace and would 401). Local apps need no token.
     is_local = args.url.startswith(("http://localhost", "http://127."))
-    if not os.getenv("PARTYLINE_TOKEN") and not is_local:
-        profile = (args.profile or cfg.get("databricksProfile")
-                   or os.getenv("DATABRICKS_CONFIG_PROFILE") or "dev-eastus2")
-        token = _mint_token(profile)
+    # Resolve the profile for remote apps even when PARTYLINE_TOKEN is already set: it's
+    # what lets the long-lived `watch` stream re-mint a fresh token on each reconnect
+    # (resolve_stream_token) instead of dying when the initial token expires (~1h).
+    args.profile = None if is_local else (
+        args.profile or cfg.get("databricksProfile")
+        or os.getenv("DATABRICKS_CONFIG_PROFILE") or "dev-eastus2")
+    if not os.getenv("PARTYLINE_TOKEN") and args.profile:
+        token = _mint_token(args.profile)
         if token:
             os.environ["PARTYLINE_TOKEN"] = token
 
