@@ -1,14 +1,15 @@
 {
   "mcpServers": {
-    "partyline": {
-      "command": "python",
-      "args": ["-m", "covasant_partyline.bridge", "--app-name", "mcp-covasant-partyline"],
-      "env": { "DATABRICKS_CONFIG_PROFILE": "dev-eastus2" }
-    },
     "partyline-channel": {
       "command": "python",
-      "args": ["-m", "covasant_partyline.channel"],
-      "env": { "DATABRICKS_CONFIG_PROFILE": "dev-eastus2" }
+      "args": [
+        "-m",
+        "covasant_partyline.channel"
+      ],
+      "env": {
+        "DATABRICKS_CONFIG_PROFILE": "dev-eastus2",
+        "PARTYLINE_AGENT_ID": "alan_partyline_1"
+      }
     }
   }
 }
