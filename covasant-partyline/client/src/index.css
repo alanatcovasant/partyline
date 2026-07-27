@@ -44,6 +44,15 @@ header .poll-select select {
 .msg-details { margin-top: 0.2rem; }
 .msg-details > summary { cursor: pointer; font-size: 0.8em; list-style: revert; }
 .msg-details[open] > summary { margin-bottom: 0.2rem; }
+/* Full persisted-record disclosure: collapsed by default, spans its own row. */
+.msg-fields { flex-basis: 100%; margin: 0.1rem 0 0.2rem; }
+.msg-fields > summary { cursor: pointer; font-size: 0.8em; list-style: revert; }
+.msg-fields[open] > summary { margin-bottom: 0.3rem; }
+.msg-fields-grid { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 0.1rem 0.6rem; }
+.msg-field { display: contents; }
+.msg-field dt { font-size: 0.78em; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.msg-field dd { margin: 0; font-size: 0.82em; word-break: break-word; }
+.msg-field dd.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 /* Message + conversation ids on each row. */
 .msg-ids { display: inline-flex; gap: 0.5rem; align-items: center; margin-left: 0.4rem; font-size: 0.8em; }
 .conv-id {

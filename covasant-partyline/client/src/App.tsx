@@ -7,11 +7,18 @@ type Message = {
   message_type: string;
   recipient?: string | null;
   repo?: string | null;
+  branch?: string | null;
   resource_path?: string | null;
+  issue_ref?: string | null;
   summary?: string | null;
   payload?: string | null;
+  metadata?: Record<string, unknown> | null;
+  mentions?: string[] | null;
+  reply_to_id?: number | null;
   conversation_id?: string | null;
   created_at: string;
+  event_time?: string | null;
+  received_at?: string | null;
 };
 // Search hits and conversation rows are Messages plus a source tag (live|archive).
 type SearchHit = Message & { source?: string };
@@ -129,6 +136,65 @@ function MsgBody({ m }: { m: Message }) {
     );
   }
   return payload ? <code>{payload}</code> : null;
+}
+
+// Every column stored on a message row, in schema order. Rendered inside <MsgFields/> so
+// the dashboard can show the FULL persisted record (issue_ref, branch, metadata, the three
+// clocks, …) that the compact row line omits. Kept as data so the disclosure stays a simple
+// map — add a column here and to the Message type and it shows up automatically.
+const MSG_FIELDS: Array<{ key: keyof Message; label: string }> = [
+  { key: "id", label: "id" },
+  { key: "conversation_id", label: "conversation_id" },
+  { key: "reply_to_id", label: "reply_to_id" },
+  { key: "message_type", label: "message_type" },
+  { key: "agent_id", label: "agent_id" },
+  { key: "author", label: "author" },
+  { key: "recipient", label: "recipient" },
+  { key: "mentions", label: "mentions" },
+  { key: "repo", label: "repo" },
+  { key: "branch", label: "branch" },
+  { key: "resource_path", label: "resource_path" },
+  { key: "issue_ref", label: "issue_ref" },
+  { key: "summary", label: "summary" },
+  { key: "payload", label: "payload" },
+  { key: "metadata", label: "metadata" },
+  { key: "created_at", label: "created_at" },
+  { key: "event_time", label: "event_time" },
+  { key: "received_at", label: "received_at" },
+];
+
+// Render one field's value as display text; null/empty → em dash, arrays/objects → JSON.
+function fieldValue(v: unknown): { text: string; empty: boolean } {
+  if (v === null || v === undefined || v === "") return { text: "—", empty: true };
+  if (Array.isArray(v)) return v.length ? { text: v.join(", "), empty: false } : { text: "—", empty: true };
+  if (typeof v === "object") {
+    const keys = Object.keys(v as object);
+    return keys.length ? { text: JSON.stringify(v), empty: false } : { text: "—", empty: true };
+  }
+  return { text: String(v), empty: false };
+}
+
+// Collapsed-by-default disclosure exposing every persisted field of a message. The compact
+// stream line only shows a handful (type, agent, recipient, repo, body); this reveals the
+// rest of the DB row on demand without another fetch — the REST layer already returns all
+// columns (see _MSG_COLS in db.py), the client just wasn't surfacing them.
+function MsgFields({ m }: { m: Message }) {
+  return (
+    <details className="msg-fields">
+      <summary className="muted">all fields</summary>
+      <dl className="msg-fields-grid">
+        {MSG_FIELDS.map(({ key, label }) => {
+          const { text, empty } = fieldValue(m[key]);
+          return (
+            <div key={key} className="msg-field">
+              <dt>{label}</dt>
+              <dd className={empty ? "muted" : "mono"}>{text}</dd>
+            </div>
+          );
+        })}
+      </dl>
+    </details>
+  );
 }
 
 const MESSAGE_TYPES = [
@@ -412,6 +478,7 @@ function MessageStream({ agents, messages }: { agents: Agent[]; messages: Messag
             {m.recipient && <span className="muted"> → {m.recipient}</span>}
             {m.repo && <span className="muted"> [{m.repo}{m.resource_path ? `:${m.resource_path}` : ""}]</span>}
             <MsgBody m={m} />
+            <MsgFields m={m} />
             <span className="msg-ids muted">
               <span title={`message id ${m.id}`}>#{m.id}</span>
               {m.conversation_id && (
