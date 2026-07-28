@@ -25,9 +25,9 @@ from databricks.sdk.service import postgres as pg
 # Autoscale endpoint capacity (CU). Small floor for scale-to-zero; modest ceiling for bursts.
 MIN_CU = 0.5
 MAX_CU = 2.0
-# Suspend after 15 min idle (PRD G5/NFR4 cheap-at-rest). The protocol is fail-open, so a
+# Suspend after 5 min idle (PRD G5/NFR4 cheap-at-rest). The protocol is fail-open, so a
 # cold start only delays awareness, never blocks work; agents warm it on first call.
-SUSPEND_SECONDS = 900
+SUSPEND_SECONDS = 300
 PG_VERSION = 17
 
 ENDPOINT_NAME = os.getenv(
