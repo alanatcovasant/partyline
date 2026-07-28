@@ -155,16 +155,40 @@ async def get_since(after_id: int, limit: int = 500) -> list[dict]:
 
 
 @mcp.tool()
-async def search_messages(query: str, limit: int = 50) -> list[dict]:
-    """Full-text search across the whole line's history (live + archived).
+async def search_messages(
+    query: str = "",
+    limit: int = 50,
+    message_type: str | None = None,
+    agent_id: str | None = None,
+    author: str | None = None,
+    recipient: str | None = None,
+    mention: str | None = None,
+    repo: str | None = None,
+    branch: str | None = None,
+    resource_path: str | None = None,
+    issue_ref: str | None = None,
+    conversation_id: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[dict]:
+    """Search the whole line's history (live + archived), filtered by any field.
 
-    Inspect what happened without scrolling: `query` supports quoted phrases, OR, and
-    -exclusions (websearch syntax). Results are ranked by relevance then recency; each
-    hit carries `conversation_id` (pass to get_conversation for the full thread) and a
-    `source` (live|archive).
+    `query` is full-text over summary+payload (quoted phrases, OR, -exclude — websearch
+    syntax) and is optional, so this can be a pure structured filter. Every other arg is
+    an exact-match filter on that column, AND-combined. `conversation_id` and `issue_ref`
+    are the two common pivots ("everything in this thread" / "everything for this GH
+    issue"). Results are ranked by relevance then recency; each hit carries
+    `conversation_id` (pass to get_conversation for the full thread) and a `source`
+    (live|archive).
     """
-    log.info("search_messages query=%.60r limit=%s", query, limit)
-    rows = await run_in_threadpool(db.search_messages, query, limit)
+    log.info("search_messages query=%.60r limit=%s filters=%s", query, limit,
+             {k: v for k, v in dict(message_type=message_type, agent_id=agent_id,
+              repo=repo, issue_ref=issue_ref, conversation_id=conversation_id).items() if v})
+    rows = await run_in_threadpool(
+        db.query_messages,
+        query, message_type, agent_id, author, recipient, mention, repo, branch,
+        resource_path, issue_ref, conversation_id, since, until, limit,
+    )
     log.info("search_messages OK returned=%s", len(rows))
     return rows
 

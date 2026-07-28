@@ -75,3 +75,14 @@ async def test_query_limit_respected(client):
         await _post(client, "qm_limit", repo="qm_limit_repo", payload=f"m{i}")
     rows = db.query_messages(repo="qm_limit_repo", limit=2)
     assert len(rows) == 2
+
+
+@pytest.mark.anyio
+async def test_mcp_search_messages_accepts_filters(client):
+    """The MCP tool delegates to query_messages and accepts structured filters."""
+    from app import mcp_server
+
+    tag = uuid.uuid4().hex[:8]
+    posted = await _post(client, "mcp_filter_agent", issue_ref=tag, payload="mcp-filtered")
+    rows = await mcp_server.search_messages(issue_ref=tag)
+    assert posted["id"] in [r["id"] for r in rows]
