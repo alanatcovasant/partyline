@@ -300,26 +300,53 @@ function Compose({ agents }: { agents: Agent[] }) {
 }
 
 /** Search the full line history (live + archived) and pivot any hit to its whole
- *  conversation thread. Backed by /api/search and /api/conversations/{id}. */
+ *  conversation thread. Backed by /api/messages/query and /api/conversations/{id}. */
 function Search() {
   const [q, setQ] = useState("");
+  const [mtype, setMtype] = useState("");
+  const [repo, setRepo] = useState("");
+  const [agent, setAgent] = useState("");
+  const [recipient, setRecipient] = useState("");
+  const [issue, setIssue] = useState("");
+  const [branch, setBranch] = useState("");
+  const [conversation, setConversation] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [thread, setThread] = useState<SearchHit[] | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const anyFilter = [q, mtype, repo, agent, recipient, issue, branch, conversation]
+    .some((v) => v.trim());
+
   async function run(e: React.FormEvent) {
     e.preventDefault();
-    const query = q.trim();
-    if (!query) return;
+    if (!anyFilter) return;
     setBusy(true);
     setThread(null);
+    const params = new URLSearchParams();
+    const add = (k: string, v: string) => v.trim() && params.set(k, v.trim());
+    add("q", q);
+    add("message_type", mtype);
+    add("repo", repo);
+    add("agent_id", agent);
+    add("recipient", recipient);
+    add("issue_ref", issue);
+    add("branch", branch);
+    add("conversation_id", conversation);
+    params.set("limit", "50");
     try {
-      setHits(await getJSON<SearchHit[]>(`/api/search?q=${encodeURIComponent(query)}&limit=50`));
+      setHits(await getJSON<SearchHit[]>(`/api/messages/query?${params.toString()}`));
     } catch {
       setHits([]);
     } finally {
       setBusy(false);
     }
+  }
+
+  function clearAll() {
+    setHits(null);
+    setThread(null);
+    setQ(""); setMtype(""); setRepo(""); setAgent("");
+    setRecipient(""); setIssue(""); setBranch(""); setConversation("");
   }
 
   async function openThread(cid?: string | null) {
@@ -348,14 +375,22 @@ function Search() {
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder='🔎 search history — "quoted phrase", OR, -exclude'
-          aria-label="Search history"
+          placeholder='🔎 text — "quoted phrase", OR, -exclude (summary + payload)'
+          aria-label="Full-text search"
         />
-        <button type="submit" disabled={busy || !q.trim()}>{busy ? "…" : "Search"}</button>
+        <select value={mtype} onChange={(e) => setMtype(e.target.value)} aria-label="Type">
+          <option value="">any type</option>
+          {MESSAGE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="repo" aria-label="repo" />
+        <input value={agent} onChange={(e) => setAgent(e.target.value)} placeholder="agent_id" aria-label="agent_id" />
+        <input value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="recipient" aria-label="recipient" />
+        <input value={issue} onChange={(e) => setIssue(e.target.value)} placeholder="issue_ref" aria-label="issue_ref" />
+        <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="branch" aria-label="branch" />
+        <input value={conversation} onChange={(e) => setConversation(e.target.value)} placeholder="conversation_id" aria-label="conversation_id" />
+        <button type="submit" disabled={busy || !anyFilter}>{busy ? "…" : "Search"}</button>
         {(hits || thread) && (
-          <button type="button" className="ghost" onClick={() => { setHits(null); setThread(null); }}>
-            clear
-          </button>
+          <button type="button" className="ghost" onClick={clearAll}>clear</button>
         )}
       </form>
 
