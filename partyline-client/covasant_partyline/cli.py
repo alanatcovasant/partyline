@@ -19,6 +19,8 @@ Commands:
   release    release a claim you hold
   agents     list active agents (with their last status)
   claims     list active resource claims
+  search     field-filtered search over live + archived history
+  conversation  read a full thread by conversation_id
   watch      stream live messages; --exit-on-mention makes it a wake-up trigger
 
 Examples:
@@ -28,6 +30,9 @@ Examples:
   partyline claim alan_web_1 web src/x.py --branch main --ttl 600
   partyline unread alan_web_1 --mine
   partyline agents
+  partyline search --issue 123 --repo web
+  partyline search -q "pool fix" --type done
+  partyline conversation 3f2a1b4c-...-...
   partyline watch --exit-on-mention alan_web_1 --timeout 3600
 """
 
@@ -122,6 +127,23 @@ def cmd_agents(a: argparse.Namespace) -> None:
 
 def cmd_claims(a: argparse.Namespace) -> None:
     _print(_request("GET", a.url, "/api/claims"))
+
+
+def cmd_search(a: argparse.Namespace) -> None:
+    params = {
+        "q": a.text, "message_type": a.type, "agent_id": a.agent, "author": a.author,
+        "recipient": a.recipient, "mention": a.mention, "repo": a.repo,
+        "branch": a.branch, "resource_path": a.resource, "issue_ref": a.issue,
+        "conversation_id": a.conversation, "since": a.since, "until": a.until,
+        "limit": a.limit,
+    }
+    qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+    _print(_request("GET", a.url, f"/api/messages/query?{qs}"))
+
+
+def cmd_conversation(a: argparse.Namespace) -> None:
+    qs = urllib.parse.urlencode({"limit": a.limit})
+    _print(_request("GET", a.url, f"/api/conversations/{urllib.parse.quote(a.conversation_id)}?{qs}"))
 
 
 def cmd_watch(a: argparse.Namespace) -> None:
@@ -348,6 +370,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("agents", help="List active agents").set_defaults(func=cmd_agents)
     sub.add_parser("claims", help="List active claims").set_defaults(func=cmd_claims)
+
+    sp = sub.add_parser("search", help="Field-filtered search over live + archived history")
+    sp.add_argument("--text", "-q", dest="text", help="Full-text query (summary+payload)")
+    sp.add_argument("--type", dest="type", help="message_type")
+    sp.add_argument("--agent", help="agent_id")
+    sp.add_argument("--author")
+    sp.add_argument("--recipient")
+    sp.add_argument("--mention")
+    sp.add_argument("--repo")
+    sp.add_argument("--branch")
+    sp.add_argument("--resource", help="resource_path")
+    sp.add_argument("--issue", help="issue_ref")
+    sp.add_argument("--conversation", help="conversation_id")
+    sp.add_argument("--since", help="event_time lower bound (ISO-8601)")
+    sp.add_argument("--until", help="event_time upper bound (ISO-8601)")
+    sp.add_argument("--limit", type=int, default=50)
+    sp.set_defaults(func=cmd_search)
+
+    sp = sub.add_parser("conversation", help="Read a full thread by conversation_id")
+    sp.add_argument("conversation_id")
+    sp.add_argument("--limit", type=int, default=500)
+    sp.set_defaults(func=cmd_conversation)
+
     sp = sub.add_parser("watch", help="Stream live messages (SSE)")
     sp.add_argument("--exit-on-mention", metavar="AGENT_ID",
                     help="Exit 0 when a message addressed to AGENT_ID arrives "
