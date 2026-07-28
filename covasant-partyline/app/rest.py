@@ -163,6 +163,44 @@ async def search_messages(q: str, limit: int = 50) -> list[dict]:
     return rows
 
 
+@router.get("/messages/query")
+async def query_messages(
+    q: str | None = None,
+    message_type: str | None = None,
+    agent_id: str | None = None,
+    author: str | None = None,
+    recipient: str | None = None,
+    mention: str | None = None,
+    repo: str | None = None,
+    branch: str | None = None,
+    resource_path: str | None = None,
+    issue_ref: str | None = None,
+    conversation_id: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Field-filtered query over live + archived history. Every param is optional and
+    AND-combined; `q` is full-text (summary+payload), the rest are exact-match. A bare
+    call returns the newest `limit` rows. Invalid conversation_id UUID -> 400."""
+    def _clean(v: str | None) -> str | None:
+        return v.strip() if isinstance(v, str) and v.strip() else None
+
+    try:
+        rows = await run_in_threadpool(
+            db.query_messages,
+            q=_clean(q), message_type=_clean(message_type), agent_id=_clean(agent_id),
+            author=_clean(author), recipient=_clean(recipient), mention=_clean(mention),
+            repo=_clean(repo), branch=_clean(branch), resource_path=_clean(resource_path),
+            issue_ref=_clean(issue_ref), conversation_id=_clean(conversation_id),
+            since=_clean(since), until=_clean(until), limit=limit,
+        )
+    except Exception as exc:  # invalid uuid → clean 400 (same guard as /api/conversations)
+        raise HTTPException(status_code=400, detail=f"invalid query: {exc}")
+    log.info("query_messages endpoint hits=%s", len(rows))
+    return rows
+
+
 @router.post("/messages/archive-all")
 async def archive_all_messages() -> dict:
     """Move ALL live messages into the archive and clear the live feed (operator action).

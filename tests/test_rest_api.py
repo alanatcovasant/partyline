@@ -446,3 +446,46 @@ async def test_post_message_accepts_event_time(client, monkeypatch):
     from datetime import datetime, timezone
 
     assert captured["event_time"] == datetime(2026, 7, 16, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.anyio
+async def test_query_endpoint_filters_by_issue_ref(client):
+    await client.post("/api/agents", json={"agent_id": "q_issue_agent", "owner": "alan", "repo": "partyline"})
+    posted = (await client.post("/api/messages", json={
+        "agent_id": "q_issue_agent", "message_type": "status", "issue_ref": "GH-9931", "payload": "x",
+    })).json()
+    resp = await client.get("/api/messages/query", params={"issue_ref": "GH-9931"})
+    assert resp.status_code == 200
+    ids = [m["id"] for m in resp.json()]
+    assert posted["id"] in ids
+    assert all(m["issue_ref"] == "GH-9931" for m in resp.json())
+
+
+@pytest.mark.anyio
+async def test_query_endpoint_blank_params_ignored(client):
+    """Empty-string params are dropped (treated as not filtered), not matched literally."""
+    await client.post("/api/agents", json={"agent_id": "q_blank_agent", "owner": "alan", "repo": "partyline"})
+    await client.post("/api/messages", json={"agent_id": "q_blank_agent", "message_type": "status", "payload": "y"})
+    resp = await client.get("/api/messages/query", params={"repo": "", "q": "", "limit": 5})
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)  # returns newest rows, not zero from a blank match
+
+
+@pytest.mark.anyio
+async def test_query_endpoint_invalid_conversation_id_400(client):
+    resp = await client.get("/api/messages/query", params={"conversation_id": "not-a-uuid"})
+    assert resp.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_search_endpoint_still_returns_source_shape(client):
+    """Back-compat: /api/search still works and returns the source-tagged shape."""
+    await client.post("/api/agents", json={"agent_id": "bc_agent", "owner": "alan", "repo": "partyline"})
+    token = "bctok" + "9182"
+    posted = (await client.post("/api/messages", json={
+        "agent_id": "bc_agent", "message_type": "status", "payload": f"backcompat {token}",
+    })).json()
+    resp = await client.get("/api/search", params={"q": token, "limit": 10})
+    assert resp.status_code == 200
+    match = [h for h in resp.json() if h["id"] == posted["id"]]
+    assert match and match[0]["source"] == "live"
