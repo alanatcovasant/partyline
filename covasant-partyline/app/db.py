@@ -343,6 +343,23 @@ _MIGRATIONS = [
     "UPDATE messages         SET received_at = created_at WHERE received_at IS NULL",
     "UPDATE messages_archive SET event_time  = created_at WHERE event_time  IS NULL",
     "UPDATE messages_archive SET received_at = created_at WHERE received_at IS NULL",
+    # Full-text over summary+payload (the query_messages FTS expression). NEW indexes:
+    # Postgres uses a GIN index only when the query's to_tsvector(...) matches the index
+    # expression exactly, so these must mirror _FTS_FULL_EXPR verbatim. The old
+    # payload-only idx_messages_fts / idx_archive_fts are left in place (harmless).
+    "CREATE INDEX IF NOT EXISTS idx_messages_fts_full ON messages USING GIN (to_tsvector('english', coalesce(summary,'') || ' ' || coalesce(payload,'')))",
+    "CREATE INDEX IF NOT EXISTS idx_archive_fts_full  ON messages_archive USING GIN (to_tsvector('english', coalesce(summary,'') || ' ' || coalesce(payload,'')))",
+    # B-tree indexes for the high-selectivity structured filters.
+    "CREATE INDEX IF NOT EXISTS idx_messages_repo      ON messages (repo)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_agent     ON messages (agent_id)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_type      ON messages (message_type)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages (recipient)",
+    "CREATE INDEX IF NOT EXISTS idx_archive_repo       ON messages_archive (repo)",
+    "CREATE INDEX IF NOT EXISTS idx_archive_agent      ON messages_archive (agent_id)",
+    "CREATE INDEX IF NOT EXISTS idx_archive_type       ON messages_archive (message_type)",
+    "CREATE INDEX IF NOT EXISTS idx_archive_recipient  ON messages_archive (recipient)",
+    # issue_ref: live already indexed (idx_messages_issue_ref in _SCHEMA); add archive side.
+    "CREATE INDEX IF NOT EXISTS idx_archive_issue_ref  ON messages_archive (issue_ref)",
 ]
 
 
@@ -506,6 +523,92 @@ _MSG_COLS_CONCISE = _MSG_COLS.replace(
     "issue_ref, summary, CASE WHEN summary IS NULL THEN payload END AS payload,",
 )
 
+# Full-text expression for query_messages. MUST match the idx_messages_fts_full /
+# idx_archive_fts_full index expression EXACTLY, or Postgres will not use the GIN index.
+_FTS_FULL_EXPR = "to_tsvector('english', coalesce(summary,'') || ' ' || coalesce(payload,''))"
+
+
+def query_messages(
+    q: str | None = None,
+    message_type: str | None = None,
+    agent_id: str | None = None,
+    author: str | None = None,
+    recipient: str | None = None,
+    mention: str | None = None,
+    repo: str | None = None,
+    branch: str | None = None,
+    resource_path: str | None = None,
+    issue_ref: str | None = None,
+    conversation_id: str | None = None,
+    since=None,
+    until=None,
+    limit: int = 50,
+    include_payload: bool = True,
+) -> list[dict]:
+    """Field-filtered search over the live + archive union (the shared query behind
+    /api/messages/query, the CLI `search`, and the MCP search_messages tool).
+
+    Every filter is optional and AND-combined. `q` is full-text over summary+payload
+    (websearch syntax: quoted phrases, OR, -exclude); the structured filters are
+    exact-match on their column; `mention` matches array membership; `since`/`until`
+    bound `event_time`. A no-filter call returns the newest `limit` rows across
+    live+archive.
+
+    Ordering: relevance then recency when `q` is present (ts_rank DESC, id DESC), else
+    newest-first (id DESC). Each row carries a `source` tag (live|archive).
+    """
+    cols = _MSG_COLS if include_payload else _MSG_COLS_CONCISE
+
+    # Predicate list applied identically to both UNION ALL legs. Blank/None = not filtered.
+    eq_filters = {
+        "message_type": message_type, "agent_id": agent_id, "author": author,
+        "recipient": recipient, "repo": repo, "branch": branch,
+        "resource_path": resource_path, "issue_ref": issue_ref,
+    }
+    clauses: list[str] = []
+    shared_params: list = []
+    for col, val in eq_filters.items():
+        if val is not None and val != "":
+            clauses.append(f"{col} = %s")
+            shared_params.append(val)
+    if mention:
+        clauses.append("%s = ANY(mentions)")
+        shared_params.append(mention)
+    if conversation_id:
+        clauses.append("conversation_id = %s::uuid")
+        shared_params.append(conversation_id)
+    if since is not None:
+        clauses.append("event_time >= %s")
+        shared_params.append(since)
+    if until is not None:
+        clauses.append("event_time <= %s")
+        shared_params.append(until)
+
+    has_q = bool(q and q.strip())
+
+    def leg(table: str, source: str) -> tuple[str, list]:
+        leg_clauses = list(clauses)
+        leg_params: list = []
+        if has_q:
+            # The tsquery param comes first in this leg (CROSS JOIN in FROM).
+            leg_params.append(q.strip())
+            leg_clauses.append(f"{_FTS_FULL_EXPR} @@ qq")
+            rank = f"ts_rank({_FTS_FULL_EXPR}, qq)"
+            frm = f"{table}, websearch_to_tsquery('english', %s) AS qq"
+        else:
+            rank = "0"
+            frm = table
+        leg_params += shared_params
+        where = (" WHERE " + " AND ".join(leg_clauses)) if leg_clauses else ""
+        return (f"SELECT {cols}, {rank} AS rank, '{source}' AS source FROM {frm}{where}", leg_params)
+
+    live_sql, live_params = leg("messages", "live")
+    arch_sql, arch_params = leg("messages_archive", "archive")
+    order = "rank DESC, id DESC" if has_q else "id DESC"
+    sql = f"SELECT * FROM ({live_sql} UNION ALL {arch_sql}) hits ORDER BY {order} LIMIT %s"
+    with get_pool().connection() as conn:
+        return conn.execute(sql, tuple(live_params + arch_params + [limit])).fetchall()
+
 
 def post_message(
     agent_id: str,
@@ -638,31 +741,14 @@ def get_recent(limit: int = 500) -> list[dict]:
 
 
 def search_messages(query: str, limit: int = 50) -> list[dict]:
-    """Full-text search over live + archived message payloads (inspect history).
+    """Full-text search over live + archived history (inspect history).
 
-    Uses websearch_to_tsquery (supports quoted phrases, OR, and -exclusions) against the
-    GIN tsvector indexes, ranked by ts_rank then recency. Each hit carries its
-    conversation_id (pivot to the full thread via get_conversation) and a `source` tag.
+    Thin wrapper over query_messages(q=...). Note: the full-text index/expression now
+    spans summary+payload, so this matches summary text too (an intended improvement over
+    the old payload-only search). Each hit carries conversation_id (pivot to the full
+    thread via get_conversation) and a `source` tag.
     """
-    sql = f"""
-        SELECT * FROM (
-            SELECT {_MSG_COLS},
-                   ts_rank(to_tsvector('english', coalesce(payload, '')), q) AS rank,
-                   'live' AS source
-              FROM messages, websearch_to_tsquery('english', %s) AS q
-             WHERE to_tsvector('english', coalesce(payload, '')) @@ q
-            UNION ALL
-            SELECT {_MSG_COLS},
-                   ts_rank(to_tsvector('english', coalesce(payload, '')), q) AS rank,
-                   'archive' AS source
-              FROM messages_archive, websearch_to_tsquery('english', %s) AS q
-             WHERE to_tsvector('english', coalesce(payload, '')) @@ q
-        ) hits
-        ORDER BY rank DESC, id DESC
-        LIMIT %s
-    """
-    with get_pool().connection() as conn:
-        return conn.execute(sql, (query, query, limit)).fetchall()
+    return query_messages(q=query, limit=limit)
 
 
 def get_conversation(
