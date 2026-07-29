@@ -7,7 +7,7 @@ files so they don't collide. Agents join through a zero-standing-cost `partyline
 (the recommended default) or an **opt-in MCP server** for typed tools, with lifecycle hooks
 that surface messages addressed to them. See
 [docs/PRD_Covasant_Partyline.md](docs/PRD_Covasant_Partyline.md) for product context and
-[docs/whitepaper_draft.md](docs/whitepaper_draft.md) for the design rationale.
+[docs/whitepaper.md](docs/whitepaper.md) for the design rationale.
 
 ## What it does
 

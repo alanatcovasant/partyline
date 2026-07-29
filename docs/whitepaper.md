@@ -2,7 +2,7 @@
 
 ## Coordinated Multi-Agent Software Engineering at Scale
 
-*Alan Dennis, Covasant — July 2026 — DRAFT for review*
+*Alan Dennis, Covasant — July 2026*
 
 ---
 
@@ -232,7 +232,7 @@ We believe coordination changes the scaling curve, and we state that belief as t
 
 **H2:** without coordination, returns diminish as fleet size grows, because pairwise conflict probability grows roughly with N² for overlapping working sets.
 
-The model behind both is simple and its assumptions — working-set overlap, task granularity — are exactly the things our production metrics (§8.2) are designed to measure. Until those numbers land, treat every scaling claim in this paper as the model, not the measurement.
+The model behind both is simple and its assumptions — working-set overlap, task granularity — are exactly the things our production metrics (§8.3) are designed to measure. Until those numbers land, treat every scaling claim in this paper as the model, not the measurement.
 
 Before the numbers, though, an obvious question deserves a thorough answer: hasn't someone already built this?
 
@@ -365,11 +365,11 @@ Cheap to run is necessary but not sufficient. The business case rests on what co
 
 ## 7. Business Value & ROI
 
-*A framing note before the numbers: this section is the business translation of §4.4's hypotheses. Every scaling and savings figure below is modeled or illustrative until the production metrics of §8.2 land. Present them as the model, not as measured results.*
+*A framing note before the numbers: this section is the business translation of §4.4's hypotheses. Every scaling and savings figure below is modeled or illustrative until the production metrics of §8.3 land. Present them as the model, not as measured results.*
 
 ### 7.1 Developer Throughput Multiplier (modeled, per H1/H2)
 
-Without coordination, adding agents past two or three yields diminishing returns — H2's conflict growth eats the gains. With the line, each agent's coordination cost is one claim check and one status post, O(1) regardless of fleet size. The modeled effect is near-linear scaling for well-decomposed work: N agents approaching N× throughput on epic-scale tasks. Section 8.2 defines exactly how we will measure it.
+Without coordination, adding agents past two or three yields diminishing returns — H2's conflict growth eats the gains. With the line, each agent's coordination cost is one claim check and one status post, O(1) regardless of fleet size. The modeled effect is near-linear scaling for well-decomposed work: N agents approaching N× throughput on epic-scale tasks. Section 8.3 defines exactly how we will measure it.
 
 ### 7.2 Wasted Compute Elimination (illustrative)
 
@@ -405,9 +405,27 @@ Models persuade; measurements convince. Here is where the measurements will come
 
 The proving ground is our own daily work: six Claude Code instances against a shared production monorepo, mixing backend, frontend, infrastructure, and documentation tasks in multi-hour sessions.
 
-At the time of writing the line is live in production. Agents from several repositories registered and exchanged addressed traffic — over the CLI and MCP alike — within hours of rollout, and the lifecycle hooks reliably surface messages addressed to an agent at the start of a turn. Human-to-agent messaging is verified end-to-end: a message composed in the dashboard reached a polling agent's filtered unread queue. Real-time *idle* wake is the honest exception — it depends on the native channel, which our own dogfood workspace currently blocks by managed policy (§8.3), so awareness in the fleet runs on the hooks plus on-demand checks rather than push.
+At the time of writing the line is live in production. Agents from several repositories registered and exchanged addressed traffic — over the CLI and MCP alike — within hours of rollout, and the lifecycle hooks reliably surface messages addressed to an agent at the start of a turn. Human-to-agent messaging is verified end-to-end: a message composed in the dashboard reached a polling agent's filtered unread queue. Real-time *idle* wake is the one path with an environmental caveat rather than a clean guarantee — it depends on the native channel, now verified working from the VS Code integrated terminal but not from a bare or headless invocation (§8.5) — so most fleet awareness runs on the hooks plus on-demand checks, with push layered on where the harness surface hosts the channel.
 
-### 8.2 Metrics (to be populated as dogfood accumulates)
+### 8.2 A Coordinated Epic, Reconstructed from the Log
+
+The strongest evidence we can offer today is not a metric — those are still accumulating (§8.3) — but a *trace*. Because the line is an append-only log, an entire multi-agent effort is preserved and replayable after the fact. Here is one, reconstructed verbatim from message ids on the production line.
+
+**The epic.** Issue #1333, "wal2delta bypass-detector": build a system that catches direct database writes that bypass the application's audit path — a change-data-capture spike on Postgres, a detection engine, a findings-to-drift-and-alerting surface, and a review UI. Four workstreams (Streams A–D) across *two* repositories — the `aura` monorepo and the separate `aura-web` frontend — driven by one lead agent (`alan_aura`) and four workers (`alan_aura_1`, `_2`, `_3`, and `_web`). Twenty-five threaded messages over roughly nineteen hours (2026-07-09 20:11 → 2026-07-10 14:46), every one carrying the same `conversation_id`.
+
+**Fan-out.** The lead opened with a `status` kickoff addressed to all four workers (#165) — plan document, per-stream scope, and a Phase-0 gate — then four targeted `status` assignments, one per worker (#166–170), each `recipient`-scoped so a worker saw its own charge without parsing the others'. Workers `ack`'d in (#168, #174, #178, #179), and each ack already encoded a dependency it had inferred from the plan: Stream C announced it was "gated on Stream B's schema before wiring C to real inputs" (#168) — the fleet negotiating its own critical path on the line, unprompted.
+
+**Contracts as messages.** The interesting coordination was not the task hand-off; it was the *schema-contract negotiation* that followed, conducted entirely as typed messages. The lead published the expected-set contract for the detector — join keys and, critically, the empirical finding that the upstream `control_change_events` table "EXISTS but EMPTY (0 rows)," confirming a blocking dependency (#171). Stream A posted the CDC history table's exact column shape and join keys once its live spike landed (#183); Stream A then posted the twelve-column `direct_write_findings` schema as an explicit contract "for @alan_aura_2 (B writes it) / @alan_aura_3 (C emits it) / @alan_aura_web (D reads it)" (#184). Each downstream worker `ack`'d the contract as *locked* before building against it (#185, #187, #189) — one confirming the twelve-column order "matches Stream C's `DirectWriteFindingRow` in my committed emitter … so no drift on the C side" (#185). This is a resource pipeline (§4.3) whose interface definitions travel as first-class log entries, not tribal knowledge.
+
+**Human as gate.** One step required a live mutation of a production governance table. The worker did not proceed on its own authority; the lead relayed explicit human approval onto the line — "0B LIVE SPIKE APPROVED by user (alan)" (#175) — and the human appeared as a first-class `@mention` recipient on the progress `summary` (#177). The referee pattern (§4.3), exercised for a genuinely irreversible action.
+
+**Blocked, then unblocked by a peer.** The revealing moment came from `aura-web`. Stream D finished its recon, locked the read schema, and then hit a wall it could not clear alone: "There is NO read endpoint or MCP tool for `direct_write_findings` today (only the write pipeline exists)." It raised this as a structured `blocked` message naming two concrete blockers and their owners (#232) — an explicit waiting state, not silent idling. Blocker 2 was answered not by the lead but *directly by a peer*: Stream C replied to Stream D with the exact activity-surface contract it emits to (#237), and Stream D `ack`'d, "Blocker 2 cleared, contract is stable … Building now" (#239). The lead never had to route that exchange. That is the emergent, peer-to-peer coordination the architecture is designed to permit — and it happened on its own.
+
+**What the log shows that a design document cannot.** In one thread the fleet exercised five of the six workflow verbs of §4.2 — `status`, `question`, `blocked`, `done`, and `summary` — plus the acknowledgment traffic that binds a distributed hand-off together, with resource claims (§4.3, claim-before-edit) referenced throughout as the guard on the shared surfaces the plan named. Four of the six coordination patterns appear unforced: fan-out/fan-in, claim-before-edit, resource pipeline, and human-referee. Nothing here was staged for the paper. It is what a working day on the line looks like when the work is genuinely interdependent — and it is exactly the shape §4 argued coordination would produce.
+
+One honest caveat: this is the *observational* layer, not the *controlled* one. It demonstrates that the protocol carries a real epic without breaking; it does not, by itself, isolate the counterfactual — what this same epic would have cost *without* the line. That is what §8.3 is built to measure.
+
+### 8.3 Metrics (to be populated as dogfood accumulates)
 
 - Push-race reduction (baseline: roughly two per session; target: zero)
 - Time-to-awareness of peer claims and status — push p95 against the §2.3 single-digit-second requirement, including scale-to-zero cold start
@@ -417,7 +435,19 @@ At the time of writing the line is live in production. Agents from several repos
 
 Instrumentation costs nothing extra. Every message, claim, and checkpoint is already timestamped in Postgres and queryable through the governed catalog. The metrics above are SQL queries, not new telemetry.
 
-### 8.3 Limitations
+### 8.4 Operational Learnings from Running the Line
+
+Dogfooding surfaced platform realities that shaped the design more than any whitepaper could. Recording them is part of the honesty §8.5 trades on — and each maps to a decision now baked into the code.
+
+- **The managed Postgres autoscale model is branch-and-endpoint, and the two behave very differently under mutation.** Lakebase (serverless Postgres) separates *storage* (a branch) from *compute* (an endpoint), and this asymmetry is sharp: a read-write endpoint **cannot be deleted**, and its idle-suspend timeout **cannot be patched in place** — the platform rejects the update mask outright. A live endpoint we needed to move from a 24-hour idle window to a five-minute one could not simply be reconfigured. What *is* mutable is the project default, which every *newly created* branch's endpoint inherits, and branches themselves are cheap to create and delete. The operational consequence is a design rule: **treat the idle-suspend posture as set-at-creation, not tuned-in-place** — to change it on a live resource, cut over to a fresh branch (which inherits the corrected default) rather than expecting an in-place edit. Because data lives on the branch, not the endpoint, this also means an endpoint operation never risks the data; a branch cutover is a controlled storage migration, and we validated the whole mechanism on a throwaway branch before touching production.
+- **A privileged deploy-time migration step is not optional.** The application's service principal connects to Lakebase but does **not own** the tables — the deploying user does. Any DDL the app attempts (adding a column, creating an index) fails with `InsufficientPrivilege` and is silently skipped, and a dependent backfill against the missing column once crash-looped the app for about an hour. The fix is structural: schema changes run as a **privileged, owner-authenticated step in the deploy pipeline**, never from the app at startup, and the app's own initialization degrades a skipped migration to a request-time error rather than a boot-loop. Local tests mask this entirely, because the local test role *owns* its tables — a classic environment gap that only production privilege separation reveals.
+- **Long-lived streams die on token expiry, not on network faults.** The server-sent-events stream that backs the wake mechanisms was dropping after roughly an hour. The cause was not the connection but the credential: the platform OAuth token minted at connect time expires, and a stream that captured it once had no way to recover. The fix is to **re-mint the token on every reconnect** rather than capturing it once at stream open — an obvious-in-hindsight correction that is easy to get wrong when the failure looks like a flaky socket.
+- **Version skew between local and deployed runtimes bites at the edges.** The deployed app bundles an older platform SDK than the development environment, so a field present on a local SDK object is absent in production. Reading such fields defensively (tolerating their absence) is the difference between a resilient app and a crash-loop on deploy.
+- **Bundle sync follows the source tree's ignore rules.** Generated runtime files placed under a git-ignored build directory do not sync to the deployed app even when a broad include pattern appears to cover them; a file the deploy needs at runtime must be reachable by an explicit single-file include or served by an application route. Infrastructure-as-code inherits the repository's own visibility rules, and "it's in the folder" is not the same as "it ships."
+
+None of these are exotic. They are the ordinary friction of running a real service on a managed platform — and each one is now encoded as a rule in the deploy path, a safety net in the app, or a comment that will save the next operator an hour.
+
+### 8.5 Limitations
 
 Honesty here buys credibility everywhere else.
 
