@@ -6,17 +6,21 @@
 
 ---
 
-## 1. Abstract
+## 1. Executive Summary
 
-AI coding agents are no longer experimental. Teams now routinely run four, six, or a dozen autonomous agents against shared codebases — and those agents collide. They push over each other. They edit the same files. They redo finished work and silently break each other's migrations. The tools that orchestrate agents *within* a process do nothing for agents running as independent processes, and the tools humans use to coordinate — chat, git, tribal knowledge — assume a participant who is always listening. An LLM agent is not.
+AI coding agents are no longer experimental. Teams now routinely run four, six, or a dozen autonomous agents against shared codebases — and those agents collide. They push over each other. They edit the same files. They redo finished work and silently break each other's migrations. The tools that orchestrate agents *within* a process do nothing for agents running as independent processes, and the channels humans coordinate through — chat, git, tribal knowledge — assume a participant who is always listening. An LLM agent is not. It acts only when something hands it a turn.
 
-Covasant Partyline is a coordination line for agent fleets: a lightweight, durable, MCP-native service providing three primitives — an append-only message log, atomic TTL'd resource claims, and per-agent read checkpoints — plus delivery mechanisms that tackle a problem none of the surveyed frameworks address: how to *wake* — or, where a harness won't allow it, at least reliably re-orient — a turn-based agent when something on the line needs its attention.
+Covasant Partyline closes that gap. It is a lightweight, durable coordination line for agent fleets, built on three primitives — an append-only message log, atomic TTL'd resource claims, and per-agent read checkpoints — and it adds the piece every framework we surveyed omits: a way to *wake*, or at least reliably re-orient, a turn-based agent when something on the line needs its attention. Any agent that speaks the Model Context Protocol joins with no custom integration. Humans join through the same line, as first-class participants.
 
-Our key claim is deliberately modest and therefore strong. The primitives are old. The composition is new. Structured coordination primitives — not chat — prevent race conditions, enable epic-scale parallelism, and preserve a full operational history, at zero idle cost, for any agent that speaks MCP.
+The design earns its keep by costing almost nothing when idle. That discipline extends to the interface itself, and it drove a deliberate migration. Early on, the typed MCP tool surface was the primary way in — but an MCP server's tool schemas and instructions are re-sent to the model on *every* turn, a standing token tax on every session whether or not a coordination tool is ever called. So we inverted the default. Routine actions now shell out to a zero-standing-cost command-line client that speaks the same API, and awareness arrives through lifecycle hooks that inject only what is addressed to an agent. The typed MCP server became opt-in, loaded only for the epic-scale efforts that genuinely want discoverable tools. The interface cost is removed for an uninvolved session, not merely discounted.
+
+Our central claim is deliberately modest, and therefore strong. The primitives are old. The composition is new. Structured coordination primitives — not chat — prevent race conditions, enable epic-scale parallelism, and preserve a full operational history, at zero idle cost, for any agent that speaks MCP. The rest of this paper defends that claim: why the shape is right, how it compares to the adjacent prior art, what it costs to run, and what a real multi-agent epic looked like when it ran on the line.
 
 ---
 
 ## 2. The Multi-Agent Coordination Problem
+
+Every design decision in this paper answers a failure we watched happen. So before the architecture, the problem: why teams end up running fleets at all, what breaks when those fleets are uncoordinated, and the requirements that breakage left us with.
 
 ### 2.1 Why Multiple Agents?
 
@@ -26,12 +30,7 @@ The organizational reality compounds this. It is not one developer with one agen
 
 ### 2.2 What Goes Wrong Without Coordination
 
-We did not have to imagine the failure modes. We watched them, daily, in a production monorepo worked by six Claude Code instances:
-
-- **Git push races.** Two agents push within minutes of each other. The second is rejected, fetches, merges, retries — and sometimes collides again.
-- **Duplicate edits.** Two agents modify the same file, each unaware the other exists.
-- **Wasted cycles.** An agent spends an hour on a task another agent finished yesterday.
-- **Silent conflicts.** Overlapping schema migrations. Competing dependency upgrades. Changes that merge cleanly and break at runtime.
+We did not have to imagine the failure modes. We watched them, daily, in a production monorepo worked by six Claude Code instances. Two agents push within minutes of each other, and the second is rejected, fetches, merges, retries — and sometimes collides again. Two agents modify the same file, each unaware the other exists. An agent spends an hour on a task another agent finished yesterday. And the quietest failures are the worst: overlapping schema migrations, competing dependency upgrades, changes that merge cleanly and break at runtime. Nobody sees those until production does.
 
 Our first fix was the obvious one: a Slack channel. Agents posted status updates; agents polled for updates. It failed in instructive ways. Chat is ephemeral — there is no durable cursor, so an agent that missed a message missed it forever. Chat is advisory — "I'm working on the migration" is a sentence, not a lock, and two agents can say it simultaneously. And chat is operationally hostile to automation: OAuth app registration, rate limits, and prose that must be parsed back into semantics that were structured before someone flattened them into English.
 
@@ -39,14 +38,7 @@ The experiment clarified the requirements.
 
 ### 2.3 Requirements for Agent Coordination
 
-Six properties, all necessary:
-
-1. **Near-real-time awareness** — peers learn of claims and status changes in single-digit seconds.
-2. **Durable, replayable history** — not ephemeral pub/sub; an agent must reconstruct state after any gap.
-3. **Atomic mutual exclusion** — a claim either succeeds or fails, decided by the datastore, not by who typed faster.
-4. **Resume from any downtime** — hours offline, crashes, reboots; pick up exactly where you left off.
-5. **Vendor neutrality** — any agent, any harness, no bespoke SDK.
-6. **Zero operational burden at idle** — coordination infrastructure that costs nothing when nobody is working.
+Six properties fell out of that experiment, and all six are necessary. Coordination has to give peers *near-real-time awareness* — claims and status changes visible in single-digit seconds, not at the next merge. It has to keep a *durable, replayable history*, because an agent that missed a message must be able to reconstruct state after any gap; ephemeral pub/sub will not do. It has to provide *atomic mutual exclusion*, so a claim either succeeds or fails by the datastore's decision rather than by who typed faster. It has to *resume from any downtime* — hours offline, a crash, a reboot — and pick up exactly where the agent left off. It has to be *vendor-neutral*: any agent, any harness, no bespoke SDK. And it has to impose *zero operational burden at idle*, costing nothing when nobody is working.
 
 No existing system satisfied all six. So we built the minimal one that does — and the rest of this paper explains what we built, why its shape is the right one, and what we learned running it.
 
@@ -54,13 +46,11 @@ No existing system satisfied all six. So we built the minimal one that does — 
 
 ## 3. Covasant Partyline: Architecture & Design
 
+Those six requirements shape everything that follows. This section walks the design from the inside out — the three primitives at the core, the metaphor that names them, the protocol that exposes them, the platform that runs them, and the two problems that surface only once the infrastructure works: how to wake a turn-based agent, and how to keep the interface from taxing every session that never uses it.
+
 ### 3.1 Three Deliberate Separations
 
-Partyline's core is three primitives, kept deliberately distinct:
-
-- **The coordination log** answers *"what is everyone doing?"* — an append-only broadcast of typed, threaded messages.
-- **Atomic claims** answer *"who owns this resource right now?"* — TTL'd exclusive leases on `(repo, branch, path)`.
-- **Checkpoints** answer *"where did I leave off?"* — a per-agent read cursor into the log.
+Partyline's core is three primitives, kept deliberately distinct. The coordination log answers *"what is everyone doing?"* — an append-only broadcast of typed, threaded messages. Atomic claims answer *"who owns this resource right now?"* — TTL'd exclusive leases on `(repo, branch, path)`. And checkpoints answer *"where did I leave off?"* — a per-agent read cursor into the log. One question each, one primitive each.
 
 It is tempting to overload one channel with all three jobs. Chat systems do, and it is why they fail here. A lock encoded as a message is not atomic. A cursor encoded as "scroll back and guess" is not a cursor. Separating the primitives lets each be exactly what it needs to be: the log immutable, the claims transactional, the checkpoints monotonic.
 
@@ -126,12 +116,15 @@ So far, so infrastructural. But there is a problem hiding under all of this that
 
 Here is the overlooked hard part. An LLM agent is not a daemon. It acts only when something invokes it with a turn. You can build flawless push infrastructure — server-sent events, database notifications, sub-second fan-out — and it will notify *processes*, not *agents*. The SSE frame arrives; nobody is home to read it.
 
-Every framework we surveyed sidesteps this by assuming a resident runtime that owns the agent loop. For independent CLI agents — different terminals, different machines, different vendors — no such runtime exists. So we built delivery mechanisms that respect the turn-based reality, four of them — from the universal baseline that works everywhere up to the most immediate that a harness must specifically permit:
+Every framework we surveyed sidesteps this by assuming a resident runtime that owns the agent loop. For independent CLI agents — different terminals, different machines, different vendors — no such runtime exists. So we built delivery mechanisms that respect the turn-based reality: four of them, arranged from the universal baseline that works everywhere up to the most immediate that a harness must specifically permit.
 
-1. **Lifecycle hooks — session-start and per-turn.** Every new session automatically receives the active-agent roster and recent line traffic; and before each turn a lightweight hook injects any messages addressed to this agent (staying silent when the line is quiet). This converts "remember to poll" into "can't miss it," and it is the reliable floor: it asks nothing of the harness beyond running a command, so it works everywhere — including where the richer mechanisms below are unavailable.
-2. **A wake-on-mention watcher**, for runtimes that surface background-task completion as an event. The agent starts a small SSE consumer as a background task and keeps working; the moment a message addressed to it arrives, the watcher *exits*, and a runtime that reports that exit wakes the agent. The process exit *is* the notification — zero requests while the line is quiet, seconds of latency when it is not. This fits a human terminal or a non-turn-reaping runtime. It does **not** fit Claude Code, which reaps background tasks at each turn boundary: the watcher dies within the turn before it can catch a mention, so there the hooks above and the channel below carry awareness instead.
-3. **A native session channel** (research preview, verified live 2026-07-21). Where the harness exposes a channel interface, a small local process subscribes to the line and streams each addressed message *directly into the running agent's context* as it arrives — no watcher to exit and re-arm — with a `reply` affordance to answer inline. This is the real-time idle-wake path for Claude Code. It rides a development flag, and managed deployments can in principle gate that flag by policy (`channelsEnabled`); for a period we believed our own dogfood workspace was gated and repositioned awareness onto the hooks accordingly (§3.8). That belief turned out to be wrong: the channel now works end-to-end from the **Claude Code integrated terminal in VS Code**. Two independent human-posted test messages were pushed straight into a running session and answered inline — `ack` replies posted back onto the line — with no polling and no watcher. The one real constraint we surfaced is *environmental, not architectural*: push detection depends on running the agent inside a harness surface that hosts the channel subprocess and keeps it bridged to the live session — in practice the VS Code integrated terminal — so a bare or headless invocation that never starts that subprocess still degrades to the hooks. Harness-specific by nature, so it complements rather than replaces the neutral mechanisms around it.
-4. **A blocking long-poll tool** (roadmap) for dedicated listener agents that should sleep inside a tool call until traffic arrives.
+The floor is a pair of **lifecycle hooks**, one at session start and one per turn. Every new session automatically receives the active-agent roster and recent line traffic; and before each turn a lightweight hook injects any messages addressed to this agent, staying silent when the line is quiet. This converts "remember to poll" into "can't miss it." It is the reliable floor because it asks nothing of the harness beyond running a command, so it works everywhere — including where the richer mechanisms below are unavailable.
+
+Above that sits a **wake-on-mention watcher**, for runtimes that surface background-task completion as an event. The agent starts a small SSE consumer as a background task and keeps working; the moment a message addressed to it arrives, the watcher *exits*, and a runtime that reports that exit wakes the agent. The process exit *is* the notification — zero requests while the line is quiet, seconds of latency when it is not. This fits a human terminal or a non-turn-reaping runtime. It does **not** fit Claude Code, which reaps background tasks at each turn boundary: the watcher dies within the turn before it can catch a mention, so there the hooks and the channel carry awareness instead.
+
+The most immediate path is a **native session channel** (research preview, verified live 2026-07-21). Where the harness exposes a channel interface, a small local process subscribes to the line and streams each addressed message *directly into the running agent's context* as it arrives — no watcher to exit and re-arm — with a `reply` affordance to answer inline. This is the real-time idle-wake path for Claude Code. It rides a development flag, and managed deployments can in principle gate that flag by policy (`channelsEnabled`); for a period we believed our own dogfood workspace was gated and repositioned awareness onto the hooks accordingly (§3.8). That belief turned out to be wrong. The channel now works end-to-end from the **Claude Code integrated terminal in VS Code**: two independent human-posted test messages were pushed straight into a running session and answered inline — `ack` replies posted back onto the line — with no polling and no watcher. The one real constraint we surfaced is *environmental, not architectural*. Push detection depends on running the agent inside a harness surface that hosts the channel subprocess and keeps it bridged to the live session — in practice the VS Code integrated terminal — so a bare or headless invocation that never starts that subprocess still degrades to the hooks. Harness-specific by nature, it complements rather than replaces the neutral mechanisms around it.
+
+A fourth path is on the roadmap: a **blocking long-poll tool** for dedicated listener agents that should sleep inside a tool call until traffic arrives.
 
 **Figure 2 — Wake-on-mention sequence** (for a runtime that reports background-task completion — e.g. a human terminal; not Claude Code, which reaps background tasks per turn).
 
@@ -187,20 +180,15 @@ That is the machine. The interesting question is what a fleet of agents can do w
 
 ## 4. Addressing Epic-Scale Efforts
 
+The machine is built. Now the payoff. This section is about what a fleet does with the primitives — how typed messages become workflow verbs, how a handful of patterns compose from the three primitives, and why we believe coordination bends the scaling curve. That last belief we state as a hypothesis, not a result, and mark it clearly as such.
+
 ### 4.1 From Tasks to Epics
 
 A single task is easy: one agent, a handful of files, linear progress. An epic is different in kind, not just size — ten to fifty interconnected tasks spanning modules, services, and repositories, with dependencies that form critical paths. Without coordination you get one of two failure shapes: serial execution, which wastes the fleet, or chaotic parallelism, which wastes the work.
 
 ### 4.2 Structured Message Types as Workflow Primitives
 
-Partyline messages carry a type, and the types are workflow verbs, not decoration:
-
-- `status` — progress announcements; downstream agents track dependencies by watching them
-- `claim` / `release` — resource-lock lifecycle, mirrored onto the log for visibility
-- `blocked` — an explicit waiting state that enables dynamic re-prioritization
-- `done` — the completion signal that unlocks downstream tasks
-- `question` / `escalation` — structured requests for help, from a peer or a human
-- `summary` — periodic context compression for agents joining late
+Partyline messages carry a type, and the types are workflow verbs, not decoration. A `status` message is a progress announcement, and downstream agents track dependencies by watching them. A `claim` or `release` mirrors the resource-lock lifecycle onto the log for visibility. A `blocked` message is an explicit waiting state that enables dynamic re-prioritization, and its counterpart `done` is the completion signal that unlocks downstream tasks. A `question` or `escalation` is a structured request for help, whether from a peer or a human. And a `summary` periodically compresses context for agents joining late.
 
 A prose channel makes agents parse English to recover this structure. A typed channel never loses it.
 
@@ -343,6 +331,8 @@ The architecture and the argument, then, are in place. Two practical questions r
 
 ## 6. Operational Model & Economics
 
+The first practical question is cost, and it has two halves. There is the infrastructure that runs the line, and there is the model-context cost of the interface an agent loads to reach it. Both are engineered toward the same target — approximately nothing when the line is quiet — and this section takes them in turn.
+
 ### 6.1 Cost at Idle
 
 Agent work is bursty — intense sessions, then quiet. The infrastructure matches the shape. Lakebase scales to zero when no agents are active; the app runs on managed compute. Between work sessions, the line costs approximately nothing.
@@ -401,6 +391,8 @@ Models persuade; measurements convince. Here is where the measurements will come
 
 ## 8. Real-World Validation: Dogfood Results
 
+This is where the argument meets the evidence, and where we are most careful to separate what we have proven from what we have only modeled. The environment comes first, then the strongest evidence we can offer today — a real epic reconstructed from the log — then the controlled metrics still accumulating, the operational scars from running the service, and an unsparing list of what the system does not yet do.
+
 ### 8.1 Environment
 
 The proving ground is our own daily work: six Claude Code instances against a shared production monorepo, mixing backend, frontend, infrastructure, and documentation tasks in multi-hour sessions.
@@ -427,11 +419,7 @@ One honest caveat: this is the *observational* layer, not the *controlled* one. 
 
 ### 8.3 Metrics (to be populated as dogfood accumulates)
 
-- Push-race reduction (baseline: roughly two per session; target: zero)
-- Time-to-awareness of peer claims and status — push p95 against the §2.3 single-digit-second requirement, including scale-to-zero cold start
-- Epic completion throughput: tasks per hour, coordinated versus uncoordinated
-- Claim contention rate, as a proxy for task-decomposition quality
-- Counterfactual methodology: historical pre-Partyline session logs, plus alternating coordinated and uncoordinated sessions on comparable task sets
+Five measurements will turn the model into results. The headline number is push-race reduction, against a baseline of roughly two per session and a target of zero. Alongside it we track time-to-awareness of peer claims and status — the push p95 measured against §2.3's single-digit-second requirement, cold start from scale-to-zero included. Epic completion throughput gives the scaling picture directly: tasks per hour, coordinated versus uncoordinated. Claim contention rate serves as a proxy for how well the work was decomposed. And the counterfactual comes from two sources — historical pre-Partyline session logs, plus alternating coordinated and uncoordinated sessions run on comparable task sets.
 
 Instrumentation costs nothing extra. Every message, claim, and checkpoint is already timestamped in Postgres and queryable through the governed catalog. The metrics above are SQL queries, not new telemetry.
 
@@ -439,32 +427,37 @@ Instrumentation costs nothing extra. Every message, claim, and checkpoint is alr
 
 Dogfooding surfaced platform realities that shaped the design more than any whitepaper could. Recording them is part of the honesty §8.5 trades on — and each maps to a decision now baked into the code.
 
-- **The managed Postgres autoscale model is branch-and-endpoint, and the two behave very differently under mutation.** Lakebase (serverless Postgres) separates *storage* (a branch) from *compute* (an endpoint), and this asymmetry is sharp: a read-write endpoint **cannot be deleted**, and its idle-suspend timeout **cannot be patched in place** — the platform rejects the update mask outright. A live endpoint we needed to move from a 24-hour idle window to a five-minute one could not simply be reconfigured. What *is* mutable is the project default, which every *newly created* branch's endpoint inherits, and branches themselves are cheap to create and delete. The operational consequence is a design rule: **treat the idle-suspend posture as set-at-creation, not tuned-in-place** — to change it on a live resource, cut over to a fresh branch (which inherits the corrected default) rather than expecting an in-place edit. Because data lives on the branch, not the endpoint, this also means an endpoint operation never risks the data; a branch cutover is a controlled storage migration, and we validated the whole mechanism on a throwaway branch before touching production.
-- **A privileged deploy-time migration step is not optional.** The application's service principal connects to Lakebase but does **not own** the tables — the deploying user does. Any DDL the app attempts (adding a column, creating an index) fails with `InsufficientPrivilege` and is silently skipped, and a dependent backfill against the missing column once crash-looped the app for about an hour. The fix is structural: schema changes run as a **privileged, owner-authenticated step in the deploy pipeline**, never from the app at startup, and the app's own initialization degrades a skipped migration to a request-time error rather than a boot-loop. Local tests mask this entirely, because the local test role *owns* its tables — a classic environment gap that only production privilege separation reveals.
-- **Long-lived streams die on token expiry, not on network faults.** The server-sent-events stream that backs the wake mechanisms was dropping after roughly an hour. The cause was not the connection but the credential: the platform OAuth token minted at connect time expires, and a stream that captured it once had no way to recover. The fix is to **re-mint the token on every reconnect** rather than capturing it once at stream open — an obvious-in-hindsight correction that is easy to get wrong when the failure looks like a flaky socket.
-- **Version skew between local and deployed runtimes bites at the edges.** The deployed app bundles an older platform SDK than the development environment, so a field present on a local SDK object is absent in production. Reading such fields defensively (tolerating their absence) is the difference between a resilient app and a crash-loop on deploy.
-- **Bundle sync follows the source tree's ignore rules.** Generated runtime files placed under a git-ignored build directory do not sync to the deployed app even when a broad include pattern appears to cover them; a file the deploy needs at runtime must be reachable by an explicit single-file include or served by an application route. Infrastructure-as-code inherits the repository's own visibility rules, and "it's in the folder" is not the same as "it ships."
+The managed Postgres autoscale model is branch-and-endpoint, and the two behave very differently under mutation. Lakebase separates *storage* (a branch) from *compute* (an endpoint), and the asymmetry is sharp: a read-write endpoint cannot be deleted, and its idle-suspend timeout cannot be patched in place — the platform rejects the update mask outright. A live endpoint we needed to move from a 24-hour idle window to a five-minute one could not simply be reconfigured. What *is* mutable is the project default, which every newly created branch's endpoint inherits, and branches themselves are cheap to create and delete. So the design rule writes itself: treat the idle-suspend posture as set-at-creation, not tuned-in-place. To change it on a live resource, cut over to a fresh branch that inherits the corrected default rather than expecting an in-place edit. Because data lives on the branch and not the endpoint, an endpoint operation never risks the data — a branch cutover is a controlled storage migration, and we validated the whole mechanism on a throwaway branch before touching production.
+
+A privileged deploy-time migration step is not optional. The application's service principal connects to Lakebase but does not own the tables — the deploying user does. Any DDL the app attempts, adding a column or creating an index, fails with `InsufficientPrivilege` and is silently skipped, and a dependent backfill against the missing column once crash-looped the app for about an hour. The fix is structural. Schema changes run as a privileged, owner-authenticated step in the deploy pipeline, never from the app at startup, and the app's own initialization degrades a skipped migration to a request-time error rather than a boot-loop. Local tests mask this entirely, because the local test role owns its tables — a classic environment gap that only production privilege separation reveals.
+
+Long-lived streams die on token expiry, not on network faults. The server-sent-events stream that backs the wake mechanisms was dropping after roughly an hour, and the cause was not the connection but the credential: the platform OAuth token minted at connect time expires, and a stream that captured it once had no way to recover. The fix is to re-mint the token on every reconnect rather than capturing it once at stream open — obvious in hindsight, and easy to get wrong when the failure looks like a flaky socket.
+
+Version skew between local and deployed runtimes bites at the edges. The deployed app bundles an older platform SDK than the development environment, so a field present on a local SDK object is absent in production. Reading such fields defensively, tolerating their absence, is the difference between a resilient app and a crash-loop on deploy.
+
+Finally, bundle sync follows the source tree's ignore rules. Generated runtime files placed under a git-ignored build directory do not sync to the deployed app even when a broad include pattern appears to cover them; a file the deploy needs at runtime must be reachable by an explicit single-file include or served by an application route. Infrastructure-as-code inherits the repository's own visibility rules, and "it's in the folder" is not the same as "it ships."
 
 None of these are exotic. They are the ordinary friction of running a real service on a managed platform — and each one is now encoded as a rule in the deploy path, a safety net in the app, or a comment that will save the next operator an hour.
 
 ### 8.5 Limitations
 
-Honesty here buys credibility everywhere else.
+Honesty here buys credibility everywhere else. So, plainly, the things this system does not yet do.
 
-- **Adherence is voluntary.** An agent that never calls `claim_resource` gets no protection. Session hooks and repository instructions raise adherence; they do not enforce it. Server-side enforcement is future work.
-- **The trust model is cooperative.** Identity is self-declared inside the workspace boundary (§3.6). Exclusion is atomic against races, not against impersonation.
-- **Reads are at-least-once.** An agent that crashes between read and acknowledgment will reprocess messages. Handlers must be idempotent.
-- **Scope is a single workspace.** Cross-organization coordination is explicitly out of v1 (§9.1).
-- **Author attribution is currently null.** On-behalf-of authorization is implemented but disabled pending administrative enablement (§9.5); the agent identity is the only identity today.
-- **An outage is silent.** Fail-open design (§3.4) means an unreachable line quietly returns the fleet to the uncoordinated baseline until it reconnects.
-- **Adoption has a context cost when loaded.** The typed MCP surface consumes input tokens every turn its tool schemas and instructions are resident — comparable servers run 700–2,000 tokens per tool (ref. 32). We hold this down by keeping the server opt-in, the tool set small, and routine actions CLI-first (§3.7–3.8), but the cost is real; it shapes *when* the line should be loaded, not whether it works.
-- **Real-time idle wake is harness- and environment-dependent.** The native session channel (§3.5) is the only mechanism that interrupts a fully idle agent. It is now verified working in our own dogfood workspace — two human-posted messages pushed into a live Claude Code session and answered inline (2026-07-21) — but only from the **VS Code integrated terminal**, the harness surface that hosts and bridges the channel subprocess; a bare or headless invocation that never starts it, or a workspace that genuinely gates the flag by administrative policy, does not get the push. And in Claude Code the background-task watcher cannot substitute, because the harness reaps background tasks each turn. Where the channel is unavailable, agents fall back to the session-start and per-turn hooks plus on-demand checks rather than instantaneous push. What remains unproven is a controlled *fully-idle* soak: our confirmations arrived during or between active turns, not after a long quiescent stretch, and the channel's durability past the ~1h OAuth-token expiry rests on the recent per-reconnect re-mint fix rather than a measured long-idle test.
+Adherence is voluntary. An agent that never calls `claim_resource` gets no protection; session hooks and repository instructions raise adherence but do not enforce it, and server-side enforcement is future work. The trust model is likewise cooperative — identity is self-declared inside the workspace boundary (§3.6), so exclusion is atomic against races, not against impersonation. Reads are at-least-once, which means an agent that crashes between read and acknowledgment will reprocess messages, and handlers must be idempotent. Scope is a single workspace; cross-organization coordination is explicitly out of v1 (§9.1). Author attribution is currently null, because on-behalf-of authorization is implemented but disabled pending administrative enablement (§9.5) — the agent identity is the only identity today. And an outage is silent by design: fail-open (§3.4) means an unreachable line quietly returns the fleet to the uncoordinated baseline until it reconnects.
+
+Two limitations deserve more than a sentence, because they touch the two claims the paper leans on hardest.
+
+The first is the context cost of adoption. The typed MCP surface consumes input tokens every turn its tool schemas and instructions are resident — comparable servers run 700–2,000 tokens per tool (ref. 32). We hold this down by keeping the server opt-in, the tool set small, and routine actions CLI-first (§3.7–3.8). But the cost is real. It shapes *when* the line should be loaded, not whether it works.
+
+The second is real-time idle wake, which is harness- and environment-dependent. The native session channel (§3.5) is the only mechanism that interrupts a fully idle agent. It is now verified working in our own dogfood workspace — two human-posted messages pushed into a live Claude Code session and answered inline (2026-07-21) — but only from the VS Code integrated terminal, the harness surface that hosts and bridges the channel subprocess. A bare or headless invocation that never starts it, or a workspace that genuinely gates the flag by administrative policy, does not get the push. And in Claude Code the background-task watcher cannot substitute, because the harness reaps background tasks each turn. Where the channel is unavailable, agents fall back to the session-start and per-turn hooks plus on-demand checks rather than instantaneous push. What remains unproven is a controlled fully-idle soak: our confirmations arrived during or between active turns, not after a long quiescent stretch, and the channel's durability past the ~1h OAuth-token expiry rests on the recent per-reconnect re-mint fix rather than a measured long-idle test.
 
 None of these are fatal. All of them are real. Several point directly at the roadmap.
 
 ---
 
 ## 9. Future Directions
+
+The limitations just enumerated are not a static list; most of them are the next items of work. What follows is the roadmap they point to — reaching across organizations, mining the log for coordination intelligence, spanning repositories, embracing heterogeneous agents, hardening identity, and lowering the interface cost further still.
 
 ### 9.1 Cross-Organization Escalation
 

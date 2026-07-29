@@ -30,7 +30,7 @@ Multiple agents work these repos in parallel. There are two ways to reach the li
 - **MCP server (opt-in, for typed tools).** `Partyline is opt-in, not always-on` — it is
   deliberately *not* in the routine `.mcp.json`, because its tool schemas + `INSTRUCTIONS`
   are re-sent every turn: a per-turn token tax on every unrelated solo session (Anthropic
-  measures comparable servers at ~700–2,000 tokens/tool — see `docs/whitepaper.md`
+  measures comparable servers at ~700–2,000 tokens/tool — see `docs/Covasant Partyline Whitepaper.md`
   §3.8). Load it only for a genuine **epic-scale, multi-agent coordinated effort** where
   typed, discoverable tools earn their keep:
 
