@@ -8,13 +8,13 @@
 
 ## 1. Executive Summary
 
-AI coding agents are no longer experimental. Teams now routinely run four, six, or a dozen autonomous agents against shared codebases — and those agents collide. They push over each other. They edit the same files. They redo finished work and silently break each other's migrations. The tools that orchestrate agents *within* a process do nothing for agents running as independent processes, and the channels humans coordinate through — chat, git, tribal knowledge — assume a participant who is always listening. An LLM agent is not. It acts only when something hands it a turn.
+AI coding agents are no longer experimental. Teams now routinely run four, six, or a dozen autonomous agents against shared codebases. Disciplined teams already reach for the obvious isolation — git worktrees, feature branches, per-bug branches — and that machinery does its job: it keeps two agents from clobbering the same file. What it cannot do is make the agents aware of one another. Sealed into separate branches, two agents will happily fix the same defect twice, redo a refactor a peer finished an hour ago, or build against an interface a third has already changed. The tools that orchestrate agents *within* a process do nothing for agents running as independent processes, and the channels humans coordinate through — chat, git, tribal knowledge — assume a participant who is always listening. An LLM agent is not. It acts only when something hands it a turn.
 
 Covasant Partyline closes that gap. It is a lightweight, durable coordination line for agent fleets, built on three primitives — an append-only message log, atomic TTL'd resource claims, and per-agent read checkpoints — and it adds the piece every framework we surveyed omits: a way to *wake*, or at least reliably re-orient, a turn-based agent when something on the line needs its attention. Any agent that speaks the Model Context Protocol joins with no custom integration. Humans join through the same line, as first-class participants.
 
 The design earns its keep by costing almost nothing when idle. That discipline extends to the interface itself, and it drove a deliberate migration. Early on, the typed MCP tool surface was the primary way in — but an MCP server's tool schemas and instructions are re-sent to the model on *every* turn, a standing token tax on every session whether or not a coordination tool is ever called. So we inverted the default. Routine actions now shell out to a zero-standing-cost command-line client that speaks the same API, and awareness arrives through lifecycle hooks that inject only what is addressed to an agent. The typed MCP server became opt-in, loaded only for the epic-scale efforts that genuinely want discoverable tools. The interface cost is removed for an uninvolved session, not merely discounted.
 
-Our central claim is deliberately modest, and therefore strong. The primitives are old. The composition is new. Structured coordination primitives — not chat — prevent race conditions, enable epic-scale parallelism, and preserve a full operational history, at zero idle cost, for any agent that speaks MCP. The rest of this paper defends that claim: why the shape is right, how it compares to the adjacent prior art, what it costs to run, and what a real multi-agent epic looked like when it ran on the line.
+Our central claim is deliberately modest, and therefore strong. The primitives are old. The composition is new. Structured coordination primitives — not chat — let a fleet divide labor without duplicating it, enable epic-scale parallelism, and preserve a full operational history, at zero idle cost, for any agent that speaks MCP; and where work does touch a genuinely shared surface, they add the atomic mutual exclusion that branch isolation alone cannot provide. The rest of this paper defends that claim: why the shape is right, how it compares to the adjacent prior art, what it costs to run, and what a real multi-agent epic looked like when it ran on the line.
 
 ---
 
@@ -30,7 +30,9 @@ The organizational reality compounds this. It is not one developer with one agen
 
 ### 2.2 What Goes Wrong Without Coordination
 
-We did not have to imagine the failure modes. We watched them, daily, in a production monorepo worked by six Claude Code instances. Two agents push within minutes of each other, and the second is rejected, fetches, merges, retries — and sometimes collides again. Two agents modify the same file, each unaware the other exists. An agent spends an hour on a task another agent finished yesterday. And the quietest failures are the worst: overlapping schema migrations, competing dependency upgrades, changes that merge cleanly and break at runtime. Nobody sees those until production does.
+We did not have to imagine the failure modes. We watched them, daily, in a production monorepo worked by six Claude Code instances. Branch discipline handled the crude collisions well enough — each agent on its own feature or bug branch, physical file conflicts caught at merge. The failures that survived isolation were the expensive ones, and they were failures of *awareness*, not of merge mechanics.
+
+An agent spends an hour building a fix another agent finished yesterday, on a branch it never saw. Two agents independently refactor the same module in incompatible directions, and only the merge — or worse, production — reveals it. One agent redesigns against an interface a peer has already changed underneath it. And on the surfaces isolation *cannot* separate — the shared default branch at push time, a schema every branch inherits, a monorepo build file — the crude collisions return: overlapping migrations, competing dependency upgrades, changes that merge cleanly and break at runtime. Branches make agents safe from each other. They also make agents invisible to each other, and invisibility is its own cost.
 
 Our first fix was the obvious one: a Slack channel. Agents posted status updates; agents polled for updates. It failed in instructive ways. Chat is ephemeral — there is no durable cursor, so an agent that missed a message missed it forever. Chat is advisory — "I'm working on the migration" is a sentence, not a lock, and two agents can say it simultaneously. And chat is operationally hostile to automation: OAuth app registration, rate limits, and prose that must be parsed back into semantics that were structured before someone flattened them into English.
 
@@ -218,7 +220,7 @@ We believe coordination changes the scaling curve, and we state that belief as t
 
 **H1:** with per-operation coordination cost held at O(1) — one claim check, one status post — fleet throughput scales near-linearly for well-decomposed work.
 
-**H2:** without coordination, returns diminish as fleet size grows, because pairwise conflict probability grows roughly with N² for overlapping working sets.
+**H2:** without coordination, returns diminish as fleet size grows, because the pairwise probability of overlapping work — duplicated effort as much as physical collision — grows roughly with N² for overlapping working sets, and branch isolation prevents the collisions while leaving the duplication untouched.
 
 The model behind both is simple and its assumptions — working-set overlap, task granularity — are exactly the things our production metrics (§8.3) are designed to measure. Until those numbers land, treat every scaling claim in this paper as the model, not the measurement.
 
@@ -363,7 +365,9 @@ Without coordination, adding agents past two or three yields diminishing returns
 
 ### 7.2 Wasted Compute Elimination (illustrative)
 
-Every prevented collision saves the full token cost of discarded work plus the retry. At current frontier-model rates, a single wasted multi-file edit runs $5–50 in tokens; at six agents across a working day, even two or three prevented collisions is $30–300 daily. The claim check that prevents each one is a single database round-trip. Microseconds, against dollars.
+The larger saving is not the prevented merge conflict — branch isolation already handles most of those — but the prevented *duplicate*. When one agent sees on the line that a defect is already claimed, or that a refactor shipped yesterday, the hour of frontier-model tokens it would have spent redoing that work is simply never spent. At current rates a wasted multi-file effort runs $5–50 in tokens, and duplicated effort across an unaware fleet is the most common way that spend evaporates; at six agents over a working day, avoiding even two or three such duplicates is $30–300. The awareness that prevents each one costs a single status post or an unread peek. Pennies, against dollars.
+
+On the genuinely shared surfaces isolation cannot separate, the atomic claim adds a second, smaller saving of the same kind — a prevented collision on the default branch or a schema is a discarded edit avoided — at the cost of one database round-trip. Microseconds, against dollars.
 
 ### 7.3 Time-to-Delivery Compression
 
@@ -383,7 +387,7 @@ The reference implementation composes three platform services today — serverle
 
 ### 7.7 A Simplified ROI Model (illustrative)
 
-Cost: a few dollars a day while sessions are active, near zero otherwise. Modeled savings: two to five prevented collisions daily at $10–50 each. Acceleration: an epic finished in hours instead of days dwarfs the infrastructure line entirely. And the break-even claim needs no model at all — the first prevented collision pays for the day.
+Cost: a few dollars a day while sessions are active, near zero otherwise. Modeled savings: two to five avoided duplicate efforts daily at $10–50 each, plus the occasional prevented collision on a shared surface. Acceleration: an epic finished in hours instead of days dwarfs the infrastructure line entirely. And the break-even claim needs no model at all — the first hour of duplicated work the fleet *doesn't* spend pays for the day.
 
 Models persuade; measurements convince. Here is where the measurements will come from.
 
@@ -419,7 +423,7 @@ One honest caveat: this is the *observational* layer, not the *controlled* one. 
 
 ### 8.3 Metrics (to be populated as dogfood accumulates)
 
-Five measurements will turn the model into results. The headline number is push-race reduction, against a baseline of roughly two per session and a target of zero. Alongside it we track time-to-awareness of peer claims and status — the push p95 measured against §2.3's single-digit-second requirement, cold start from scale-to-zero included. Epic completion throughput gives the scaling picture directly: tasks per hour, coordinated versus uncoordinated. Claim contention rate serves as a proxy for how well the work was decomposed. And the counterfactual comes from two sources — historical pre-Partyline session logs, plus alternating coordinated and uncoordinated sessions run on comparable task sets.
+Five measurements will turn the model into results. The headline number is duplicated-effort reduction — how often two agents start the same defect, refactor, or task, measured against an uncoordinated baseline and a target near zero; this is the value branch isolation cannot deliver and the one the model rests on. Alongside it we track time-to-awareness of peer claims and status — the push p95 measured against §2.3's single-digit-second requirement, cold start from scale-to-zero included. Epic completion throughput gives the scaling picture directly: tasks per hour, coordinated versus uncoordinated. Shared-surface collision rate — races on the default branch, schema, and monorepo build files, the surfaces isolation cannot separate — is the narrower safety metric, with a target of zero. And the counterfactual comes from two sources — historical pre-Partyline session logs, plus alternating coordinated and uncoordinated sessions run on comparable task sets.
 
 Instrumentation costs nothing extra. Every message, claim, and checkpoint is already timestamped in Postgres and queryable through the governed catalog. The metrics above are SQL queries, not new telemetry.
 
@@ -495,7 +499,7 @@ Lower the loaded-context cost of the typed surface further, along the mitigation
 
 ## 10. Conclusion
 
-Multi-agent software engineering is not coming; it is here, and coordination is its bottleneck. Six agents on one repository generate collisions daily. The frameworks that orchestrate agents inside a process cannot help agents that run as independent processes, and the channels humans coordinate through were never designed for participants who only act when spoken to.
+Multi-agent software engineering is not coming; it is here, and coordination is its bottleneck. Branch discipline keeps six agents on one repository from clobbering each other's files — but it also seals them off from each other, and unaware agents duplicate work, redo finished fixes, and build against each other's stale assumptions. The frameworks that orchestrate agents inside a process cannot help agents that run as independent processes, and the channels humans coordinate through were never designed for participants who only act when spoken to.
 
 Partyline's answer is small on purpose. Three primitives — awareness, exclusion, resumability — plus the piece prior art lacks: wake-up and awareness delivery for turn-based agents, honest about where a harness lets it push and where it must fall back to hooks. Structured message types, atomic claims, and checkpoint resume make parallelism safe at scale. Per-workspace isolation makes the whole thing distributable with no operational burden. The primitives are deliberately unoriginal; the contribution is the minimal composition for a new workload, and we have defended that claim against the strongest versions of the objection.
 
