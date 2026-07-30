@@ -70,6 +70,18 @@ Other grounding facts:
   to reach Lakebase) is a different principal from the *job's* SP. The job never uses the
   app's SP — it authenticates to the REST API with its own token and is authorized on its
   own `CAN_USE`.
+- **Not affected by #1545 (the live channel defect).** The loud, active defect on the
+  line is #1545: a committed `PARTYLINE_AGENT_ID` in `.mcp.json` crosses agents' inbound
+  **channel/MCP** filter to the wrong id (misdelivery) or to nothing (silent deafness),
+  and the crossing arrives silently on a routine `git pull`. This example posts over
+  **REST with a self-declared agent_id** and does not consume the inbound channel, so it
+  is structurally insulated: there is no `.mcp.json`-sourced filter id to cross. Recorded
+  so the implementation does not accidentally reintroduce an env/committed-id coupling
+  (the `agent_id` param defaults from run context, not from a checked-in file).
+- **Naming: `partyline_progress`, not `partyline_notify`.** Confirmed on the line that
+  `alan_aura_0` is concurrently building a `partyline_notify` cmd/shell **deploy** helper
+  in the aura repos. To avoid a cross-repo name/purpose collision, this notebook is
+  `notebooks/partyline_progress.py` (a *job* progress reporter), a distinct artifact.
 
 ## Architecture
 
@@ -79,13 +91,13 @@ Other grounding facts:
 scripts/provision_partyline_sp.py     # idempotent job-SP create + resolve application_id (SCIM)
 scripts/grant_app_access.py           # idempotent CAN_USE grant for the SP on the deployed app
 resources/example_progress_job.job.yml# the example job (DAG, parameters, run_as SP, serverless)
-notebooks/partyline_notify.py         # ONE reusable widget-driven notebook, backs all tasks
+notebooks/partyline_progress.py       # ONE reusable widget-driven notebook, backs all tasks
 ```
 
 `deploy.sh` gains a bootstrap phase (below). No existing source is modified except
 `deploy.sh` and the addition of one bundle variable (`partyline_sp_app_id`).
 
-### The reusable notebook (`notebooks/partyline_notify.py`)
+### The reusable notebook (`notebooks/partyline_progress.py`)
 
 A single notebook backs every task. An `action` widget selects behavior:
 
@@ -210,6 +222,6 @@ the ordering constraint. Reruns are no-ops throughout.
 1. `scripts/provision_partyline_sp.py`
 2. `scripts/grant_app_access.py`
 3. `resources/example_progress_job.job.yml`
-4. `notebooks/partyline_notify.py`
+4. `notebooks/partyline_progress.py`
 5. `deploy.sh` bootstrap-phase additions + `partyline_sp_app_id` bundle variable
 6. Tests + a short README section documenting how to run and adapt the example
