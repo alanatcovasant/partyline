@@ -70,10 +70,23 @@ agent_id = pl.derive_agent_id(job_id, run_id, agent_id_override)
 # versions, so a keyword can raise TypeError on the wrong one; positional binds either way.
 url = partyline_url or w.apps.get(app_name).url
 
-# Token: the run identity's OAuth token via the SDK's unified auth (managed identity on
-# the cluster). NOT ctx.apiToken() — that is the same non-whitelisted CommandContext as
-# tags(); w.config.oauth_token() is auth-provider based and works on serverless.
-token = w.config.oauth_token().access_token
+# Token: the run identity's bearer, obtained provider-agnostically. Two other paths are
+# dead on serverless: ctx.apiToken() reads the non-whitelisted CommandContext (Py4J block),
+# and w.config.oauth_token() raises AttributeError because the resolved credential provider
+# is a bare header-factory function with no .oauth_token accessor. w.config.authenticate()
+# calls that factory directly and returns the {"Authorization": "Bearer <tok>"} headers the
+# SDK already uses for every request (the w.apps.get call just above proves it works here) —
+# so it is correct for every provider. Strip the scheme; the REST helpers re-add "Bearer ".
+def _run_bearer(wc):
+    headers = wc.config.authenticate()  # Dict[str, str]; provider-agnostic
+    hdr = headers.get("Authorization") or headers.get("authorization") or ""
+    if hdr[:7].lower() == "bearer ":
+        return hdr[7:]
+    if hdr:
+        return hdr
+    raise RuntimeError(f"no bearer token in auth headers (keys={sorted(headers)})")
+
+token = _run_bearer(w)
 
 print(f"action={action} agent_id={agent_id} url={url} task_label={task_label}")
 
