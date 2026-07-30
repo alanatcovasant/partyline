@@ -29,6 +29,12 @@ resources:
           default: "{{job.id}}"
         - name: run_id
           default: "{{job.run_id}}"
+        - name: secret_scope
+          default: "covasant-partyline-example-job"
+        - name: client_id_key
+          default: "sp_client_id"
+        - name: client_secret_key
+          default: "sp_client_secret"
 
       tasks:
         - task_key: notify_start

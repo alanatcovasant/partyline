@@ -9,8 +9,10 @@ the serverless task.
 """
 from __future__ import annotations
 
+import base64
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -97,3 +99,36 @@ def post_message(url, token, *, agent_id, message_type, summary, payload=None,
         "recipient": recipient, "reply_to_id": reply_to_id,
         "mentions": [], "metadata": {},
     }, timeout)
+
+
+def mint_m2m_token(host, client_id, client_secret, *, timeout=30.0):
+    """Mint a workspace-audience M2M OAuth token via the OIDC token endpoint.
+
+    Uses the client-credentials grant with scope=all-apis — the token TYPE the Databricks
+    Apps OAuth proxy accepts. The serverless task's ambient runtime credential is the WRONG
+    type and the proxy rejects it with 401; a token minted here is accepted. Basic-auth
+    client_id:client_secret, form-encoded body, per the OIDC client-credentials spec.
+
+    Raises PartylineError on transport failure or a response with no access_token. A 401 with
+    an "invalid_client" body means the SP secret has not propagated yet — the caller should
+    retry (secret propagation after a fresh mint can lag a few seconds).
+    """
+    token_url = host.rstrip("/") + "/oidc/v1/token"
+    data = urllib.parse.urlencode(
+        {"grant_type": "client_credentials", "scope": "all-apis"}
+    ).encode()
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    req = urllib.request.Request(token_url, data=data, method="POST")
+    req.add_header("Authorization", f"Basic {basic}")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read() or "null")
+    except urllib.error.HTTPError as e:
+        raise PartylineError(e.code, e.read().decode(errors="replace")) from e
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise PartylineError(None, str(getattr(e, "reason", e))) from e
+    token = (payload or {}).get("access_token")
+    if not token:
+        raise PartylineError(None, f"no access_token in OIDC response: {payload}")
+    return token

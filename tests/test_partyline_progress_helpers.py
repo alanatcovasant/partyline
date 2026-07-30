@@ -64,7 +64,11 @@ def _capture(monkeypatch, response_obj):
         captured["url"] = req.full_url
         captured["method"] = req.get_method()
         captured["headers"] = dict(req.header_items())
-        captured["body"] = _json.loads(req.data.decode()) if req.data else None
+        try:
+            captured["body"] = _json.loads(req.data.decode()) if req.data else None
+        except ValueError:
+            captured["body"] = None
+            captured["raw_body"] = req.data.decode()
         captured["timeout"] = timeout
         return _FakeResp(_json.dumps(response_obj).encode())
     monkeypatch.setattr(h.urllib.request, "urlopen", fake_urlopen)
@@ -105,3 +109,40 @@ def test_post_message_raises_partyline_error_on_http_error(monkeypatch):
         assert False, "expected PartylineError"
     except h.PartylineError as e:
         assert e.status == 401
+
+
+def test_mint_m2m_token_posts_client_credentials(monkeypatch):
+    cap = _capture(monkeypatch, {"access_token": "abc123", "token_type": "Bearer"})
+    tok = h.mint_m2m_token("https://adb-1.2.azuredatabricks.net", "cid", "csecret")
+    assert tok == "abc123"
+    assert cap["url"] == "https://adb-1.2.azuredatabricks.net/oidc/v1/token"
+    assert cap["method"] == "POST"
+    # form-encoded body carries the client-credentials grant + all-apis scope
+    assert "grant_type=client_credentials" in cap["raw_body"]
+    assert "scope=all-apis" in cap["raw_body"]
+    assert cap["headers"]["Content-type"] == "application/x-www-form-urlencoded"
+    assert cap["headers"]["Authorization"].startswith("Basic ")
+
+
+def test_mint_m2m_token_raises_on_missing_access_token(monkeypatch):
+    _capture(monkeypatch, {"token_type": "Bearer"})  # no access_token
+    try:
+        h.mint_m2m_token("https://app", "cid", "csecret")
+        assert False, "expected PartylineError"
+    except h.PartylineError as e:
+        assert e.status is None
+
+
+def test_mint_m2m_token_wraps_http_error(monkeypatch):
+    import io as _io
+    def boom(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 401, "Unauthorized", {},
+            _io.BytesIO(b'{"error":"invalid_client"}'))
+    monkeypatch.setattr(h.urllib.request, "urlopen", boom)
+    try:
+        h.mint_m2m_token("https://app", "cid", "csecret")
+        assert False, "expected PartylineError"
+    except h.PartylineError as e:
+        assert e.status == 401
+        assert "invalid_client" in e.body

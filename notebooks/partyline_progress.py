@@ -40,6 +40,12 @@ dbutils.widgets.text("run_label", "")
 # these are injected as parameters, never read from the command context.
 dbutils.widgets.text("job_id", "")
 dbutils.widgets.text("run_id", "")
+# Secret scope holding the dedicated SP's OAuth client_id + client_secret (provisioned by
+# scripts/provision_partyline_sp.py). The notebook mints an M2M token from these — the
+# serverless ambient credential is rejected by the app's OAuth proxy (wrong token type).
+dbutils.widgets.text("secret_scope", "covasant-partyline-example-job")
+dbutils.widgets.text("client_id_key", "sp_client_id")
+dbutils.widgets.text("client_secret_key", "sp_client_secret")
 # Task-level parameters (set per task in the job yml).
 dbutils.widgets.dropdown("action", "step", ["start", "step", "finish"])
 dbutils.widgets.text("task_label", "work")
@@ -53,6 +59,9 @@ branch = dbutils.widgets.get("branch")
 run_label = dbutils.widgets.get("run_label")
 job_id = dbutils.widgets.get("job_id").strip() or None
 run_id = dbutils.widgets.get("run_id").strip() or None
+secret_scope = dbutils.widgets.get("secret_scope").strip()
+client_id_key = dbutils.widgets.get("client_id_key").strip()
+client_secret_key = dbutils.widgets.get("client_secret_key").strip()
 action = dbutils.widgets.get("action")
 task_label = dbutils.widgets.get("task_label")
 
@@ -70,23 +79,31 @@ agent_id = pl.derive_agent_id(job_id, run_id, agent_id_override)
 # versions, so a keyword can raise TypeError on the wrong one; positional binds either way.
 url = partyline_url or w.apps.get(app_name).url
 
-# Token: the run identity's bearer, obtained provider-agnostically. Two other paths are
-# dead on serverless: ctx.apiToken() reads the non-whitelisted CommandContext (Py4J block),
-# and w.config.oauth_token() raises AttributeError because the resolved credential provider
-# is a bare header-factory function with no .oauth_token accessor. w.config.authenticate()
-# calls that factory directly and returns the {"Authorization": "Bearer <tok>"} headers the
-# SDK already uses for every request (the w.apps.get call just above proves it works here) —
-# so it is correct for every provider. Strip the scheme; the REST helpers re-add "Bearer ".
-def _run_bearer(wc):
-    headers = wc.config.authenticate()  # Dict[str, str]; provider-agnostic
-    hdr = headers.get("Authorization") or headers.get("authorization") or ""
-    if hdr[:7].lower() == "bearer ":
-        return hdr[7:]
-    if hdr:
-        return hdr
-    raise RuntimeError(f"no bearer token in auth headers (keys={sorted(headers)})")
+# Token: an M2M (client-credentials) OAuth token for the dedicated service principal.
+# The serverless task's ambient runtime credential is the WRONG TOKEN TYPE for the app's
+# OAuth proxy — it returns 401. A client-credentials token with scope=all-apis is accepted.
+# The SP's client_id/client_secret are read from a secret scope provisioned at deploy time
+# (scripts/provision_partyline_sp.py). A fresh secret can take a few seconds to propagate,
+# surfacing as invalid_client on the token endpoint — retry a handful of times.
+import time
 
-token = _run_bearer(w)
+client_id = dbutils.secrets.get(scope=secret_scope, key=client_id_key)
+client_secret = dbutils.secrets.get(scope=secret_scope, key=client_secret_key)
+
+token = None
+_last_err = None
+for _attempt in range(6):
+    try:
+        token = pl.mint_m2m_token(w.config.host, client_id, client_secret)
+        break
+    except pl.PartylineError as e:
+        _last_err = e
+        if "invalid_client" in (e.body or ""):
+            time.sleep(3)
+            continue
+        raise
+if token is None:
+    raise _last_err
 
 print(f"action={action} agent_id={agent_id} url={url} task_label={task_label}")
 
