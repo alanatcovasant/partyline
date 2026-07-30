@@ -212,6 +212,9 @@ function Compose({ agents }: { agents: Agent[] }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The workspace-SSO identity, once resolved. Held in state so the "use my name" button
+  // can offer it on demand — the auto-prefill below only fires for an empty box on load.
+  const [me, setMe] = useState<string | null>(null);
 
   // Prefill "from" with the workspace-SSO user (Databricks Apps forwards their identity;
   // see GET /api/whoami). Only fills a still-empty field, so a remembered/typed value and
@@ -223,6 +226,7 @@ function Compose({ agents }: { agents: Agent[] }) {
       .then((who) => {
         const name = who?.user_name || who?.email;
         if (cancelled || !name) return;
+        setMe(name);
         setFrom((current) => (current ? current : name));
       })
       .catch(() => {}); // best-effort: identity prefill never blocks composing
@@ -281,6 +285,16 @@ function Compose({ agents }: { agents: Agent[] }) {
           aria-label="From"
           required
         />
+        {me && me !== from && (
+          <button
+            type="button"
+            className="use-me"
+            onClick={() => setFrom(me)}
+            title={`Use my name (${me})`}
+          >
+            me
+          </button>
+        )}
         <select value={type} onChange={(e) => setType(e.target.value)} aria-label="Type">
           {MESSAGE_TYPES.map((t) => (
             <option key={t} value={t}>{t}</option>
