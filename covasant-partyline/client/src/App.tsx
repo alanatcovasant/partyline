@@ -213,6 +213,24 @@ function Compose({ agents }: { agents: Agent[] }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Prefill "from" with the workspace-SSO user (Databricks Apps forwards their identity;
+  // see GET /api/whoami). Only fills a still-empty field, so a remembered/typed value and
+  // in-flight edits always win. Nulls (local dev, M2M) just leave the placeholder.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/whoami")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((who) => {
+        const name = who?.user_name || who?.email;
+        if (cancelled || !name) return;
+        setFrom((current) => (current ? current : name));
+      })
+      .catch(() => {}); // best-effort: identity prefill never blocks composing
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function send(e: React.FormEvent) {
     e.preventDefault();
     if (!from.trim() || !text.trim() || busy) return;

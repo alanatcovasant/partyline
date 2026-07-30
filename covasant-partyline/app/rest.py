@@ -45,6 +45,22 @@ async def health() -> dict:
     }
 
 
+@router.get("/whoami")
+async def whoami(request: Request) -> dict:
+    """Best-effort identity of the browser user, for prefilling the dashboard's "from".
+
+    Databricks Apps authenticate the user via workspace SSO at the reverse proxy and
+    forward identity headers to us — independent of OBO (auth.py), which stays off. These
+    ``X-Forwarded-*`` headers are only injected for interactive browser sessions, so an
+    M2M/curl caller (or local dev) sees nulls; the SPA treats null as "no prefill". No SDK
+    call, no token — the proxy already vouched for the user.
+    """
+    return {
+        "user_name": request.headers.get("x-forwarded-preferred-username"),
+        "email": request.headers.get("x-forwarded-email"),
+    }
+
+
 @router.post("/agents", response_model=Agent)
 async def register_agent(body: RegisterAgent) -> dict:
     row = await run_in_threadpool(

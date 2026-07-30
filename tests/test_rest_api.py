@@ -17,6 +17,31 @@ async def test_health(client):
 
 
 @pytest.mark.anyio
+async def test_whoami_echoes_forwarded_identity(client):
+    """Databricks Apps forward the SSO user's identity headers; /api/whoami surfaces them."""
+    resp = await client.get(
+        "/api/whoami",
+        headers={
+            "X-Forwarded-Preferred-Username": "alan.dennis",
+            "X-Forwarded-Email": "alan.dennis@example.com",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "user_name": "alan.dennis",
+        "email": "alan.dennis@example.com",
+    }
+
+
+@pytest.mark.anyio
+async def test_whoami_null_without_forwarded_headers(client):
+    """No proxy headers (local dev, M2M/curl) => nulls; the SPA then skips the prefill."""
+    resp = await client.get("/api/whoami")
+    assert resp.status_code == 200
+    assert resp.json() == {"user_name": None, "email": None}
+
+
+@pytest.mark.anyio
 async def test_register_agent(client):
     resp = await client.post(
         "/api/agents",
