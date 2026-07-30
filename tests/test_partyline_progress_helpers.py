@@ -46,3 +46,62 @@ def test_simulated_metric_is_deterministic_and_in_range():
     m1 = h.simulated_metric("work_a")
     assert m1 == h.simulated_metric("work_a")      # deterministic
     assert 1000 <= m1 < 2000                        # bounded band
+
+
+import io
+import json as _json
+import urllib.error
+
+
+class _FakeResp(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): self.close()
+
+
+def _capture(monkeypatch, response_obj):
+    captured = {}
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = _json.loads(req.data.decode()) if req.data else None
+        captured["timeout"] = timeout
+        return _FakeResp(_json.dumps(response_obj).encode())
+    monkeypatch.setattr(h.urllib.request, "urlopen", fake_urlopen)
+    return captured
+
+
+def test_register_agent_posts_expected_shape(monkeypatch):
+    cap = _capture(monkeypatch, {"agent_id": "job_1_run_2"})
+    row = h.register_agent("https://app", "tok", "job_1_run_2", "covasant", "covasant-partyline", "main")
+    assert row["agent_id"] == "job_1_run_2"
+    assert cap["url"] == "https://app/api/agents"
+    assert cap["method"] == "POST"
+    assert cap["headers"]["Authorization"] == "Bearer tok"
+    assert cap["body"]["owner"] == "covasant"
+
+
+def test_post_message_returns_id_and_threads(monkeypatch):
+    cap = _capture(monkeypatch, {"id": 4242})
+    row = h.post_message("https://app", "tok", agent_id="a", message_type="status",
+                         summary="work_a: processed 1,000 rows", reply_to_id=17)
+    assert row["id"] == 4242
+    assert cap["body"]["reply_to_id"] == 17
+    assert cap["body"]["message_type"] == "status"
+
+
+def test_post_message_no_token_omits_auth_header(monkeypatch):
+    cap = _capture(monkeypatch, {"id": 1})
+    h.post_message("http://localhost:8000", None, agent_id="a", message_type="status", summary="s")
+    assert "Authorization" not in cap["headers"]
+
+
+def test_post_message_raises_partyline_error_on_http_error(monkeypatch):
+    def boom(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, io.BytesIO(b"nope"))
+    monkeypatch.setattr(h.urllib.request, "urlopen", boom)
+    try:
+        h.post_message("https://app", "tok", agent_id="a", message_type="status", summary="s")
+        assert False, "expected PartylineError"
+    except h.PartylineError as e:
+        assert e.status == 401

@@ -9,6 +9,10 @@ the serverless task.
 """
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.request
+
 
 def derive_agent_id(job_id: str | None, run_id: str | None, override: str | None) -> str:
     """Agent id for the line. A non-blank override wins; otherwise derive from run context.
@@ -50,3 +54,46 @@ def build_failure_summary(outcomes: list[str]) -> str:
 def simulated_metric(task_label: str) -> int:
     """A deterministic stand-in for 'work done' — no RNG so runs/tests are reproducible."""
     return 1000 + (sum(ord(c) for c in task_label) % 1000)
+
+
+class PartylineError(RuntimeError):
+    """A partyline REST call failed. Carries the HTTP status (or None for a transport error)
+    and the response body, so a failed POST surfaces loudly rather than looking like success."""
+
+    def __init__(self, status: int | None, body: str):
+        super().__init__(f"partyline call failed (status={status}): {body[:300]}")
+        self.status = status
+        self.body = body
+
+
+def _request(method: str, url: str, token: str | None, body: dict | None, timeout: float) -> dict:
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read() or "null")
+    except urllib.error.HTTPError as e:
+        raise PartylineError(e.code, e.read().decode(errors="replace")) from e
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise PartylineError(None, str(getattr(e, "reason", e))) from e
+
+
+def register_agent(url, token, agent_id, owner, repo, branch, *, timeout=30.0):
+    return _request("POST", url.rstrip("/") + "/api/agents", token, {
+        "agent_id": agent_id, "owner": owner, "repo": repo,
+        "branch": branch, "display_name": agent_id,
+    }, timeout)
+
+
+def post_message(url, token, *, agent_id, message_type, summary, payload=None,
+                 repo=None, branch=None, recipient=None, reply_to_id=None, timeout=30.0):
+    return _request("POST", url.rstrip("/") + "/api/messages", token, {
+        "agent_id": agent_id, "message_type": message_type, "summary": summary,
+        "payload": payload, "repo": repo, "branch": branch,
+        "recipient": recipient, "reply_to_id": reply_to_id,
+        "mentions": [], "metadata": {},
+    }, timeout)
