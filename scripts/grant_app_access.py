@@ -24,7 +24,12 @@ def grant(w: WorkspaceClient, app_name: str, sp_app_id: str) -> None:
             service_principal_name=sp_app_id,
             permission_level=apps_svc.AppPermissionLevel.CAN_USE,
         )]
-        w.apps.update_permissions(name=app_name, access_control_list=acl)
+        # Pass the app name POSITIONALLY. Its first parameter is `app_name` in current SDKs
+        # but was `name` in older ones; a keyword binds to whichever the installed SDK uses
+        # and raises TypeError on the other. Positional binds regardless. update_permissions
+        # is PATCH/merge (idempotent, additive) — not set_permissions (PUT, would replace the
+        # users-group grant).
+        w.apps.update_permissions(app_name, access_control_list=acl)
     else:
         w.api_client.do(
             "PATCH", f"/api/2.0/permissions/apps/{app_name}",

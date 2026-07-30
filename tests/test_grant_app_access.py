@@ -11,10 +11,14 @@ def test_grant_calls_update_permissions_with_can_use():
     w = MagicMock()
     m.grant(w, "mcp-covasant-partyline", "app-123")
     assert w.apps.update_permissions.called
-    kwargs = w.apps.update_permissions.call_args.kwargs
-    assert kwargs["name"] == "mcp-covasant-partyline"
-    acl = kwargs["access_control_list"]
+    call = w.apps.update_permissions.call_args
+    # app_name is passed POSITIONALLY (robust to the SDK's name/app_name kwarg skew that a
+    # keyword arg silently accepted on a MagicMock but the real SDK rejected with TypeError).
+    assert call.args[0] == "mcp-covasant-partyline"
+    acl = call.kwargs["access_control_list"]
     assert acl and getattr(acl[0], "service_principal_name", None) == "app-123"
+    # Assert the grant level too — CAN_USE is the whole point of the grant.
+    assert "CAN_USE" in str(getattr(acl[0], "permission_level", None))
 
 
 def test_grant_falls_back_to_rest_when_sdk_method_missing():
