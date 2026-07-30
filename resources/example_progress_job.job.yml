@@ -1,0 +1,74 @@
+# resources/example_progress_job.job.yml
+# Example job: a multi-task notebook workload that reports live progress to the Partyline
+# as one threaded conversation. One notebook (notebooks/partyline_progress.py) backs every
+# task; the `action` task-parameter selects start/step/finish. Fully parameterized so it is
+# copy-and-adapt friendly. run_as is overridden to the dedicated SP in the prod target only
+# (databricks.yml) — development mode forces run_as to the deploying user.
+resources:
+  jobs:
+    example_progress_job:
+      name: partyline_example_progress
+
+      # Job-level parameters -> widgets in the notebook. Blank agent_id => derived per run.
+      parameters:
+        - name: app_name
+          default: "mcp-covasant-partyline"
+        - name: partyline_url
+          default: ""
+        - name: agent_id
+          default: ""
+        - name: owner
+          default: "covasant"
+        - name: repo
+          default: "covasant-partyline"
+        - name: branch
+          default: "main"
+        - name: run_label
+          default: ""
+
+      tasks:
+        - task_key: notify_start
+          notebook_task:
+            notebook_path: ../notebooks/partyline_progress.py
+            base_parameters:
+              action: "start"
+              task_label: "notify_start"
+          environment_key: default
+
+        - task_key: work_a
+          depends_on:
+            - task_key: notify_start
+          notebook_task:
+            notebook_path: ../notebooks/partyline_progress.py
+            base_parameters:
+              action: "step"
+              task_label: "work_a"
+          environment_key: default
+
+        - task_key: work_b
+          depends_on:
+            - task_key: work_a
+          notebook_task:
+            notebook_path: ../notebooks/partyline_progress.py
+            base_parameters:
+              action: "step"
+              task_label: "work_b"
+          environment_key: default
+
+        - task_key: notify_finish
+          depends_on:
+            - task_key: work_b
+          run_if: ALL_DONE      # post the terminal message even if an upstream task failed
+          notebook_task:
+            notebook_path: ../notebooks/partyline_progress.py
+            base_parameters:
+              action: "finish"
+              task_label: "notify_finish"
+          environment_key: default
+
+      # Serverless environment for the notebook tasks. No dependencies block: the notebook
+      # is stdlib-only (urllib) plus the always-present databricks-sdk, so nothing to install.
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
