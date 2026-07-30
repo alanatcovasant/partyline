@@ -100,4 +100,19 @@ databricks bundle deploy -t "$TARGET" --profile "$PROFILE"
 echo "==> 4/4 Restarting app"
 databricks bundle run covasant_partyline -t "$TARGET" --profile "$PROFILE"
 
-echo "==> Done. App deployed and restarted (version=${FULL_VERSION})."
+echo "==> 5/5 Bootstrapping example-job service principal + grant"
+# Ordering matters: the app must already be deployed (steps 3–4 above) before we can grant
+# CAN_USE on it. SP creation needs account SCIM rights; if unavailable this step fails loudly
+# (a real prerequisite, not a UI step). Both scripts are idempotent no-ops on reruns.
+SP_APP_ID="$(DATABRICKS_CONFIG_PROFILE="$PROFILE" python scripts/provision_partyline_sp.py | tail -1)"
+echo "    example job SP applicationId=${SP_APP_ID}"
+DATABRICKS_CONFIG_PROFILE="$PROFILE" APP_NAME="mcp-covasant-partyline" \
+  PARTYLINE_SP_APP_ID="$SP_APP_ID" python scripts/grant_app_access.py
+
+echo "==> 5.5/5 Deploying example job"
+# In prod the job's run_as binds to the SP (databricks.yml override); pass the applicationId.
+# In dev the override is absent, so the --var is harmless (the job runs as the deploying user).
+databricks bundle deploy -t "$TARGET" --profile "$PROFILE" \
+  --var="partyline_sp_app_id=${SP_APP_ID}"
+
+echo "==> Done. App + example job deployed (version=${FULL_VERSION})."
