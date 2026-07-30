@@ -281,6 +281,46 @@ and OpenTelemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1`).
 Reads (`get_unread`, `get_since`, `list_agents`, `list_claims`) and `claim_resource` remain
 synchronous but fail fast with a ~8s timeout.
 
+## Example: progress-reporting job
+
+`resources/example_progress_job.job.yml` is a copy-and-adapt reference: a four-task job
+(`notify_start → work_a → work_b → notify_finish`) where every task runs the same
+widget-driven notebook (`notebooks/partyline_progress.py`) and posts to the line, so a run
+reads as one collapsible thread — a `start` message, a threaded progress reply per work
+task, and a `done` summary. Configuration flows through job **parameters** surfaced as
+notebook **widgets**; the notebook talks to the app over REST with stdlib `urllib` (no
+client wheel to install).
+
+Run it:
+
+    databricks bundle run example_progress_job -t dev-eastus2 --profile dev-eastus2
+
+| Parameter | Default | Purpose |
+|---|---|---|
+| `app_name` | `mcp-covasant-partyline` | resolve the app URL via `w.apps.get(app_name).url` |
+| `partyline_url` | *(blank)* | optional explicit URL override (skips app lookup) |
+| `agent_id` | *(blank)* | blank → derives `job_<job_id>_run_<run_id>` |
+| `owner` / `repo` / `branch` | `covasant` / `covasant-partyline` / `main` | registration metadata |
+| `run_label` | *(blank)* | free-text tag folded into the start message |
+| `secret_scope` / `client_id_key` / `client_secret_key` | `covasant-partyline-example-job` / `sp_client_id` / `sp_client_secret` | where the notebook reads the dedicated SP's OAuth credentials (see Identity) |
+
+`job_id` / `run_id` default to the `{{job.id}}` / `{{job.run_id}}` dynamic values and need
+no override; `action` (`start`/`step`/`finish`) and `task_label` are set per task.
+
+**Identity & auth.** The app sits behind a Databricks Apps OAuth proxy that rejects a
+serverless task's ambient runtime credential (wrong token *type* → HTTP 401). So the
+notebook authenticates as a **dedicated service principal** instead: `deploy.sh` provisions
+that SP (account SCIM → workspace membership → `CAN_USE` grant on the app) and stores its
+OAuth `client_id`/`client_secret` in a secret scope, and the notebook mints a short-lived
+workspace-audience M2M token (`grant_type=client_credentials`, `scope=all-apis`) from those
+per run. This holds in **both** targets — what differs is `run_as`: in `prod` the job *runs
+as* that same SP (which reads the scope via a READ ACL); in `dev-eastus2` (`mode:
+development`) it runs as the deploying user (who reads the scope via creator-MANAGE).
+
+**Adapt it** by replacing the simulated metric + `time.sleep` in the notebook's `step`
+branch with real work; add tasks by pointing them at the same notebook with a new
+`task_label` and `action: step`.
+
 ## VS Code Extension
 
 A lightweight extension providing real-time Partyline notifications and LM tool

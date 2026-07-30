@@ -27,6 +27,9 @@ variables:
     description: The catalog to use
   schema:
     description: The schema to use
+  partyline_sp_app_id:
+    description: applicationId of the example job's dedicated service principal (fed by deploy.sh after SCIM create); only bound as run_as in prod
+    default: ""
 
 targets:
   dev-eastus2:
@@ -56,3 +59,8 @@ targets:
     permissions:
       - user_name: alan.dennis@covasant.com
         level: CAN_MANAGE
+    resources:
+      jobs:
+        example_progress_job:
+          run_as:
+            service_principal_name: ${var.partyline_sp_app_id}

@@ -94,10 +94,29 @@ echo "==> 2.8/4 Publishing using-partyline skill for agents to fetch"
 cp partyline-plugin/skills/using-partyline/SKILL.md covasant-partyline/app/using-partyline.md
 echo "    hosted skill -> /skills/using-partyline.md"
 
-echo "==> 3/4 Deploying bundle (target=$TARGET)"
-databricks bundle deploy -t "$TARGET" --profile "$PROFILE"
+echo "==> 3/6 Provisioning example-job service principal (before bundle deploy)"
+# Order matters: the job's prod run_as binds to this SP (databricks.yml override), so the SP
+# must exist BEFORE the bundle deploy that registers the job — otherwise a first-ever prod
+# deploy would bind run_as to an empty/nonexistent SP. SP creation is app-independent (account
+# SCIM + workspace SP + secret scope), so it safely precedes the app deploy; only the CAN_USE
+# grant (step 6) needs the app to exist. Idempotent no-op on reruns; prints the applicationId
+# as its last stdout line. SP creation needs account SCIM rights; if unavailable this fails
+# loudly (a real prerequisite, not a UI step).
+SP_APP_ID="$(DATABRICKS_CONFIG_PROFILE="$PROFILE" python scripts/provision_partyline_sp.py | tail -1)"
+echo "    example job SP applicationId=${SP_APP_ID}"
 
-echo "==> 4/4 Restarting app"
+echo "==> 4/6 Deploying bundle (target=$TARGET)"
+# Pass the SP applicationId so prod's run_as override resolves to the real SP. In dev the
+# override is absent, so the --var is harmless (the job runs as the deploying user).
+databricks bundle deploy -t "$TARGET" --profile "$PROFILE" \
+  --var="partyline_sp_app_id=${SP_APP_ID}"
+
+echo "==> 5/6 Restarting app"
 databricks bundle run covasant_partyline -t "$TARGET" --profile "$PROFILE"
 
-echo "==> Done. App deployed and restarted (version=${FULL_VERSION})."
+echo "==> 6/6 Granting example-job SP CAN_USE on the app"
+# The grant needs the app to exist (steps 4–5 above). Idempotent no-op on reruns.
+DATABRICKS_CONFIG_PROFILE="$PROFILE" APP_NAME="mcp-covasant-partyline" \
+  PARTYLINE_SP_APP_ID="$SP_APP_ID" python scripts/grant_app_access.py
+
+echo "==> Done. App + example job deployed (version=${FULL_VERSION})."
