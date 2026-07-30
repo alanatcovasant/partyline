@@ -35,6 +35,11 @@ dbutils.widgets.text("owner", "covasant")
 dbutils.widgets.text("repo", "covasant-partyline")
 dbutils.widgets.text("branch", "main")
 dbutils.widgets.text("run_label", "")
+# Run-context identifiers arrive as job parameters (dynamic value references in the
+# job yml: {{job.id}} / {{job.run_id}}). Serverless blocks getContext().tags(), so
+# these are injected as parameters, never read from the command context.
+dbutils.widgets.text("job_id", "")
+dbutils.widgets.text("run_id", "")
 # Task-level parameters (set per task in the job yml).
 dbutils.widgets.dropdown("action", "step", ["start", "step", "finish"])
 dbutils.widgets.text("task_label", "work")
@@ -46,6 +51,8 @@ owner = dbutils.widgets.get("owner")
 repo = dbutils.widgets.get("repo")
 branch = dbutils.widgets.get("branch")
 run_label = dbutils.widgets.get("run_label")
+job_id = dbutils.widgets.get("job_id").strip() or None
+run_id = dbutils.widgets.get("run_id").strip() or None
 action = dbutils.widgets.get("action")
 task_label = dbutils.widgets.get("task_label")
 
@@ -53,18 +60,20 @@ task_label = dbutils.widgets.get("task_label")
 from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()
-ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
-job_id = ctx.tags().get("jobId").getOrElse(None) if hasattr(ctx.tags().get("jobId"), "getOrElse") else None
-run_id = ctx.tags().get("multitaskParentRunId").getOrElse(None) if hasattr(ctx.tags().get("multitaskParentRunId"), "getOrElse") else None
-
+# job_id / run_id come from job parameters (Change 2), resolved from dynamic value
+# references — NOT from getContext().tags(), which raises Py4JSecurityException on
+# serverless compute (CommandContext is not whitelisted).
 agent_id = pl.derive_agent_id(job_id, run_id, agent_id_override)
 
-# Resolve the app URL by name unless an explicit override was given.
-url = partyline_url or w.apps.get(name=app_name).url
+# Resolve the app URL by name unless an explicit override was given. Pass app_name
+# POSITIONALLY: the SDK's apps.get param name has drifted (name vs app_name) across
+# versions, so a keyword can raise TypeError on the wrong one; positional binds either way.
+url = partyline_url or w.apps.get(app_name).url
 
-# Token: the current run identity's OAuth token, accepted by the app's Databricks OAuth proxy.
-# Primary source — the notebook run-context API token:
-token = ctx.apiToken().get()
+# Token: the run identity's OAuth token via the SDK's unified auth (managed identity on
+# the cluster). NOT ctx.apiToken() — that is the same non-whitelisted CommandContext as
+# tags(); w.config.oauth_token() is auth-provider based and works on serverless.
+token = w.config.oauth_token().access_token
 
 print(f"action={action} agent_id={agent_id} url={url} task_label={task_label}")
 

@@ -25,6 +25,10 @@ resources:
           default: "main"
         - name: run_label
           default: ""
+        - name: job_id
+          default: "{{job.id}}"
+        - name: run_id
+          default: "{{job.run_id}}"
 
       tasks:
         - task_key: notify_start
