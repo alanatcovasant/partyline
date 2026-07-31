@@ -203,6 +203,27 @@ ul { list-style: none; margin: 0; padding: 0; }
 .connect-step .tag { margin-left: 0.35rem; vertical-align: middle; }
 .tag.opt { background: transparent; color: var(--muted); border: 1px solid var(--line); }
 .connect-links { display: flex; flex-direction: column; gap: 0.45rem; }
+/* Label above each install snippet on the Connect page (bash vs PowerShell). */
+.shell-label { margin: 0.75rem 0 0.1rem; font-weight: 600; font-size: 0.88rem; }
+.shell-label .muted { font-weight: 400; }
+/* Overview page: concept definition list + coordination-loop steps. */
+.overview-concepts { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 0.9rem; }
+.overview-concept { display: contents; }
+.overview-concept dt { font-weight: 600; }
+.overview-concept dd { margin: 0; }
+.overview-concept code, .overview-loop code, .connect-links code, .connect-url code { font-size: 0.9em; }
+.overview-loop { margin: 0.4rem 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.overview-loop li { list-style: decimal; }
+/* Link-styled buttons on the Overview page (no router — these switch the in-app view). */
+.overview button.link, .connect-links button.link {
+  background: none; border: none; color: var(--accent); cursor: pointer;
+  font: inherit; padding: 0; text-decoration: none; text-align: left;
+}
+.overview button.link:hover, .connect-links button.link:hover { text-decoration: underline; }
+@media (max-width: 560px) {
+  .overview-concepts { grid-template-columns: 1fr; gap: 0.1rem 0; }
+  .overview-concept dd { margin: 0 0 0.5rem; }
+}
 
 /* Copy-enabled code snippet */
 .snippet { position: relative; margin: 0.5rem 0; }
