@@ -97,6 +97,11 @@ ul { list-style: none; margin: 0; padding: 0; }
 .t-done { background: #16a34a; }
 .t-claim, .t-release { background: #d97706; }
 .pills li { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid var(--line); }
+/* Territory map: one block per holder, so "whose is this?" is answered by position. */
+.claim-holder { margin-bottom: 0.6rem; }
+.claim-holder:last-child { margin-bottom: 0; }
+.claim-holder > b { font-size: 0.85em; }
+.claim-holder .pills code { color: var(--muted); font-size: 0.85em; overflow-wrap: anywhere; }
 .compose { display: flex; flex-direction: column; gap: 0.4rem; padding-bottom: 0.75rem; margin-bottom: 0.5rem; border-bottom: 1px solid var(--line); }
 .compose-row { display: flex; gap: 0.4rem; }
 .compose input, .compose select {

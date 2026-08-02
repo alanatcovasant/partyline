@@ -19,8 +19,19 @@ from mcp.server.fastmcp import FastMCP
 
 from . import db
 from .config import settings
+from .targets import InvalidTarget, infer_resource_type, validate_target
 
 log = logging.getLogger("partyline.mcp")
+
+
+def _invalid(exc: InvalidTarget) -> dict:
+    """Structured refusal, not an exception — the agent gets a correction it can apply."""
+    return {
+        "acquired": False,
+        "reason": "invalid_target",
+        "message": exc.message,
+        "hint": exc.hint,
+    }
 
 # Kept deliberately short: a client that surfaces `instructions` re-sends it to the model
 # every turn (a per-turn token cost), so this is the minimum an agent needs to act
@@ -31,9 +42,16 @@ Covasant Partyline — inter-agent coordination line for a fleet of coding agent
 related repos in parallel. Everything is broadcast; recipient/mentions filter attention,
 not privacy. Identity is a self-declared agent_id <owner>_<repo>_<instance>; keep it stable.
 
-Session start: register_agent → get_unread(agent_id, only_for_me=true) → ack_checkpoint
-after handling. Before editing a shared file, claim_resource (release_resource when done);
-if refused, post a `question` to the holder. Post as you work with post_message — status
+Session start: register_agent(workdirs=['<abs dir you own>']) → get_unread(agent_id,
+only_for_me=true) → ack_checkpoint after handling.
+
+Claim the work you're taking, not the files you'll touch: claim_work_item('issue:owner/repo#N',
+paths=[absolute dirs]) before starting; release_resource when done. A claim on a directory
+refuses any claim inside it — two agents must never work the same directory. Paths are
+absolute and filesystem-rooted, never repo-relative ('app/db.py' is refused). If refused,
+the holder is named: post a `question` to them instead of editing.
+
+Post as you work with post_message — status
 when starting, done on completion, blocked (with detail) when stuck, question to ask
 (types: status, question, claim, release, blocked, done, ack, escalation, summary). Prefer
 a one-line `summary` (the "what") plus fuller `payload` (the "why/how"): readers get
@@ -53,13 +71,25 @@ async def register_agent(
     repo: str,
     branch: str | None = None,
     display_name: str | None = None,
+    workdirs: list[str] | None = None,
 ) -> dict:
     """Register (or refresh) this agent instance. Call once before posting/claiming.
 
     agent_id is a unique instance name (e.g. 'alan_web_1'); owner is the developer/team.
+    workdirs are the absolute directories this session owns — they're claimed as a side
+    effect, and an overlap reports the holder in `workdir_claims` WITHOUT failing
+    registration. Declare them: two agents must never work the same directory, and
+    registering is the earliest moment the collision can surface.
     """
     log.info("register_agent agent_id=%s owner=%s repo=%s branch=%s", agent_id, owner, repo, branch)
-    result = await run_in_threadpool(db.register_agent, agent_id, owner, repo, branch, display_name)
+    for path in workdirs or []:
+        try:
+            validate_target(path)
+        except InvalidTarget as exc:
+            return _invalid(exc)
+    result = await run_in_threadpool(
+        db.register_agent, agent_id, owner, repo, branch, display_name, workdirs
+    )
     log.info("register_agent OK agent_id=%s", agent_id)
     return result
 
@@ -230,10 +260,22 @@ async def claim_resource(
     reason: str | None = None,
     ttl_seconds: int | None = None,
 ) -> dict:
-    """Atomically claim (repo, branch, resource_path) with a lease. Fails if held.
+    """Claim ONE target with a TTL'd lease: an absolute directory, or issue:owner/repo#N.
 
-    Returns {acquired: bool, claim: {...}}. On failure, claim is the current holder.
+    Prefer claim_work_item — claiming the GitHub issue plus the directories it touches, in
+    one atomic call, is the documented unit of coordination.
+
+    A claim on a directory refuses any claim inside it, and vice versa: two agents must
+    never work the same directory. Paths must be absolute and filesystem-rooted
+    ('c:/users/you/code/repo/app'), never repo-relative — 'app/db.py' is refused.
+
+    Returns {acquired: bool, claim: {...}}; on refusal `claim` is the current holder.
     """
+    try:
+        validate_target(resource_path)
+    except InvalidTarget as exc:
+        return _invalid(exc)
+    resource_type = resource_type or infer_resource_type(resource_path)
     ttl = ttl_seconds or settings.default_claim_ttl_seconds
     log.info("claim_resource agent_id=%s repo=%s resource=%s ttl=%s", agent_id, repo, resource_path, ttl)
     acquired, claim = await run_in_threadpool(
@@ -249,6 +291,46 @@ async def claim_resource(
     )
     log.info("claim_resource agent_id=%s resource=%s acquired=%s", agent_id, resource_path, acquired)
     return {"acquired": acquired, "claim": claim}
+
+
+@mcp.tool()
+async def claim_work_item(
+    agent_id: str,
+    repo: str,
+    work_item: str,
+    paths: list[str] | None = None,
+    branch: str | None = None,
+    claim_scope: str = "exclusive",
+    reason: str | None = None,
+    ttl_seconds: int | None = None,
+) -> dict:
+    """Claim the work you're taking: a GH issue/PR plus the directories it touches.
+
+    work_item is 'issue:owner/repo#123' or 'pr:owner/repo#123'; paths are absolute
+    filesystem directories. All-or-nothing — if any target is held, nothing is leased and
+    `blocker` names the holder, so you can never own the issue while someone else owns the
+    directory. Ask the holder; don't edit.
+
+    Returns {acquired: bool, claims: [...], blocker: {...} | None}.
+    """
+    try:
+        validate_target(work_item)
+        for p in paths or []:
+            validate_target(p)
+    except InvalidTarget as exc:
+        return _invalid(exc)
+
+    ttl = ttl_seconds or settings.default_claim_ttl_seconds
+    targets = [(work_item, infer_resource_type(work_item))]
+    targets += [(p, "directory") for p in (paths or [])]
+    log.info(
+        "claim_work_item agent_id=%s work_item=%s paths=%s", agent_id, work_item, len(paths or [])
+    )
+    acquired, claims, blocker = await run_in_threadpool(
+        db.claim_targets, agent_id, repo, branch, targets, claim_scope, reason, ttl,
+    )
+    log.info("claim_work_item agent_id=%s acquired=%s", agent_id, acquired)
+    return {"acquired": acquired, "claims": claims, "blocker": blocker}
 
 
 @mcp.tool()
@@ -288,7 +370,9 @@ def onboard_me(agent_id: str, owner: str = "", repo: str = "") -> str:
         "2. get_unread(only_for_me=true); handle anything addressed to you, then "
         "ack_checkpoint to the latest id you processed.\n"
         "3. post_message a brief `status` announcing you're online.\n"
-        "4. Before editing any shared file, claim_resource first; release_resource when done.\n"
+        "4. Declare your territory: register_agent(workdirs=['<abs dir you own>']). Then "
+        "claim_work_item('issue:owner/repo#N', paths=[...]) for the work you take, and "
+        "release_resource when done. Never claim a bare filename — paths are absolute.\n"
         "5. To get woken on new messages instead of polling, run the client watcher as a "
         "background task: `python -m covasant_partyline.cli watch --exit-on-mention "
         f"{agent_id}` — its exit wakes you; then get_unread(only_for_me=true) and re-arm."

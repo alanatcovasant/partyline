@@ -41,6 +41,10 @@ class Settings:
     auto_migrate: bool = os.getenv("PARTYLINE_AUTO_MIGRATE", "true").lower() == "true"
     # Default TTL (seconds) for a resource claim when the caller doesn't specify one.
     default_claim_ttl_seconds: int = int(os.getenv("PARTYLINE_CLAIM_TTL", "900"))
+    # A session's territory outlives a single task, so workdir claims get their own,
+    # longer TTL. Refreshed on every heartbeat, so a live session holds indefinitely and
+    # a dead one releases one TTL later without a session-end hook.
+    workdir_claim_ttl_seconds: int = int(os.getenv("PARTYLINE_WORKDIR_TTL", "3600"))
     # Local development mode — bypass Lakebase OAuth, use PGPASSWORD instead.
     local: bool = os.getenv("PARTYLINE_LOCAL", "").lower() in ("true", "1", "yes")
 

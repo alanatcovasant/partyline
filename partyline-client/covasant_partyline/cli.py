@@ -15,7 +15,8 @@ Commands:
   post       post a message (status/question/claim/release/blocked/done/ack/…)
   unread     messages since your checkpoint (--mine = addressed to you only)
   ack        advance your read checkpoint
-  claim      lease a (repo, branch, resource_path); fails if held by another agent
+  claim-issue  lease a GH issue/PR plus the directories it touches (preferred)
+  claim      lease one target: an absolute directory, or issue:owner/repo#N
   release    release a claim you hold
   agents     list active agents (with their last status)
   claims     list active resource claims
@@ -24,10 +25,10 @@ Commands:
   watch      stream live messages; --exit-on-mention makes it a wake-up trigger
 
 Examples:
-  partyline register alan_web_1 --owner alan --repo web --branch main
+  partyline register alan_web_1 --owner alan --repo web --branch main --workdir .
   partyline post alan_web_1 --type status --payload "starting #123"
   partyline post alan_web_1 --type question --recipient sam_api_1 --payload "API shape?"
-  partyline claim alan_web_1 web src/x.py --branch main --ttl 600
+  partyline claim-issue alan_web_1 web issue:covasant/web#123 --path .
   partyline unread alan_web_1 --mine
   partyline agents
   partyline search --issue 123 --repo web
@@ -46,6 +47,8 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from .targets import normalize_target
 
 DEFAULT_URL = os.getenv("PARTYLINE_URL", "http://localhost:8000")
 
@@ -82,6 +85,7 @@ def cmd_register(a: argparse.Namespace) -> None:
     _print(_request("POST", a.url, "/api/agents", {
         "agent_id": a.agent_id, "owner": a.owner, "repo": a.repo,
         "branch": a.branch, "display_name": a.display_name,
+        "workdirs": [normalize_target(d) for d in (a.workdir or [])],
     }))
 
 
@@ -108,16 +112,27 @@ def cmd_ack(a: argparse.Namespace) -> None:
 
 def cmd_claim(a: argparse.Namespace) -> None:
     _print(_request("POST", a.url, "/api/claims", {
-        "agent_id": a.agent_id, "repo": a.repo, "resource_path": a.resource_path,
+        "agent_id": a.agent_id, "repo": a.repo,
+        "resource_path": normalize_target(a.resource_path),
         "branch": a.branch, "resource_type": a.resource_type,
         "claim_scope": a.scope, "reason": a.reason, "ttl_seconds": a.ttl,
+    }))
+
+
+def cmd_claim_issue(a: argparse.Namespace) -> None:
+    _print(_request("POST", a.url, "/api/claims/work-item", {
+        "agent_id": a.agent_id, "repo": a.repo,
+        "work_item": normalize_target(a.work_item),
+        "paths": [normalize_target(p) for p in (a.path or [])],
+        "branch": a.branch, "claim_scope": a.scope, "reason": a.reason,
+        "ttl_seconds": a.ttl,
     }))
 
 
 def cmd_release(a: argparse.Namespace) -> None:
     _print(_request("POST", a.url, "/api/claims/release", {
         "agent_id": a.agent_id, "repo": a.repo,
-        "resource_path": a.resource_path, "branch": a.branch,
+        "resource_path": normalize_target(a.resource_path), "branch": a.branch,
     }))
 
 
@@ -318,6 +333,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--repo", required=True)
     sp.add_argument("--branch")
     sp.add_argument("--display-name", dest="display_name")
+    sp.add_argument("--workdir", action="append",
+                    help="Directory this session owns (repeatable; '.' = here). Claimed "
+                         "on register; an overlap reports the holder but still registers.")
     sp.set_defaults(func=cmd_register)
 
     sp = sub.add_parser("post", help="Post a message")
@@ -348,13 +366,28 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("message_id", type=int)
     sp.set_defaults(func=cmd_ack)
 
-    sp = sub.add_parser("claim", help="Claim a resource")
+    sp = sub.add_parser("claim-issue",
+                        help="Claim a GH issue/PR and the directories it touches")
     sp.add_argument("agent_id")
     sp.add_argument("repo")
-    sp.add_argument("resource_path")
+    sp.add_argument("work_item", help="issue:owner/repo#123 or pr:owner/repo#123")
+    sp.add_argument("--path", action="append",
+                    help="Directory this work touches (repeatable; '.' = here)")
+    sp.add_argument("--branch")
+    sp.add_argument("--scope", default="exclusive",
+                    choices=["exclusive", "shared_read", "intent"])
+    sp.add_argument("--reason")
+    sp.add_argument("--ttl", type=int, help="Lease seconds")
+    sp.set_defaults(func=cmd_claim_issue)
+
+    sp = sub.add_parser("claim", help="Claim one target (dir or work item)")
+    sp.add_argument("agent_id")
+    sp.add_argument("repo")
+    sp.add_argument("resource_path",
+                    help="Absolute directory ('.' = here) or issue:owner/repo#N")
     sp.add_argument("--branch")
     sp.add_argument("--resource-type", dest="resource_type",
-                    choices=["file", "directory", "module", "service", "migration"])
+                    choices=["issue", "pr", "directory", "workdir", "file"])
     sp.add_argument("--scope", default="exclusive",
                     choices=["exclusive", "shared_read", "intent"])
     sp.add_argument("--reason")

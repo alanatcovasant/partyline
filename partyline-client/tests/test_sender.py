@@ -30,7 +30,7 @@ def test_verb_bodies_validate_against_rest_models():
         "reply":        (PostMessage, {"agent_id": "a", "message_type": "ack", "payload": "ok"}),
         "register_agent": (RegisterAgent, {"agent_id": "a", "owner": "o", "repo": "r"}),
         "ack_checkpoint": (Checkpoint, {"agent_id": "a", "last_read_message_id": 5}),
-        "release_resource": (ReleaseRequest, {"agent_id": "a", "repo": "r", "resource_path": "p"}),
+        "release_resource": (ReleaseRequest, {"agent_id": "a", "repo": "r", "resource_path": "/t/x"}),
     }
     for verb, (model, args) in cases.items():
         path, build = sender.VERB_ENDPOINTS[verb]

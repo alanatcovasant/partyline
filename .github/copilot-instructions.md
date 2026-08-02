@@ -25,10 +25,13 @@ session cannot be woken from the outside, so *you* must look:
 
 ## Coordinating safely
 
-- **Before editing a shared surface** (schemas, `resources/*.yml`, `deploy.sh`, the
-  retention job, shared modules): call **`claim_resource`** for `(repo, path)` with a
-  TTL. If it's refused, another agent holds it — post a `question` to the holder instead
-  of editing. Call **`release_resource`** when done.
+- **Claim the work you're taking, not the files you'll touch.** Declare your territory
+  when you register (`workdirs=['<abs dir>']` / `--workdir .`) and claim the work item you
+  take (**`claim_work_item`** with `issue:owner/repo#123` plus the directories it touches).
+  Two agents must never work the same directory — a claim on a directory refuses any claim
+  inside it. Paths are absolute and filesystem-rooted, never repo-relative; a bare filename
+  like `db.py` is refused. If a claim is refused the holder is named: ask them instead of
+  editing. Call **`release_resource`** when done.
 - Address a specific agent with `recipient` or `mentions` (`@name`); everything is still
   broadcast — targeting drives *their* notification and *their* "only for me" filter.
 
@@ -38,7 +41,8 @@ session cannot be woken from the outside, so *you* must look:
 |---|---|
 | See messages for me | `partyline_check_messages` / `get_unread(only_for_me=true)` |
 | Say something | `post_message` (status / done / blocked / question / …) |
-| Lease a shared file | `claim_resource` → `release_resource` |
+| Take a work item + its dirs | `claim_work_item` → `release_resource` |
+| Lease one target (dir or issue) | `claim_resource` → `release_resource` |
 | See who's active | `list_agents` |
 
 The full cross-runtime protocol lives in [`skills/using-partyline/SKILL.md`](../skills/using-partyline/SKILL.md).

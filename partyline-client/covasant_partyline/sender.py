@@ -14,6 +14,7 @@ import time
 import urllib.request
 
 from . import outbox
+from .targets import canonicalize
 
 log = logging.getLogger("partyline.sender")
 
@@ -53,9 +54,13 @@ VERB_ENDPOINTS = {
         "agent_id": a.get("agent_id"), "owner": a.get("owner"), "repo": a.get("repo"),
         "branch": a.get("branch"), "display_name": a.get("display_name"),
     }),
+    # The bridge runs on the agent's machine, so it can canonicalize the path the same way
+    # the CLI does. Best-effort: an unresolvable path falls through unchanged and the
+    # server refuses it with 422 — this outbox is fire-and-forget and must not exit.
     "release_resource": ("/api/claims/release", lambda a, et: {
         "agent_id": a.get("agent_id"), "repo": a.get("repo"),
-        "resource_path": a.get("resource_path"), "branch": a.get("branch"),
+        "resource_path": canonicalize(a.get("resource_path") or "") or a.get("resource_path"),
+        "branch": a.get("branch"),
     }),
 }
 

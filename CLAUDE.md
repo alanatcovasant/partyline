@@ -46,12 +46,16 @@ The protocol below is identical whether you drive it via CLI or MCP tools (`part
 register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unread(only_for_me=true)`, etc.).
 
 - **Session start**: `register_agent` with agent_id `<owner>_<repo>_<instance>`
-  (e.g. `alan_partyline_1`), owner, repo, branch. Then `get_unread(only_for_me=true)`
-  and `ack_checkpoint` after processing.
-- **Before editing shared surfaces** (app/db.py schema, resources/*.yml, deploy.sh,
-  the retention job): `claim_resource(repo, resource_path, ttl_seconds=900)`. If
-  refused, another agent holds it — post a `question` to the holder (as `recipient`)
-  instead of editing. `release_resource` when done.
+  (e.g. `alan_partyline_1`), owner, repo, branch, and `workdirs` (the absolute directory
+  you're working — `--workdir .` from the CLI). Then `get_unread(only_for_me=true)` and
+  `ack_checkpoint` after processing.
+- **Claim the work, not the files.** Declare territory when you register
+  (`partyline register <id> --owner <o> --repo <r> --workdir .`) and claim the work item
+  you take (`partyline claim-issue <id> <repo> issue:owner/repo#123 --path .` ≡
+  `claim_work_item`). Two agents must never work the same directory — a claim on a
+  directory refuses any claim inside it. Paths are absolute and filesystem-rooted, never
+  repo-relative; a bare filename like `db.py` is refused. If a claim is refused the holder
+  is named: post a `question` to them instead of editing. `release_resource` when done.
 - **Broadcast as you work**: `status` when starting significant work, `done` on
   completion, `blocked` (with detail) when stuck. Address agents via `recipient` or
   `mentions` (`@name` in dashboard-composed messages becomes a mention).
