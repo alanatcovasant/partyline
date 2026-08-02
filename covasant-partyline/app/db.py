@@ -427,9 +427,29 @@ def register_agent(agent_id: str, owner: str, repo: str, branch: str | None, dis
                          registered_at, last_heartbeat""",
             (agent_id, owner, repo, branch, display_name),
         ).fetchone()
+        _extend_workdir_claims(conn, agent_id)
         conn.commit()
     log.info("Agent registered/refreshed: agent_id=%s repo=%s branch=%s", agent_id, repo, branch)
     return row
+
+
+def _extend_workdir_claims(conn, agent_id: str) -> None:
+    """Push this agent's live `workdir` claims out to a full TTL.
+
+    Territory follows the session: an active agent keeps its subtree, and a dead one drops
+    it one TTL later without needing a session-end hook. Ordinary (task-scoped) claims are
+    untouched — those expire on their own schedule.
+
+    Called from both heartbeat paths. `register_agent` does its own upsert rather than
+    going through `_heartbeat`, and a re-register is the strongest liveness signal there
+    is, so it must renew territory too.
+    """
+    conn.execute(
+        """UPDATE claims
+              SET expires_at = now() + make_interval(secs => %s)
+            WHERE agent_id = %s AND resource_type = 'workdir' AND expires_at > now()""",
+        (settings.workdir_claim_ttl_seconds, agent_id),
+    )
 
 
 def _heartbeat(conn, agent_id: str) -> None:
@@ -437,6 +457,8 @@ def _heartbeat(conn, agent_id: str) -> None:
     cur = conn.execute("UPDATE agents SET last_heartbeat = now() WHERE agent_id = %s", (agent_id,))
     if cur.rowcount == 0:
         log.warning("Heartbeat ignored for unregistered agent_id=%s", agent_id)
+        return
+    _extend_workdir_claims(conn, agent_id)
 
 
 def list_agents(active_within_seconds: int = 3600) -> list[dict]:

@@ -152,3 +152,39 @@ async def test_concurrent_parent_and_child_have_exactly_one_winner(started_app):
     assert sum(results.values()) == 1, f"expected exactly one winner, got {results}"
     db.release_resource("race_a", "aura", None, "/t/race/pkg")
     db.release_resource("race_b", "aura", None, "/t/race/pkg/sub")
+
+
+async def test_heartbeat_extends_workdir_claims(client):
+    """A live session holds its territory; a dead one loses it one TTL later."""
+    await _register(client, "ovl_hb")
+    r = await client.post("/api/claims", json={
+        "agent_id": "ovl_hb", "repo": "aura", "resource_path": "/t/ovl7/wd",
+        "resource_type": "workdir", "claim_scope": "exclusive", "ttl_seconds": 60,
+    })
+    assert r.json()["acquired"] is True
+    first_expiry = r.json()["claim"]["expires_at"]
+
+    # Any later call from this agent heartbeats, which re-extends workdir claims.
+    await client.post("/api/agents", json={
+        "agent_id": "ovl_hb", "owner": "test", "repo": "aura", "branch": "main",
+    })
+    claims = (await client.get("/api/claims")).json()
+    held = next(c for c in claims if c["resource_path"] == "/t/ovl7/wd")
+    assert held["expires_at"] > first_expiry  # extended to the workdir TTL, not 60s
+    await _release(client, "ovl_hb", "/t/ovl7/wd")
+
+
+async def test_heartbeat_does_not_extend_ordinary_claims(client):
+    await _register(client, "ovl_hb2")
+    r = await client.post("/api/claims", json={
+        "agent_id": "ovl_hb2", "repo": "aura", "resource_path": "/t/ovl8/pkg",
+        "resource_type": "directory", "claim_scope": "exclusive", "ttl_seconds": 300,
+    })
+    first_expiry = r.json()["claim"]["expires_at"]
+    await client.post("/api/agents", json={
+        "agent_id": "ovl_hb2", "owner": "test", "repo": "aura", "branch": "main",
+    })
+    claims = (await client.get("/api/claims")).json()
+    held = next(c for c in claims if c["resource_path"] == "/t/ovl8/pkg")
+    assert held["expires_at"] == first_expiry  # task leases expire on their own schedule
+    await _release(client, "ovl_hb2", "/t/ovl8/pkg")
