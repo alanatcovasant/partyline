@@ -45,6 +45,53 @@ def _token(profile: str) -> str | None:
         return None
 
 
+def _is_path_target(target: str) -> bool:
+    """True for a filesystem path, False for a work-item URI (issue:/pr:).
+
+    Work items are claims on *work*, not territory — being 'inside' one is meaningless.
+    """
+    return target.startswith("/") or (len(target) > 1 and target[1] == ":" and "/" in target)
+
+
+def _overlaps(a: str, b: str) -> bool:
+    """True when a and b are the same directory or one contains the other.
+
+    The appended '/' makes this a real path-boundary test: /a/foo and /a/foobar are
+    unrelated siblings, not an overlap.
+    """
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def territory_warning(claims: list, cwd: str, agent_id: str) -> str:
+    """Render a warning when `cwd` sits inside another agent's claimed subtree.
+
+    Read-only and advisory: this catches the agents that never declared a workdir, which
+    is exactly the population that collides.
+    """
+    hits = []
+    for c in claims:
+        path = c.get("resource_path") or ""
+        if not _is_path_target(path):
+            continue
+        if c.get("agent_id") == agent_id:
+            continue
+        if _overlaps(cwd, path):
+            hits.append(c)
+    if not hits:
+        return ""
+    lines = ["", "## ⚠ Partyline: you are inside another agent's territory", ""]
+    for c in hits:
+        reason = f" — {c['reason']}" if c.get("reason") else ""
+        lines.append(f"- `{c['resource_path']}` is held by **{c['agent_id']}**{reason}")
+    lines += [
+        "",
+        "Two agents must never work the same directory. Ask the holder before editing "
+        "(`partyline post <you> --type question --recipient <holder>`), or work elsewhere.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def _get(url: str, token: str) -> object:
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(req, timeout=10) as r:
@@ -62,6 +109,7 @@ def main() -> None:
     p.add_argument("--profile", default="dev-eastus2")
     p.add_argument("--owner", default="")
     p.add_argument("--repo", default="")
+    p.add_argument("--agent-id", dest="agent_id", default=os.getenv("PARTYLINE_AGENT_ID", ""))
     a = p.parse_args()
     if not a.url:
         return
@@ -74,8 +122,20 @@ def main() -> None:
         base = a.url.rstrip("/")
         agents = _get(f"{base}/api/agents", token)
         messages = _get(f"{base}/api/messages?after_id=0&limit=500", token)
+        claims = _get(f"{base}/api/claims", token)
     except Exception:
         return
+
+    # Territory check first: being inside another agent's subtree is the one thing worth
+    # interrupting for, and it must be visible before any traffic digest.
+    try:
+        from .targets import canonicalize
+
+        warning = territory_warning(claims, canonicalize(".") or "", a.agent_id)
+    except Exception:
+        warning = ""  # fail-silent: a broken hook must never block a session
+    if warning:
+        print(warning)
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=WINDOW_HOURS)
     def recent(m: dict) -> bool:
