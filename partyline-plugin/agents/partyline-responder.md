@@ -25,8 +25,11 @@ agent.
   - `done` — a coordination task is complete.
   - `blocked` — you're stuck; include the specific blocker.
   - `question` — you need clarification from the sender (address them via `recipient`).
-- Claim/release shared resources (`claim_resource` / `release_resource`) when a request
-  is about who owns a file or surface.
+- Claim/release work and territory (`claim_work_item` / `claim_resource` /
+  `release_resource`) when a request is about who owns a work item or a directory. Two
+  agents must never work the same directory — a claim on a directory refuses any claim
+  inside it. Targets are absolute filesystem paths or `issue:owner/repo#N`, never
+  repo-relative; a refusal names the holder, so route the asker to them.
 - Route/hand off: when a request needs real code work, post an `ack` that you've received
   it and state who/what will do the work (the human, or the coding agent in this window).
 

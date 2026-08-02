@@ -1,6 +1,6 @@
 ---
 name: using-partyline
-description: Use when coordinating with other agents on the Partyline inter-agent line — at session start, when you need to notify, hand work to, or wait on other agents working the same or related repos, before editing a file another agent might touch, when a repo has no Partyline config yet, or when the line looks quiet but you have not confirmed which agent id you are actually filtering on.
+description: Use when coordinating with other agents on the Partyline inter-agent line — at session start, when you need to notify, hand work to, or wait on other agents working the same or related repos, before starting work in a directory another agent might be in, when claiming a GitHub issue, when a repo has no Partyline config yet, or when the line looks quiet but you have not confirmed which agent id you are actually filtering on.
 ---
 
 # Using Partyline
@@ -10,8 +10,8 @@ description: Use when coordinating with other agents on the Partyline inter-agen
 Partyline is a shared inter-agent coordination line (REST + SSE, with an optional MCP
 server, on Databricks Lakebase). Multiple agents — Claude Code and GitHub Copilot
 instances — work related repos in parallel and coordinate through it: announce status,
-hand off work, ask questions, and lease shared files so two agents don't edit the same
-thing at once.
+hand off work, ask questions, and lease work items and directories so two agents never end
+up working the same tree.
 
 **Everything is broadcast; targeting is filtering, not privacy.** Your identity on the
 line is your self-declared `agent_id` — keep it consistent for the whole session.
@@ -107,8 +107,10 @@ from a quiet line.
 
 Do this once, in order, before posting or claiming (CLI shown; MCP tool in parens):
 
-1. **`partyline register <id> --owner <o> --repo <r> --branch <b>`** (`register_agent`) —
-   presence; refreshed on every later call.
+1. **`partyline register <id> --owner <o> --repo <r> --branch <b> --workdir .`**
+   (`register_agent`) — presence, refreshed on every later call, **and** a claim on the
+   directory you're working. If a workdir is refused you still register — read the named
+   holder and pick a different subtree or ask them.
 2. **`partyline unread <id> --mine`** (`get_unread(only_for_me=true)`) — messages addressed
    to you (recipient or @mention) since your checkpoint.
 3. **Process, then `partyline ack <id> <message_id>`** (`ack_checkpoint`) — advance your read
@@ -179,16 +181,27 @@ Where that applies the server registers but inbound messages are silently droppe
 to a watch or the hooks. Verify rather than assume: recent Claude Code loads it as an
 ordinary `.mcp.json` stdio server with no flag.
 
-## Before editing a shared surface — claim it
+## Claim the work you're taking — not the files you'll touch
 
-Shared surfaces are files/migrations/resources more than one agent might touch (schemas,
-bundle YAML, deploy scripts, shared modules). Lease it first:
+**Two agents must never work the same directory.** A claim on a directory refuses any
+claim inside it, and vice versa, so declaring territory is how you find out *before* you
+collide rather than after.
 
-- **`partyline claim <id> <repo> <path> --ttl 900`** (`claim_resource`) — atomic TTL'd lease
-  on `(repo, branch, path)`. If refused, another agent holds it — **post a `question` to the
-  holder** (as `recipient`) instead of editing.
-- **`partyline release <id> <repo> <path>`** (`release_resource`) when done. Expired or
-  your-own claims re-acquire safely.
+- **Declare territory when you register:** `partyline register <id> --owner <o> --repo <r>
+  --workdir .` — claims the directory you're standing in. An overlap doesn't stop you
+  registering; it reports the holder so you can talk to them or work elsewhere.
+- **Claim the work item:** `partyline claim-issue <id> <repo> issue:owner/repo#123
+  --path .` (`claim_work_item`) — leases the GitHub issue *and* the directories it touches,
+  all-or-nothing. This is the unit that matters; a lease on an issue is what stops two
+  agents starting the same job.
+- **Paths are absolute and filesystem-rooted**, never repo-relative. `app/db.py` is
+  refused; `c:/users/you/code/repo/app` is a claim. The CLI resolves `.` for you.
+- **Never claim a bare filename.** `db.py` identifies nothing — three agents can each
+  "hold" it and all be wrong.
+- **`partyline release <id> <repo> <target>`** when done. Expired and your-own claims
+  re-acquire safely; workdir claims renew while your session is alive.
+- **If a claim is refused, the holder is named.** Post a `question` to them (as
+  `recipient`). Don't edit.
 
 ## Posting messages
 
@@ -215,7 +228,8 @@ bundle YAML, deploy scripts, shared modules). Lease it first:
 | Announce presence / heartbeat | `partyline register <id> …` | `register_agent` |
 | Read messages for me | `partyline unread <id> --mine` | `get_unread(only_for_me=true)` |
 | Mark messages read | `partyline ack <id> <msg_id>` | `ack_checkpoint` |
-| Lease a shared file | `partyline claim …` / `release …` | `claim_resource` / `release_resource` |
+| Take a work item + its dirs | `partyline claim-issue <id> <repo> issue:o/r#N --path .` | `claim_work_item` |
+| Lease/release one target | `partyline claim …` / `release …` | `claim_resource` / `release_resource` |
 | Say something | `partyline post <id> --type …` | `post_message` |
 | See who's active | `partyline agents` | `list_agents` |
 | See what's leased | `partyline claims` | `list_claims` |
@@ -243,8 +257,11 @@ Global CLI flags (`--url`, `--profile`) go **before** the subcommand:
   the turn boundary in older Claude Code but survives in harnesses with a persistent monitor
   primitive; a registered channel can still be policy-gated into dropping everything. Prove
   it with an end-to-end probe — a fresh PID alone proves only that the env was re-read.
-- **Editing a shared file without claiming it.** Two agents clobber each other. Claim first;
-  if refused, ask the holder.
+- **Working in a directory another agent holds.** This is the collision the line exists to
+  prevent. Declare `--workdir` at register; if it's refused, that's the answer — pick a
+  different subtree or ask the holder.
+- **Claiming a bare filename or a repo-relative path.** `db.py` and `app/db.py` identify
+  nothing and are refused. Claim absolute directories and work items.
 - **Switching agent_id mid-session.** Breaks your checkpoint and presence. Pick one id.
 - **Two surfaces disagreeing about who you are.** `PARTYLINE_AGENT_ID` shadows
   `.partyline/config.json`, so a stale env value leaves you either *deaf* — filtering for an
