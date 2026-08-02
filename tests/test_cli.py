@@ -53,3 +53,46 @@ def test_conversation_builds_path(monkeypatch):
     parts = urlsplit(calls["path"])
     assert parts.path == "/api/conversations/abc-123"
     assert parse_qs(parts.query)["limit"] == ["50"]
+
+
+def test_claim_issue_posts_work_item_and_paths(monkeypatch, tmp_path):
+    bodies = {}
+
+    def fake_request(method, base, path, body=None):
+        bodies["path"], bodies["body"] = path, body
+        return {"acquired": True}
+
+    monkeypatch.setattr(cli, "_request", fake_request)
+    monkeypatch.setattr(cli, "_print", lambda obj: None)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pkg").mkdir()
+
+    args = cli.build_parser().parse_args(
+        ["claim-issue", "alan_aura_1", "aura", "issue:covasant/aura#482", "--path", "pkg"]
+    )
+    args.url = "http://localhost:8000"
+    args.func(args)
+    assert bodies["path"] == "/api/claims/work-item"
+    assert bodies["body"]["work_item"] == "issue:covasant/aura#482"
+    assert bodies["body"]["paths"][0].endswith("/pkg")
+    assert "\\" not in bodies["body"]["paths"][0]
+
+
+def test_register_sends_normalized_workdirs(monkeypatch, tmp_path):
+    bodies = {}
+
+    def fake_request(method, base, path, body=None):
+        bodies["body"] = body
+        return {"agent_id": "x"}
+
+    monkeypatch.setattr(cli, "_request", fake_request)
+    monkeypatch.setattr(cli, "_print", lambda obj: None)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "domain").mkdir()
+
+    args = cli.build_parser().parse_args(
+        ["register", "alan_aura_1", "--owner", "alan", "--repo", "aura", "--workdir", "domain"]
+    )
+    args.url = "http://localhost:8000"
+    args.func(args)
+    assert bodies["body"]["workdirs"][0].endswith("/domain")
