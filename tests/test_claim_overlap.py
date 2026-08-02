@@ -188,3 +188,47 @@ async def test_heartbeat_does_not_extend_ordinary_claims(client):
     held = next(c for c in claims if c["resource_path"] == "/t/ovl8/pkg")
     assert held["expires_at"] == first_expiry  # task leases expire on their own schedule
     await _release(client, "ovl_hb2", "/t/ovl8/pkg")
+
+
+async def test_migration_purges_duplicates_so_the_unique_index_can_exist(started_app):
+    """Regression: the live table held duplicate resource_paths under the old composite key.
+
+    Creating ux_claims_path without purging fails with UniqueViolation — and because
+    migrate_schema SKIPS failures rather than aborting, the app would then run
+    ON CONFLICT (resource_path) against an index that does not exist. Every claim would
+    error at runtime with the deploy reporting success.
+    """
+    from app import db
+
+    with db.get_pool().connection() as conn:
+        conn.execute("DELETE FROM claims WHERE resource_path = '/t/dup/path'")
+        conn.execute("DELETE FROM agents WHERE agent_id = 'dup_a'")
+        conn.execute(
+            "INSERT INTO agents (agent_id, owner, repo) VALUES ('dup_a', 't', 'aura') "
+            "ON CONFLICT (agent_id) DO NOTHING"
+        )
+        # Two rows, same path, different repo — impossible to insert once the index exists,
+        # so drop it first to recreate the pre-migration state.
+        conn.execute("DROP INDEX IF EXISTS ux_claims_path")
+        for repo in ("aura", "aura-web"):
+            conn.execute(
+                "INSERT INTO claims (agent_id, repo, resource_path, expires_at) "
+                "VALUES ('dup_a', %s, '/t/dup/path', now() - interval '1 hour')",
+                (repo,),
+            )
+        conn.commit()
+
+        # Applying the migration list must clear the duplicates and leave the index in place.
+        for stmt in db._MIGRATIONS:
+            if "claims" in stmt:
+                conn.execute(stmt)
+        conn.commit()
+
+        remaining = conn.execute(
+            "SELECT count(*) AS n FROM claims WHERE resource_path = '/t/dup/path'"
+        ).fetchone()["n"]
+        assert remaining == 0, "expired duplicates should have been purged"
+        idx = conn.execute(
+            "SELECT count(*) AS n FROM pg_indexes WHERE indexname = 'ux_claims_path'"
+        ).fetchone()["n"]
+        assert idx == 1, "ux_claims_path must exist after migration"

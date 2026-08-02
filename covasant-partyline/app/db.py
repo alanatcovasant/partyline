@@ -330,6 +330,20 @@ _MIGRATIONS = [
     # worktrees put the same (repo, branch, relpath) at two different directories, so they
     # never identified the thing being claimed.
     "DROP INDEX IF EXISTS ux_claims_key",
+    # The old key allowed the SAME resource_path under different (repo, branch) pairs, so
+    # the live table really does hold duplicates — creating the new index without clearing
+    # them first fails with UniqueViolation, and because that failure is *skipped* rather
+    # than fatal, the app would then run ON CONFLICT (resource_path) against an index that
+    # does not exist. Expired leases are garbage by definition: drop them.
+    "DELETE FROM claims WHERE expires_at < now()",
+    # Among any surviving live duplicates keep the longest-lived (id as tie-break) — that
+    # is the claim an agent is most likely still relying on.
+    """
+    DELETE FROM claims a USING claims b
+     WHERE a.resource_path = b.resource_path
+       AND (a.expires_at < b.expires_at
+            OR (a.expires_at = b.expires_at AND a.id < b.id))
+    """,
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_claims_path ON claims (resource_path)",
     # Full-text search (FR: inspect history). websearch_to_tsquery queries these.
     "CREATE INDEX IF NOT EXISTS idx_messages_fts ON messages USING GIN (to_tsvector('english', coalesce(payload, '')))",
