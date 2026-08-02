@@ -22,11 +22,13 @@ from .models import (
     Checkpoint,
     Claim,
     ClaimRequest,
+    ClaimWorkItemRequest,
     Message,
     PostMessage,
     RegisterAgent,
     ReleaseRequest,
 )
+from .targets import infer_resource_type
 from .notify import hub
 
 router = APIRouter(prefix="/api", tags=["partyline"])
@@ -70,6 +72,7 @@ async def register_agent(body: RegisterAgent) -> dict:
         body.repo,
         body.branch,
         body.display_name,
+        body.workdirs,
     )
     log.info(
         "register_agent ok agent_id=%s owner=%s repo=%s branch=%s",
@@ -298,6 +301,33 @@ async def claim_resource(body: ClaimRequest) -> dict:
         ttl,
     )
     return {"acquired": acquired, "claim": claim}
+
+
+@router.post("/claims/work-item")
+async def claim_work_item(body: ClaimWorkItemRequest) -> dict:
+    """Lease a work item plus the directories it touches, atomically."""
+    ttl = body.ttl_seconds or settings.default_claim_ttl_seconds
+    targets = [(body.work_item, infer_resource_type(body.work_item))]
+    targets += [(p, "directory") for p in body.paths]
+    acquired, claims, blocker = await run_in_threadpool(
+        db.claim_targets,
+        body.agent_id,
+        body.repo,
+        body.branch,
+        targets,
+        body.claim_scope.value,
+        body.reason,
+        ttl,
+    )
+    log.info(
+        "claim_work_item agent_id=%s work_item=%s paths=%s acquired=%s blocker=%s",
+        body.agent_id,
+        body.work_item,
+        len(body.paths),
+        acquired,
+        blocker.get("agent_id") if blocker else None,
+    )
+    return {"acquired": acquired, "claims": claims, "blocker": blocker}
 
 
 @router.post("/claims/release")

@@ -310,7 +310,7 @@ async def test_claim_and_release(client):
             "agent_id": "claim_agent",
             "repo": "partyline",
             "branch": "main",
-            "resource_path": "src/auth.py",
+            "resource_path": "/t/legacy/src/auth",
             "resource_type": "file",
             "claim_scope": "exclusive",
             "reason": "Refactoring auth",
@@ -321,13 +321,13 @@ async def test_claim_and_release(client):
     data = resp.json()
     assert data["acquired"] is True
     assert data["claim"]["agent_id"] == "claim_agent"
-    assert data["claim"]["resource_path"] == "src/auth.py"
+    assert data["claim"]["resource_path"] == "/t/legacy/src/auth"
 
     # List claims
     list_resp = await client.get("/api/claims")
     assert list_resp.status_code == 200
     claims = list_resp.json()
-    assert any(c["resource_path"] == "src/auth.py" for c in claims)
+    assert any(c["resource_path"] == "/t/legacy/src/auth" for c in claims)
 
     # Release
     rel_resp = await client.post(
@@ -336,7 +336,7 @@ async def test_claim_and_release(client):
             "agent_id": "claim_agent",
             "repo": "partyline",
             "branch": "main",
-            "resource_path": "src/auth.py",
+            "resource_path": "/t/legacy/src/auth",
         },
     )
     assert rel_resp.status_code == 200
@@ -370,7 +370,7 @@ async def test_claim_conflict(client):
             "agent_id": "agent_a",
             "repo": "partyline",
             "branch": "develop",
-            "resource_path": "models.py",
+            "resource_path": "/t/legacy/models",
             "claim_scope": "exclusive",
             "ttl_seconds": 600,
         },
@@ -384,7 +384,7 @@ async def test_claim_conflict(client):
             "agent_id": "agent_b",
             "repo": "partyline",
             "branch": "develop",
-            "resource_path": "models.py",
+            "resource_path": "/t/legacy/models",
             "claim_scope": "exclusive",
             "ttl_seconds": 600,
         },
@@ -398,7 +398,7 @@ async def test_claim_conflict(client):
             "agent_id": "agent_a",
             "repo": "partyline",
             "branch": "develop",
-            "resource_path": "models.py",
+            "resource_path": "/t/legacy/models",
         },
     )
 

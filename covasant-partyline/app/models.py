@@ -13,7 +13,23 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from .targets import InvalidTarget, validate_target
+
+
+def _canonical(value: str) -> str:
+    """Reusable validator body: refuse a non-canonical claim target.
+
+    Raising ValueError makes FastAPI answer 422 with the hint in the response body — an
+    old client sending repo-relative paths fails loudly and self-explainingly rather than
+    quietly claiming a key nobody else will ever match.
+    """
+    try:
+        validate_target(value)
+    except InvalidTarget as exc:
+        raise ValueError(f"{exc.message} — {exc.hint}") from exc
+    return value
 
 
 class MessageType(str, Enum):
@@ -49,11 +65,29 @@ class RegisterAgent(BaseModel):
     repo: str = Field(..., description="Repository the agent works against")
     branch: str | None = None
     display_name: str | None = None
+    workdirs: list[str] = Field(
+        default_factory=list,
+        description="Absolute directories this session owns; claimed as a side effect of "
+                    "registering. Overlap is reported, never fatal — presence must not fail.",
+    )
+
+    @field_validator("workdirs")
+    @classmethod
+    def _check_workdirs(cls, v: list[str]) -> list[str]:
+        return [_canonical(p) for p in v]
 
 
 class Agent(RegisterAgent):
     registered_at: datetime | None = None
     last_heartbeat: datetime | None = None
+    # Per-workdir claim outcome from registration: {path, acquired, claim, holder}. A
+    # refused workdir is reported here, not raised — registration must never fail on a
+    # claim conflict or the agent is invisible to the line.
+    #
+    # Deliberately NOT named `workdirs`: this model inherits RegisterAgent's
+    # `workdirs: list[str]` and its validator, which would then run _canonical() over
+    # these dicts. Request and response are different shapes; they get different names.
+    workdir_claims: list[dict] = Field(default_factory=list)
     # Most recent `status`-type message this agent posted (for the agent status grid in
     # the dashboard and VS Code extension). Null if the agent has never posted a status.
     last_status: str | None = None
@@ -118,22 +152,57 @@ class Checkpoint(BaseModel):
 
 
 class ClaimRequest(BaseModel):
-    """Input for claiming a resource (FR5)."""
+    """Input for claiming one target (FR5): an absolute directory or a work-item URI."""
 
     agent_id: str
     repo: str
-    resource_path: str
+    resource_path: str = Field(
+        ..., description="Absolute filesystem path, or issue:owner/repo#N / pr:owner/repo#N"
+    )
     branch: str | None = None
-    resource_type: str | None = Field(None, description="file|directory|module|service|migration")
+    resource_type: str | None = Field(None, description="issue|pr|directory|workdir|file")
     claim_scope: ClaimScope = ClaimScope.exclusive
     reason: str | None = None
     ttl_seconds: int | None = None
+
+    @field_validator("resource_path")
+    @classmethod
+    def _check_resource_path(cls, v: str) -> str:
+        return _canonical(v)
+
+
+class ClaimWorkItemRequest(BaseModel):
+    """Lease a work item and the directories it touches, all-or-nothing."""
+
+    agent_id: str
+    repo: str
+    work_item: str = Field(..., description="issue:owner/repo#N or pr:owner/repo#N")
+    paths: list[str] = Field(default_factory=list, description="Absolute directories")
+    branch: str | None = None
+    claim_scope: ClaimScope = ClaimScope.exclusive
+    reason: str | None = None
+    ttl_seconds: int | None = None
+
+    @field_validator("work_item")
+    @classmethod
+    def _check_work_item(cls, v: str) -> str:
+        return _canonical(v)
+
+    @field_validator("paths")
+    @classmethod
+    def _check_paths(cls, v: list[str]) -> list[str]:
+        return [_canonical(p) for p in v]
 
 
 class ReleaseRequest(BaseModel):
     agent_id: str
     repo: str
     resource_path: str
+
+    @field_validator("resource_path")
+    @classmethod
+    def _check_resource_path(cls, v: str) -> str:
+        return _canonical(v)
     branch: str | None = None
 
 

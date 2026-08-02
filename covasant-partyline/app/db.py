@@ -414,7 +414,22 @@ def init_schema() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def register_agent(agent_id: str, owner: str, repo: str, branch: str | None, display_name: str | None) -> dict:
+def register_agent(
+    agent_id: str,
+    owner: str,
+    repo: str,
+    branch: str | None,
+    display_name: str | None,
+    workdirs: list[str] | None = None,
+) -> dict:
+    """Register (or refresh) an agent, optionally taking territory.
+
+    Each workdir is claimed as an exclusive `workdir` subtree. A refused workdir is
+    REPORTED, never fatal: an agent that cannot register is invisible to the line, which
+    is strictly worse than one that registers while overlapping. Surfacing the holder at
+    session start is the whole point — it is the earliest moment an agent can act on the
+    collision, and it rides on the one call every agent already makes.
+    """
     with get_pool().connection() as conn:
         row = conn.execute(
             """INSERT INTO agents (agent_id, owner, repo, branch, display_name)
@@ -429,7 +444,39 @@ def register_agent(agent_id: str, owner: str, repo: str, branch: str | None, dis
         ).fetchone()
         _extend_workdir_claims(conn, agent_id)
         conn.commit()
-    log.info("Agent registered/refreshed: agent_id=%s repo=%s branch=%s", agent_id, repo, branch)
+
+    results: list[dict] = []
+    for path in workdirs or []:
+        acquired, claims, blocker = claim_targets(
+            agent_id,
+            repo,
+            branch,
+            [(path, "workdir")],
+            "exclusive",
+            f"session workdir for {agent_id}",
+            settings.workdir_claim_ttl_seconds,
+        )
+        results.append({
+            "path": path,
+            "acquired": acquired,
+            "claim": claims[0] if acquired else None,
+            "holder": None if acquired else blocker,
+        })
+        if not acquired:
+            log.warning(
+                "register_agent workdir REFUSED agent_id=%s path=%s holder=%s",
+                agent_id,
+                path,
+                blocker.get("agent_id") if blocker else "?",
+            )
+    row["workdir_claims"] = results
+    log.info(
+        "Agent registered/refreshed: agent_id=%s repo=%s branch=%s workdirs=%s",
+        agent_id,
+        repo,
+        branch,
+        len(results),
+    )
     return row
 
 
