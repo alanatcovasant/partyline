@@ -282,8 +282,8 @@ CREATE TABLE IF NOT EXISTS claims (
     expires_at    TIMESTAMPTZ NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ux_claims_key
-    ON claims (repo, (COALESCE(branch, '')), resource_path);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_claims_path
+    ON claims (resource_path);
 
 """
 
@@ -325,6 +325,12 @@ _MIGRATIONS = [
     """,
     # Archived rows (>retention window) are not re-threaded: give each its own id.
     "UPDATE messages_archive SET conversation_id = gen_random_uuid() WHERE conversation_id IS NULL",
+    # 2026-08-01 claim semantics: claims key on the target alone (canonical absolute path
+    # or work-item URI). repo/branch stay as display metadata but leave the key — git
+    # worktrees put the same (repo, branch, relpath) at two different directories, so they
+    # never identified the thing being claimed.
+    "DROP INDEX IF EXISTS ux_claims_key",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_claims_path ON claims (resource_path)",
     # Full-text search (FR: inspect history). websearch_to_tsquery queries these.
     "CREATE INDEX IF NOT EXISTS idx_messages_fts ON messages USING GIN (to_tsvector('english', coalesce(payload, '')))",
     "CREATE INDEX IF NOT EXISTS idx_archive_fts  ON messages_archive USING GIN (to_tsvector('english', coalesce(payload, '')))",
@@ -811,10 +817,103 @@ def ack_checkpoint(agent_id: str, last_read_message_id: int) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Claims — keyed on (repo, branch, resource_path); FR5
+# Claims — keyed on the target alone (canonical absolute path or work-item URI); FR5
 # --------------------------------------------------------------------------- #
 
 _CLAIM_COLS = "id, agent_id, repo, branch, resource_path, resource_type, claim_scope, reason, created_at, expires_at"
+
+# One fixed advisory lock serializes every claim attempt fleet-wide. Subtree overlap is
+# not expressible as a unique index, so the check-then-insert must be atomic; at this
+# volume (tens of live claims, microsecond holds) a single lock is cheaper than any
+# partitioned scheme and removes the parent/child race entirely.
+_CLAIM_LOCK_KEY = 0x504C434C  # "PLCL"
+
+
+def _find_conflict(conn, agent_id: str, resource_path: str) -> dict | None:
+    """Return a live claim held by *another* agent that overlaps `resource_path`.
+
+    Overlap is subtree containment, not string equality: a claim on a directory conflicts
+    with any claim inside it, and vice versa.
+
+    `starts_with`, not LIKE: `_` and `%` are legal in filenames and are LIKE wildcards, so
+    LIKE would match `aura_core` against `auraXcore`. The appended '/' makes each
+    comparison test a real path boundary, so unrelated siblings (/a/foo vs /a/foobar) do
+    not collide — and it also keeps work-item URIs on exact-match semantics, since
+    'issue:o/r#1' || '/' is not a prefix of 'issue:o/r#12'.
+    """
+    return conn.execute(
+        f"""SELECT {_CLAIM_COLS} FROM claims
+             WHERE expires_at > now()
+               AND agent_id <> %(agent)s
+               AND (   resource_path = %(p)s
+                    OR starts_with(resource_path, %(p)s || '/')
+                    OR starts_with(%(p)s, resource_path || '/') )
+             LIMIT 1""",
+        {"agent": agent_id, "p": resource_path},
+    ).fetchone()
+
+
+def claim_targets(
+    agent_id: str,
+    repo: str,
+    branch: str | None,
+    targets: list[tuple[str, str | None]],
+    claim_scope: str,
+    reason: str | None,
+    ttl_seconds: int,
+) -> tuple[bool, list[dict], dict | None]:
+    """Atomically acquire every target or none (FR5).
+
+    `targets` is a list of (resource_path, resource_type). Returns
+    (acquired, claims, blocker); on refusal `claims` is empty and `blocker` is the live
+    claim that stopped us. All-or-nothing matters: partial acquisition would leave an
+    agent owning the issue while another owns the directory — the exact ambiguity claims
+    exist to remove.
+    """
+    with get_pool().connection() as conn:
+        # Transaction-scoped: released at commit or rollback. psycopg3 opens a transaction
+        # implicitly (autocommit off), which the surrounding conn.commit() already relies on.
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_CLAIM_LOCK_KEY,))
+        for path, _rtype in targets:
+            blocker = _find_conflict(conn, agent_id, path)
+            if blocker:
+                conn.rollback()
+                log.info(
+                    "claim_targets REFUSED agent_id=%s target=%s holder=%s",
+                    agent_id,
+                    path,
+                    blocker.get("agent_id"),
+                )
+                return False, [], blocker
+
+        rows: list[dict] = []
+        for path, rtype in targets:
+            # Only expired claims or this agent's own can reach ON CONFLICT — _find_conflict
+            # already excluded every live claim held by someone else.
+            rows.append(
+                conn.execute(
+                    f"""INSERT INTO claims
+                         (agent_id, repo, branch, resource_path, resource_type,
+                          claim_scope, reason, expires_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s,
+                               now() + make_interval(secs => %s))
+                       ON CONFLICT (resource_path) DO UPDATE
+                         SET agent_id = EXCLUDED.agent_id,
+                             repo = EXCLUDED.repo,
+                             branch = EXCLUDED.branch,
+                             resource_type = EXCLUDED.resource_type,
+                             claim_scope = EXCLUDED.claim_scope,
+                             reason = EXCLUDED.reason,
+                             created_at = now(),
+                             expires_at = EXCLUDED.expires_at
+                       RETURNING {_CLAIM_COLS}""",
+                    (agent_id, repo, branch, path, rtype, claim_scope, reason, ttl_seconds),
+                ).fetchone()
+            )
+        _heartbeat(conn, agent_id)
+        conn.commit()
+    log.info("claim_targets ACQUIRED agent_id=%s targets=%s", agent_id, [t[0] for t in targets])
+    return True, rows, None
 
 
 def claim_resource(
@@ -827,58 +926,17 @@ def claim_resource(
     reason: str | None,
     ttl_seconds: int,
 ) -> tuple[bool, dict]:
-    """Atomically acquire a lease on (repo, branch, resource_path) (FR5).
-
-    Returns (acquired, claim). The unique index on (repo, COALESCE(branch,''),
-    resource_path) plus a WHERE guard means an unexpired claim held by *another* agent
-    cannot be stolen, while an expired claim or the agent's own claim is (re)acquired.
-    Two agents racing cannot both win. The holder is registered (FK to agents).
-    """
-    log.info(
-        "claim_resource agent_id=%s repo=%s branch=%s resource=%s ttl=%s",
+    """Single-target claim. Thin wrapper over claim_targets; signature unchanged."""
+    acquired, rows, blocker = claim_targets(
         agent_id,
         repo,
         branch,
-        resource_path,
+        [(resource_path, resource_type)],
+        claim_scope,
+        reason,
         ttl_seconds,
     )
-    with get_pool().connection() as conn:
-        row = conn.execute(
-            f"""INSERT INTO claims
-                 (agent_id, repo, branch, resource_path, resource_type,
-                  claim_scope, reason, expires_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s,
-                       now() + make_interval(secs => %s))
-               ON CONFLICT (repo, (COALESCE(branch, '')), resource_path) DO UPDATE
-                 SET agent_id = EXCLUDED.agent_id,
-                     resource_type = EXCLUDED.resource_type,
-                     claim_scope = EXCLUDED.claim_scope,
-                     reason = EXCLUDED.reason,
-                     created_at = now(),
-                     expires_at = EXCLUDED.expires_at
-                 WHERE claims.expires_at < now()
-                    OR claims.agent_id = EXCLUDED.agent_id
-               RETURNING {_CLAIM_COLS}""",
-            (agent_id, repo, branch, resource_path, resource_type, claim_scope, reason, ttl_seconds),
-        ).fetchone()
-        _heartbeat(conn, agent_id)
-        conn.commit()
-        if row:
-            log.info("claim_resource ACQUIRED agent_id=%s resource=%s", agent_id, resource_path)
-            return True, row
-        holder = conn.execute(
-            f"""SELECT {_CLAIM_COLS} FROM claims
-                WHERE repo = %s AND COALESCE(branch, '') = COALESCE(%s, '')
-                  AND resource_path = %s""",
-            (repo, branch, resource_path),
-        ).fetchone()
-    log.info(
-        "claim_resource REFUSED agent_id=%s resource=%s holder=%s",
-        agent_id,
-        resource_path,
-        holder.get("agent_id") if holder else "?",
-    )
-    return False, holder
+    return (True, rows[0]) if acquired else (False, blocker)
 
 
 def release_resource(agent_id: str, repo: str, branch: str | None, resource_path: str) -> bool:
