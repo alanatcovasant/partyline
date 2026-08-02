@@ -394,16 +394,21 @@ knowledge required on the agent side.
 | `id` | uuid PK | Surrogate — allows multiple claims per agent |
 | `agent_id` | text NOT NULL FK | Who holds it |
 | `repo` | text NOT NULL | Which repository |
-| `branch` | text | Nullable — a claim on a shared file may span branches |
-| `resource_path` | text NOT NULL | File path, directory, or module |
-| `resource_type` | text | `file`, `directory`, `module`, `service`, `migration` |
+| `branch` | text | Nullable — display metadata only, not part of the key |
+| `resource_path` | text NOT NULL | Canonical absolute path, or `issue:owner/repo#N` / `pr:owner/repo#N` |
+| `resource_type` | text | `issue`, `pr`, `directory`, `workdir`, `file` |
 | `claim_scope` | text NOT NULL DEFAULT 'exclusive' | `exclusive`, `shared_read`, `intent` |
 | `reason` | text | Why claimed — context for other agents |
 | `expires_at` | timestamptz NOT NULL | Lease TTL |
 | `created_at` | timestamptz | |
 
-Uniqueness: `UNIQUE(repo, COALESCE(branch, ''), resource_path)` — prevents conflicting
-exclusive claims on the same resource within the same repo+branch.
+Uniqueness: `UNIQUE(resource_path)` — the target alone identifies the claim.
+**Revised 2026-08-02.** The former key `(repo, COALESCE(branch,''), resource_path)` did not
+identify what was being claimed: git worktrees put the same `(repo, branch, relpath)` at two
+different directories, and a repo-relative path means nothing to an agent in another clone.
+Conflict is now **subtree overlap** rather than string equality — a claim on a directory
+refuses any claim inside it and vice versa — evaluated inside one advisory-locked
+transaction, since overlap is not expressible as a unique index.
 
 Mirrors an App+MCP-server pattern already proven in-house — same shape, far smaller
 surface area. First-run provisioning follows the same idempotent
@@ -464,9 +469,10 @@ in a way that forecloses it later.
 - Databricks Marketplace App listing certification requirements — unresearched,
   flagged as a Phase 4 dependency, not a v1 blocker.
 - ~~Do claims conflict across branches?~~ **Decided 2026-07-07** (backlog item B3):
-  - **Branch scoping stays as implemented:** branch is part of the claim key
-    (`UNIQUE(repo, COALESCE(branch,''), resource_path)`), so a claim on `alan_develop`
-    does not block `rahul_develop`. Simple, predictable, matches worktree isolation.
+  - ~~**Branch scoping stays as implemented:**~~ **Superseded 2026-08-02.** Branch left
+    the claim key entirely. Targets are filesystem-rooted absolute paths, which already
+    encode the worktree — two agents in separate worktrees have different paths and so
+    never conflict, achieving the same isolation without branch in the key.
   - **Cross-branch resources use `branch=NULL` by convention:** migrations, schema,
     CI/deploy config — anything where the conflict is semantic rather than textual —
     should be claimed with a null branch (its own key). Agents editing such surfaces
