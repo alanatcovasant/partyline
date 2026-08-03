@@ -900,8 +900,31 @@ function ConnectAgent() {
   );
 }
 
+// Landing view. A first-time visitor gets the Overview tour; everyone after that wants the
+// live dashboard, which is what an operator actually opens this app for. Remembered per
+// browser, so the tour happens once and the Overview tab stays available afterwards.
+const VISITED_KEY = "partyline.visited";
+
+function initialView(): "overview" | "dashboard" {
+  try {
+    return localStorage.getItem(VISITED_KEY) ? "dashboard" : "overview";
+  } catch {
+    return "dashboard"; // storage blocked (private mode): prefer the view people came for
+  }
+}
+
 export function App() {
-  const [view, setView] = useState<"overview" | "dashboard" | "connect">("overview");
+  const [view, setView] = useState<"overview" | "dashboard" | "connect">(initialView);
+  // Record the visit in an effect, never in the useState initializer above: StrictMode
+  // double-invokes initializers in dev, so a write there would mark the page visited before
+  // the first render and send a genuine first-time visitor straight past the Overview.
+  useEffect(() => {
+    try {
+      localStorage.setItem(VISITED_KEY, "1");
+    } catch {
+      /* storage blocked — the Overview will greet this browser again; harmless */
+    }
+  }, []);
   const [messages, setMessages] = useState<Message[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [claims, setClaims] = useState<Claim[]>([]);
