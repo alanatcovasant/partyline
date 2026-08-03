@@ -55,7 +55,13 @@ def test_push_event_writes_channel_notification():
         notif = session_msg.message.root
         assert notif.method == channel.CHANNEL_METHOD == "notifications/claude/channel"
         assert notif.params == {"content": "hi", "meta": {"msg_id": "1"}}
-    anyio.run(body)
+    # asyncio.run, NOT anyio.run — matching this file's docstring and test_bridge.py.
+    # anyio.run() asks sniffio whether we're already in an async context, and sniffio reads
+    # a ContextVar first. A session-scoped anyio fixture in tests/conftest.py leaves
+    # `current_async_library_cvar` set to "asyncio" for the rest of the pytest session, so
+    # anyio.run() raised "Already running asyncio in this thread" with no loop running at
+    # all. asyncio.run() checks for a genuinely running loop, so it is immune.
+    asyncio.run(body())
 
 
 def test_post_reply_builds_expected_request(monkeypatch):
