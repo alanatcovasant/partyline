@@ -10,11 +10,19 @@ breaks the moment a session runs from another repo):
 
     python -m covasant_partyline.check_unread
 
-Reads configuration from the environment (a distributable plugin can't hardcode identity):
-  PARTYLINE_URL       base app URL (required; no output without it)
-  PARTYLINE_AGENT_ID  your agent id on the line (required)
-  PARTYLINE_TOKEN     bearer token (optional; else acquired via the databricks CLI)
-  PARTYLINE_PROFILE   databricks CLI profile for token acquisition (default dev-eastus2)
+Configuration resolves through the shared resolvers in cli.py — flag/env → per-clone
+`.partyline/config.json` → default — so a clone that carries its identity in config (the
+post-#1545 shape, keeping a per-clone id out of a tracked .mcp.json) is peeked correctly:
+
+  PARTYLINE_URL       base app URL       (else config `url`, else http://localhost:8000)
+  PARTYLINE_AGENT_ID  your agent id      (else config `agentId`/`agent_id`; required)
+  PARTYLINE_TOKEN     bearer token       (optional; else minted via the databricks CLI)
+  PARTYLINE_PROFILE   databricks profile (else config `databricksProfile`, else dev-eastus2;
+                      unused for a local app, which needs no token)
+
+Reading these from the environment *only* was the #1545 regression that left registered,
+heartbeating agents silently deaf: identity resolved to "", the guard below returned, and
+the output was byte-identical to an empty inbox. Resolve through cli, never os.getenv.
 
 This is a peek — it does NOT advance your checkpoint, so unread stays visible until you
 ack it via the MCP tools. It intentionally does not run the wake watcher (hooks are
@@ -32,12 +40,16 @@ import sys
 import urllib.parse
 import urllib.request
 
+from . import cli
+
 MAX_SHOWN = 10
 
 
-def _token(profile: str) -> str | None:
+def _token(profile: str | None) -> str | None:
     if os.getenv("PARTYLINE_TOKEN"):
         return os.environ["PARTYLINE_TOKEN"]
+    if not profile:
+        return None  # local app — no profile to mint against, and none needed
     exe = shutil.which("databricks")
     if not exe:
         return None
@@ -69,14 +81,17 @@ def main() -> None:
     except Exception:
         pass
 
-    url = os.getenv("PARTYLINE_URL", "").rstrip("/")
-    agent_id = os.getenv("PARTYLINE_AGENT_ID", "")
+    # One resolution chain, shared with cli/channel/outbox/hook (cli.resolve_*): flag/env →
+    # .partyline/config.json → default. Resolving from env alone here is the #1545 bug.
+    cfg = cli._load_config()
+    url = cli.resolve_url(cfg=cfg)
+    agent_id = cli.resolve_agent_id(cfg=cfg)
     if not url or not agent_id:
         return
 
-    token = _token(os.getenv("PARTYLINE_PROFILE", "dev-eastus2"))
-    if not token:
-        return
+    token = _token(cli.resolve_profile(url=url, cfg=cfg))
+    if not token and not cli.is_local_url(url):
+        return  # remote app without a token would only 401; stay silent
 
     path = f"/api/agents/{urllib.parse.quote(agent_id)}/unread"
     # include_payload=false: this peek only renders the concise summary (falling back to
@@ -84,9 +99,8 @@ def main() -> None:
     query = urllib.parse.urlencode(
         {"only_for_me": "true", "limit": 50, "include_payload": "false"}
     )
-    req = urllib.request.Request(
-        f"{url}{path}?{query}", headers={"Authorization": f"Bearer {token}"}
-    )
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    req = urllib.request.Request(f"{url}{path}?{query}", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             msgs = json.loads(r.read())

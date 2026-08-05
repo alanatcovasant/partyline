@@ -206,30 +206,25 @@ def iter_data_events(lines):
 
 
 def resolve_settings(argv=None) -> "Settings":
-    """Resolve agent_id, url, token from flags → env → .partyline/config.json → defaults,
-    mirroring cli.main()'s precedence and reusing cli._load_config/_mint_token."""
+    """Resolve agent_id, url, token from flags → env → .partyline/config.json → defaults.
+
+    Delegates to the shared resolvers in cli (resolve_agent_id/resolve_url/resolve_profile)
+    so this surface can never drift from the CLI, the outbox, or the hooks again.
+    """
     p = argparse.ArgumentParser(prog="partyline-channel")
     p.add_argument("--agent-id", default=None)
     p.add_argument("--url", default=None)
     p.add_argument("--profile", default=None)
     a = p.parse_args(argv)
     cfg = cli._load_config()
-    agent_id = a.agent_id or os.getenv("PARTYLINE_AGENT_ID") or cfg.get("agentId") or cfg.get("agent_id")
+    agent_id = cli.resolve_agent_id(a.agent_id, cfg=cfg)
     if not agent_id:
         raise SystemExit("partyline-channel: set --agent-id or PARTYLINE_AGENT_ID")
-    url = a.url or os.getenv("PARTYLINE_URL") or cfg.get("url") or "http://localhost:8000"
+    url = cli.resolve_url(a.url, cfg=cfg)
     # Resolve the profile even when PARTYLINE_TOKEN is set: it's what lets the stream
     # re-mint a fresh token on every reconnect (Settings.profile → current_token), which
-    # is the fix for the ~1h expiry drops. Only a localhost app stays profile-less.
-    profile = None
-    if not url.startswith("http://localhost"):
-        profile = (
-            a.profile
-            or cfg.get("databricksProfile")
-            or cfg.get("profile")
-            or os.getenv("DATABRICKS_CONFIG_PROFILE")
-            or "dev-eastus2"
-        )
+    # is the fix for the ~1h expiry drops. Only a local app stays profile-less.
+    profile = cli.resolve_profile(a.profile, url=url, cfg=cfg)
     token = os.getenv("PARTYLINE_TOKEN") or (cli._mint_token(profile) if profile else None)
     return Settings(agent_id=agent_id, url=url, token=token, profile=profile)
 

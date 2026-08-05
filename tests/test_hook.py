@@ -87,3 +87,103 @@ def test_old_messages_filtered_by_window(monkeypatch, capsys):
     stale = [dict(MESSAGES[0], created_at="2001-01-01T00:00:00Z")]
     out = _run_hook(monkeypatch, capsys, AGENTS, stale)
     assert "#7" not in out  # outside the 24h window
+
+
+# --------------------------------------------------------------------------- #
+# Identity resolution (#1545): this hook resolved agent_id/url/profile from the
+# environment only — the same regression that silenced the unread peek. Here it is
+# worse than silence: with agent_id="" the self-claim filter at territory_warning
+# can never match, so the hook warns you off your own territory.
+# --------------------------------------------------------------------------- #
+
+
+def _fake_endpoints(monkeypatch, agents=(), messages=(), claims=()):
+    """Route the three GETs the hook issues, recording the base URLs it asked for."""
+    asked = []
+
+    def fake_get(url, token):
+        asked.append(url)
+        if "/api/agents" in url:
+            return list(agents)
+        if "/api/claims" in url:
+            return list(claims)
+        return list(messages)
+
+    monkeypatch.setattr(hook, "_get", fake_get)
+    return asked
+
+
+def test_own_claim_is_not_flagged_as_someone_elses_territory(config_clone, monkeypatch, capsys):
+    from covasant_partyline.targets import canonicalize
+
+    clone = config_clone({"url": "https://app.example", "agentId": "alan_aura_0"})
+    monkeypatch.setattr(hook, "_token", lambda profile: "tok")
+    mine = canonicalize(str(clone))
+    _fake_endpoints(monkeypatch, claims=[{"resource_path": mine, "agent_id": "alan_aura_0"}])
+    monkeypatch.setattr(sys, "argv", ["hook"])
+
+    hook.main()
+
+    assert "another agent's territory" not in capsys.readouterr().out
+
+
+def test_another_agents_claim_is_still_flagged(config_clone, monkeypatch, capsys):
+    """The warning must keep firing for real collisions — this is not a mute switch."""
+    from covasant_partyline.targets import canonicalize
+
+    clone = config_clone({"url": "https://app.example", "agentId": "alan_aura_0"})
+    monkeypatch.setattr(hook, "_token", lambda profile: "tok")
+    mine = canonicalize(str(clone))
+    _fake_endpoints(monkeypatch, claims=[{"resource_path": mine, "agent_id": "someone_else"}])
+    monkeypatch.setattr(sys, "argv", ["hook"])
+
+    hook.main()
+
+    out = capsys.readouterr().out
+    assert "another agent's territory" in out and "someone_else" in out
+
+
+def test_resolves_url_from_config(config_clone, monkeypatch, capsys):
+    config_clone({"url": "https://app.example", "agentId": "alan_aura_0"})
+    monkeypatch.setattr(hook, "_token", lambda profile: "tok")
+    asked = _fake_endpoints(monkeypatch, agents=list(AGENTS))
+    monkeypatch.setattr(sys, "argv", ["hook"])
+
+    hook.main()
+
+    assert asked and all(u.startswith("https://app.example/api/") for u in asked)
+
+
+def test_resolves_profile_from_config_not_a_hardcoded_default(config_clone, monkeypatch, capsys):
+    config_clone({"url": "https://app.example", "agentId": "alan_aura_0",
+                  "databricksProfile": "from-config"})
+    used = {}
+    monkeypatch.setattr(hook, "_token", lambda profile: used.setdefault("profile", profile) and "tok")
+    _fake_endpoints(monkeypatch, agents=list(AGENTS))
+    monkeypatch.setattr(sys, "argv", ["hook"])
+
+    hook.main()
+
+    assert used["profile"] == "from-config"
+
+
+def test_local_app_runs_without_a_token(config_clone, monkeypatch, capsys):
+    config_clone({"url": "http://localhost:8000", "agentId": "alan_aura_0"})
+    asked = _fake_endpoints(monkeypatch, agents=list(AGENTS))
+    monkeypatch.setattr(sys, "argv", ["hook"])
+
+    hook.main()
+
+    assert asked  # a local app needs no Databricks token; requiring one silenced the hook
+    assert "alan_partyline_1" in capsys.readouterr().out
+
+
+def test_flag_still_wins_over_config(config_clone, monkeypatch, capsys):
+    config_clone({"url": "https://app.example", "agentId": "alan_aura_0"})
+    monkeypatch.setattr(hook, "_token", lambda profile: "tok")
+    asked = _fake_endpoints(monkeypatch, agents=list(AGENTS))
+    monkeypatch.setattr(sys, "argv", ["hook", "--url", "https://flag.example"])
+
+    hook.main()
+
+    assert all(u.startswith("https://flag.example/") for u in asked)

@@ -270,6 +270,73 @@ def _load_config() -> dict:
         d = parent
 
 
+# --------------------------------------------------------------------------- #
+# Shared identity resolution — one home, five consumers
+# --------------------------------------------------------------------------- #
+# Pure: no network, no raise, no argparse. `cfg` defaults to _load_config() but is
+# injectable, so tests never touch the filesystem. Every consumer delegates here
+# (cli.main, channel.resolve_settings, outbox.resolve_agent_id, check_unread, hook):
+# five sites resolving identity five ways is exactly how the peek hook drifted back
+# onto the pre-#1545 env-only contract and went silently deaf on any clone that
+# carries its identity in .partyline/config.json.
+
+_LOCAL_URL_PREFIXES = ("http://localhost", "http://127.")
+
+
+def is_local_url(url: str) -> bool:
+    """True for an app on this machine — it needs no Databricks token or profile."""
+    return url.startswith(_LOCAL_URL_PREFIXES)
+
+
+def resolve_agent_id(cli_arg: str | None = None, cfg: dict | None = None) -> str | None:
+    """flag → PARTYLINE_AGENT_ID → config agentId/agent_id → None.
+
+    Env deliberately shadows config (#1545): config is the per-clone default, env is the
+    explicit per-session override.
+    """
+    if cli_arg:
+        return cli_arg
+    env = os.getenv("PARTYLINE_AGENT_ID")
+    if env:
+        return env
+    cfg = _load_config() if cfg is None else cfg
+    return cfg.get("agentId") or cfg.get("agent_id")
+
+
+def resolve_url(cli_arg: str | None = None, cfg: dict | None = None) -> str:
+    """flag → PARTYLINE_URL → config url → localhost default.
+
+    Trailing slash stripped: every caller builds `url + "/api/..."`, and a config value
+    with a slash would otherwise produce a double-slash path.
+    """
+    cfg = _load_config() if cfg is None else cfg
+    url = cli_arg or os.getenv("PARTYLINE_URL") or cfg.get("url") or "http://localhost:8000"
+    return url.rstrip("/")
+
+
+def resolve_profile(
+    cli_arg: str | None = None, *, url: str, cfg: dict | None = None
+) -> str | None:
+    """None for a local url; else flag → PARTYLINE_PROFILE → config
+    databricksProfile/profile → DATABRICKS_CONFIG_PROFILE → dev-eastus2.
+
+    The app-specific config profile outranks the *ambient* DATABRICKS_CONFIG_PROFILE, which
+    often targets another workspace and would 401. PARTYLINE_PROFILE is partyline-specific
+    intent (the hooks' documented knob), so it ranks alongside the flag instead.
+    """
+    if is_local_url(url):
+        return None
+    cfg = _load_config() if cfg is None else cfg
+    return (
+        cli_arg
+        or os.getenv("PARTYLINE_PROFILE")
+        or cfg.get("databricksProfile")
+        or cfg.get("profile")
+        or os.getenv("DATABRICKS_CONFIG_PROFILE")
+        or "dev-eastus2"
+    )
+
+
 def _mint_token(profile: str) -> str | None:
     """Best-effort Databricks OAuth token via the `databricks` CLI (stdlib subprocess only).
 

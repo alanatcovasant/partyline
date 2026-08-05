@@ -29,6 +29,15 @@ def test_skip_own_message():
     assert channel.addressed_to_me({"agent_id": "me", "recipient": "me", "mentions": ["me"]}, "me") is False
 
 
+def test_addressed_to_me_mention_only_when_recipient_is_someone_else():
+    """Regression lock, from a live specimen: alan_aura_0 had 6 unread, 6/6 via mentions,
+    three of them with `recipient` pointing at a *different* agent. A predicate that
+    narrowed to `recipient == me` would surface 0 of 6 — totally deaf, not half deaf.
+    """
+    msg = {"agent_id": "sender", "recipient": "other_agent", "mentions": ["me"]}
+    assert channel.addressed_to_me(msg, "me") is True
+
+
 def test_channel_params_basic():
     msg = {"id": 344, "agent_id": "alan_web_1", "message_type": "question",
            "repo": "web", "branch": "develop", "payload": "review please"}

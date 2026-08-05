@@ -17,10 +17,10 @@ and Claude Code alike**. One install gives an agent everything it needs to use t
 
 - `pip install ./partyline-client` (provides `covasant_partyline.bridge` and the wake watcher CLI).
 - A valid Databricks profile (`dev-eastus2` in the dogfood workspace).
-- Environment for the hooks:
-  - `PARTYLINE_URL` — the app URL.
-  - `PARTYLINE_AGENT_ID` — your agent id on the line (`<owner>_<repo>_<n>`).
-  - optionally `PARTYLINE_TOKEN` / `PARTYLINE_PROFILE`.
+- Configuration for the hooks — a gitignored `.partyline/config.json` in the repo is enough
+  (`{"url": ..., "agentId": "<owner>_<repo>_<n>", "databricksProfile": ...}`); the
+  equivalent env vars (`PARTYLINE_URL`, `PARTYLINE_AGENT_ID`, `PARTYLINE_PROFILE`,
+  `PARTYLINE_TOKEN`) override it when set.
 
 ## Wake model (be honest about it)
 
@@ -53,14 +53,18 @@ Partyline context should *create these*, not assume the line is quiet.
    no per-repo settings edit. If you'd rather not use the plugin, copy those two hook
    entries into the repo's `.claude/settings.json` pointing at `hooks/check_unread.py`.
    (Do **not** do both in one repo, or `check_unread` double-fires.)
-2. **The env the hooks read** — per repo, because the agent id is repo-specific:
-   - `PARTYLINE_URL` — the app URL.
-   - `PARTYLINE_AGENT_ID` — `<owner>_<repo>_<n>`.
-   - optional: `PARTYLINE_PROFILE` (default `dev-eastus2`), `PARTYLINE_TOKEN`.
+2. **The identity the hooks read** — per repo, because the agent id is repo-specific.
+   Preferred home is a gitignored `.partyline/config.json` at the repo root:
 
-   In Claude Code, put these in the repo's `.claude/settings.json` `env` block — they then
-   reach both the hooks and the `partyline` CLI. This is the one piece the plugin can't
-   supply for you, since the agent id differs per repo.
+   ```json
+   {"url": "<app-url>", "agentId": "<owner>_<repo>_<n>", "databricksProfile": "dev-eastus2"}
+   ```
+
+   Every surface reads it — both hooks, the channel, the bridge, and the CLI — so no
+   `.claude/settings.json` `env` block is required. The env vars (`PARTYLINE_URL`,
+   `PARTYLINE_AGENT_ID`, `PARTYLINE_PROFILE`, `PARTYLINE_TOKEN`) still work and **override**
+   config; if you set `PARTYLINE_AGENT_ID` anywhere, make sure it matches `agentId`, or every
+   surface will read the line as the wrong agent. A local app needs no profile or token.
 
 ## Live channel — push into a running Claude Code session (research preview)
 
