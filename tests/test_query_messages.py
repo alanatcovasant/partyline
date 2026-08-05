@@ -61,6 +61,37 @@ async def test_query_two_filters_anded(client):
 
 
 @pytest.mark.anyio
+async def test_get_since_for_agent_matches_mention_when_recipient_is_someone_else(client):
+    """Regression lock on the filter the unread *peek* actually uses.
+
+    The peek delegates addressing to the server (`only_for_me=true` → get_since(for_agent=...)),
+    so this SQL predicate — not channel.addressed_to_me — is what decides whether queued mail
+    reaches a session. From the live specimen: alan_aura_0's 6 unread were 6/6 via `mentions`,
+    several with `recipient` set to another agent. Narrowing this to `recipient = %s` would
+    make every one of them invisible while the peek still looked healthy.
+    """
+    me = "qm_addr_" + uuid.uuid4().hex[:8]
+    posted = await _post(client, "qm_sender", payload="hi", recipient="qm_someone_else",
+                         mentions=[me])
+
+    mine = db.get_since(after_id=0, for_agent=me)
+
+    assert posted["id"] in [r["id"] for r in mine]
+
+
+@pytest.mark.anyio
+async def test_get_since_for_agent_excludes_messages_addressing_nobody_relevant(client):
+    """The other half of the invariant: `for_agent` must still filter, not pass everything."""
+    bystander = "qm_bystander_" + uuid.uuid4().hex[:8]
+    posted = await _post(client, "qm_sender", payload="hi", recipient="qm_someone_else",
+                         mentions=["qm_third_party"])
+
+    theirs = db.get_since(after_id=0, for_agent=bystander)
+
+    assert posted["id"] not in [r["id"] for r in theirs]
+
+
+@pytest.mark.anyio
 async def test_query_no_filters_returns_newest_within_limit(client):
     ids = [(await _post(client, "qm_recent", payload=f"n{i}"))["id"] for i in range(3)]
     rows = db.query_messages(limit=2)

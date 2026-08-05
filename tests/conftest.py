@@ -1,5 +1,6 @@
 """Pytest fixtures for Covasant Partyline server tests."""
 
+import json
 import os
 import sys
 import pathlib
@@ -34,6 +35,39 @@ os.environ.setdefault("PGUSER", "partyline")
 os.environ.setdefault("PGPASSWORD", "partyline")
 os.environ.setdefault("PGSSLMODE", "disable")
 os.environ.setdefault("PARTYLINE_AUTO_MIGRATE", "true")
+
+
+@pytest.fixture()
+def clean_env(monkeypatch):
+    """Drop every env var the identity resolvers consult.
+
+    Load-bearing: a real session exports PARTYLINE_URL/PARTYLINE_AGENT_ID/PARTYLINE_PROFILE
+    (see .claude/settings.json), and pytest inherits them — so without this a config-fallback
+    test would silently assert against the ambient env instead of the config file.
+    """
+    for var in (
+        "PARTYLINE_AGENT_ID",
+        "PARTYLINE_URL",
+        "PARTYLINE_PROFILE",
+        "PARTYLINE_TOKEN",
+        "DATABRICKS_CONFIG_PROFILE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture()
+def config_clone(tmp_path, monkeypatch, clean_env):
+    """A clone whose identity lives only in .partyline/config.json — the post-#1545 shape.
+
+    Returns a writer: call it with the config dict, and the cwd is that clone.
+    """
+    def write(cfg: dict):
+        (tmp_path / ".partyline").mkdir(exist_ok=True)
+        (tmp_path / ".partyline" / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        return tmp_path
+
+    return write
 
 
 @pytest.fixture(scope="session")

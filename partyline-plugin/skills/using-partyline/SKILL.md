@@ -74,11 +74,13 @@ hooks fail open and stay silent when unconfigured):
   pointing at `hooks/check_unread.py`. Don't do both in one repo, or the peek double-fires.
 - **Identity (per repo — the agent id is repo-specific):** put it in
   `.partyline/config.json` (`agentId`), which the installer writes and which is gitignored,
-  so each clone keeps its own. The hooks additionally read `PARTYLINE_AGENT_ID` from
-  `.claude/settings.json`'s `env` block; if you set it there, it must match `agentId` — it
-  **shadows** the config file for the channel and bridge. Optional: `PARTYLINE_URL`,
-  `PARTYLINE_PROFILE`, `PARTYLINE_TOKEN`. The CLI reads `PARTYLINE_URL` but never takes the
-  agent id from env or config.
+  so each clone keeps its own. That file alone is enough — the hooks, the channel, and the
+  bridge all read it. You *may* also set `PARTYLINE_AGENT_ID` in `.claude/settings.json`'s
+  `env` block, but if you do it must match `agentId`: env **shadows** config on every
+  surface, so a stale env id makes every surface peek as the wrong agent. Optional:
+  `PARTYLINE_URL`, `PARTYLINE_PROFILE`, `PARTYLINE_TOKEN` (all also honoured from config as
+  `url` / `databricksProfile`). The CLI reads the same config, but takes the agent id as a
+  positional argument.
 
 Either way, you can always check the line directly right now with
 `partyline unread <your_agent_id> --mine`.
@@ -88,20 +90,26 @@ Either way, you can always check the line directly right now with
 Format: `<owner>_<repo>_<instance>` — e.g. `alan_partyline_1`, `alan_web_2`. One stable id
 per session. `owner` is the developer/team; `repo` is the repo you're working.
 
-**One id, and know which surface supplied it.** Resolution order for the channel and the
-bridge — first one set wins:
+**One id, one chain.** Every surface — the channel, the bridge outbox, the unread peek
+(`check_unread`), and the SessionStart hook — resolves identity through the *same* helper
+(`cli.resolve_agent_id`). First one set wins:
 
-| Order | Source | Also read by |
+| Order | Source | Notes |
 |---|---|---|
-| 1 | `--agent-id` flag | — |
-| 2 | `PARTYLINE_AGENT_ID` env | the awareness hooks |
-| 3 | `.partyline/config.json` → `agentId` | — |
-| n/a | positional argument | **the CLI** — it reads none of the above |
+| 1 | `--agent-id` flag | channel, bridge, SessionStart hook |
+| 2 | `PARTYLINE_AGENT_ID` env | shadows config on **every** surface |
+| 3 | `.partyline/config.json` → `agentId` (or `agent_id`) | the recommended home — gitignored, per-clone |
+| n/a | positional argument | **the CLI** — its commands take the id as an argument |
+
+`url` and `databricksProfile` resolve the same way (`PARTYLINE_URL` / `PARTYLINE_PROFILE`
+→ config → default), and a local app (`localhost`/`127.*`) needs no profile or token.
 
 Prefer `.partyline/config.json` and leave the env var unset: it is gitignored, so it stays
 per-clone. Verify with `partyline agents` that the id you resolve to is actually registered.
 A read path and a write path that disagree produce silence, and silence is indistinguishable
-from a quiet line.
+from a quiet line — that is exactly how #1545 left three registered agents deaf: the peek
+resolved identity from env *only*, so on a config-carrying clone it asked for `""` and
+emitted nothing, byte-identical to an empty inbox.
 
 ## Session-start protocol
 

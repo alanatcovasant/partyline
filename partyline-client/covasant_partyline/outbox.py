@@ -15,14 +15,12 @@ _TICKET_BOUND = 200  # keep the last N ticket statuses; evict oldest
 
 
 def resolve_agent_id(cli_arg: str | None) -> str | None:
-    """flag -> PARTYLINE_AGENT_ID -> .partyline/config.json (agentId/agent_id)."""
-    if cli_arg:
-        return cli_arg
-    env = os.getenv("PARTYLINE_AGENT_ID")
-    if env:
-        return env
-    cfg = cli._load_config()
-    return cfg.get("agentId") or cfg.get("agent_id")
+    """flag -> PARTYLINE_AGENT_ID -> .partyline/config.json (agentId/agent_id).
+
+    Kept as a named seam for the bridge; the chain itself lives in cli.resolve_agent_id,
+    the single home every partyline surface delegates to.
+    """
+    return cli.resolve_agent_id(cli_arg)
 
 
 def resolve_spool_path(agent_id: str, env_value: str | None, cwd: str) -> str:

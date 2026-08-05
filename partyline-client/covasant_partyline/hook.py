@@ -12,6 +12,12 @@ Wire it in .claude/settings.json:
 
 The owner/repo pair highlights messages addressed to this repo's agents
 (agent ids follow the <owner>_<repo>_<n> convention).
+
+Every flag falls back to the shared resolvers in cli.py — env → `.partyline/config.json` →
+default — so a clone carrying its identity in config needs no flags at all. Reading identity
+from the environment *only* was the #1545 regression, and here it did more than silence the
+digest: with agent_id="" the self-claim filter in territory_warning can never match, so the
+hook warned you off your own claimed directory.
 """
 
 from __future__ import annotations
@@ -25,13 +31,17 @@ import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+from . import cli
+
 WINDOW_HOURS = 24
 MAX_SHOWN = 10
 
 
-def _token(profile: str) -> str | None:
+def _token(profile: str | None) -> str | None:
     if os.getenv("PARTYLINE_TOKEN"):
         return os.environ["PARTYLINE_TOKEN"]
+    if not profile:
+        return None  # local app — no profile to mint against, and none needed
     exe = shutil.which("databricks")
     if not exe:
         return None
@@ -92,8 +102,9 @@ def territory_warning(claims: list, cwd: str, agent_id: str) -> str:
     return "\n".join(lines)
 
 
-def _get(url: str, token: str) -> object:
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+def _get(url: str, token: str | None) -> object:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read())
 
@@ -105,21 +116,28 @@ def main() -> None:
     except Exception:
         pass
     p = argparse.ArgumentParser(prog="covasant_partyline.hook")
-    p.add_argument("--url", default=os.getenv("PARTYLINE_URL", ""))
-    p.add_argument("--profile", default="dev-eastus2")
+    p.add_argument("--url", default=None)
+    p.add_argument("--profile", default=None)
     p.add_argument("--owner", default="")
     p.add_argument("--repo", default="")
-    p.add_argument("--agent-id", dest="agent_id", default=os.getenv("PARTYLINE_AGENT_ID", ""))
+    p.add_argument("--agent-id", dest="agent_id", default=None)
     a = p.parse_args()
-    if not a.url:
+
+    # One resolution chain, shared with cli/channel/outbox/check_unread (cli.resolve_*):
+    # flag → env → .partyline/config.json → default. Resolving from env alone was the #1545
+    # regression, and here it is worse than silence: with agent_id="" the self-claim filter
+    # in territory_warning can never match, so the hook warns you off your own territory.
+    cfg = cli._load_config()
+    base = cli.resolve_url(a.url, cfg=cfg)
+    agent_id = cli.resolve_agent_id(a.agent_id, cfg=cfg) or ""
+    if not base:
         return
 
-    token = _token(a.profile)
-    if not token:
-        return
+    token = _token(cli.resolve_profile(a.profile, url=base, cfg=cfg))
+    if not token and not cli.is_local_url(base):
+        return  # remote app without a token would only 401; stay silent
 
     try:
-        base = a.url.rstrip("/")
         agents = _get(f"{base}/api/agents", token)
         messages = _get(f"{base}/api/messages?after_id=0&limit=500", token)
         claims = _get(f"{base}/api/claims", token)
@@ -131,7 +149,7 @@ def main() -> None:
     try:
         from .targets import canonicalize
 
-        warning = territory_warning(claims, canonicalize(".") or "", a.agent_id)
+        warning = territory_warning(claims, canonicalize(".") or "", agent_id)
     except Exception:
         warning = ""  # fail-silent: a broken hook must never block a session
     if warning:
