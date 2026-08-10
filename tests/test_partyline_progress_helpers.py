@@ -1,6 +1,9 @@
 """Unit tests for the pure notebook helpers — no cluster, no network."""
 import importlib.util
+import io
+import json as _json
 import pathlib
+import urllib.error
 
 _HELPERS = pathlib.Path(__file__).resolve().parent.parent / "notebooks" / "partyline_progress_helpers.py"
 _spec = importlib.util.spec_from_file_location("partyline_progress_helpers", _HELPERS)
@@ -46,11 +49,6 @@ def test_simulated_metric_is_deterministic_and_in_range():
     m1 = h.simulated_metric("work_a")
     assert m1 == h.simulated_metric("work_a")      # deterministic
     assert 1000 <= m1 < 2000                        # bounded band
-
-
-import io
-import json as _json
-import urllib.error
 
 
 class _FakeResp(io.BytesIO):

@@ -1,10 +1,12 @@
 # tests/test_grant_app_access.py
-import importlib.util, pathlib
+import importlib.util
+import pathlib
 from unittest.mock import MagicMock
 
 _P = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "grant_app_access.py"
 _s = importlib.util.spec_from_file_location("grant_app_access", _P)
-m = importlib.util.module_from_spec(_s); _s.loader.exec_module(m)
+m = importlib.util.module_from_spec(_s)
+_s.loader.exec_module(m)
 
 
 def test_grant_calls_update_permissions_with_can_use():

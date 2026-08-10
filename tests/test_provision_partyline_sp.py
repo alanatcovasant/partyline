@@ -1,10 +1,12 @@
 # tests/test_provision_partyline_sp.py
-import importlib.util, pathlib
+import importlib.util
+import pathlib
 from unittest.mock import MagicMock
 
 _P = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "provision_partyline_sp.py"
 _s = importlib.util.spec_from_file_location("provision_partyline_sp", _P)
-m = importlib.util.module_from_spec(_s); _s.loader.exec_module(m)
+m = importlib.util.module_from_spec(_s)
+_s.loader.exec_module(m)
 
 
 def test_resolve_existing_sp_does_not_create():
@@ -31,7 +33,8 @@ def test_create_sp_when_absent():
 
 def test_ensure_workspace_sp_skips_create_when_present():
     w = MagicMock()
-    existing = MagicMock(); existing.id = 42
+    existing = MagicMock()
+    existing.id = 42
     w.service_principals.list.return_value = [existing]
     assert m.ensure_workspace_sp(w, "appid", "disp") == "42"
     w.service_principals.create.assert_not_called()
@@ -40,7 +43,8 @@ def test_ensure_workspace_sp_skips_create_when_present():
 def test_ensure_workspace_sp_creates_when_absent():
     w = MagicMock()
     w.service_principals.list.return_value = []
-    created = MagicMock(); created.id = 99
+    created = MagicMock()
+    created.id = 99
     w.service_principals.create.return_value = created
     assert m.ensure_workspace_sp(w, "appid", "disp") == "99"
     w.service_principals.create.assert_called_once()
@@ -48,10 +52,14 @@ def test_ensure_workspace_sp_creates_when_absent():
 
 def test_mint_fresh_secret_deletes_all_then_mints_one():
     w = MagicMock()
-    s1 = MagicMock(); s1.id = "a"
-    s2 = MagicMock(); s2.id = "b"
+    s1 = MagicMock()
+    s1.id = "a"
+    s2 = MagicMock()
+    s2.id = "b"
     w.service_principal_secrets_proxy.list.return_value = [s1, s2]
-    minted = MagicMock(); minted.id = "new"; minted.secret = "CLEARTEXT"
+    minted = MagicMock()
+    minted.id = "new"
+    minted.secret = "CLEARTEXT"
     w.service_principal_secrets_proxy.create.return_value = minted
     out = m.mint_fresh_secret(w, "123", 100)
     assert out == "CLEARTEXT"
@@ -61,7 +69,8 @@ def test_mint_fresh_secret_deletes_all_then_mints_one():
 
 def test_ensure_secret_scope_guards_create_but_always_puts():
     w = MagicMock()
-    existing_scope = MagicMock(); existing_scope.name = m.SECRET_SCOPE
+    existing_scope = MagicMock()
+    existing_scope.name = m.SECRET_SCOPE
     w.secrets.list_scopes.return_value = [existing_scope]
     m.ensure_secret_scope(w, m.SECRET_SCOPE, "cid", "csecret", "appid")
     w.secrets.create_scope.assert_not_called()          # scope already exists

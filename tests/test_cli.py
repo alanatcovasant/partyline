@@ -3,8 +3,6 @@ resolvers (no network, no pool, no filesystem — `cfg` is injected)."""
 
 from urllib.parse import parse_qs, urlsplit
 
-import pytest
-
 from covasant_partyline import cli
 
 # `clean_env` (drops the PARTYLINE_*/DATABRICKS_* env the resolvers consult) lives in

@@ -19,7 +19,9 @@ def test_verb_bodies_validate_against_rest_models():
     """Each send verb's body-builder must produce a dict that VALIDATES against the
     corresponding app REST Pydantic model — the uncovered seam where a client-side body
     could silently drift from the server-side model and raise at delivery time."""
-    import sys, pathlib
+    import pathlib
+    import sys
+
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "covasant-partyline"))
     from app.models import PostMessage, RegisterAgent, Checkpoint, ReleaseRequest
     from covasant_partyline import sender

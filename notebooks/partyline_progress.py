@@ -1,4 +1,5 @@
 # Databricks notebook source
+# ruff: noqa: E402, F821
 # COMMAND ----------
 # MAGIC %md
 # MAGIC # Partyline progress reporter
