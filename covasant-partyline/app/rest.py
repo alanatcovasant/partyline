@@ -85,9 +85,15 @@ async def register_agent(body: RegisterAgent) -> dict:
 
 
 @router.get("/agents", response_model=list[Agent])
-async def list_agents(active_within_seconds: int = 3600) -> list[dict]:
+async def list_agents(active_within_seconds: int = 3600, include_stale: bool = False) -> list[dict]:
+    """Registered agents with presence labels.
+
+    `include_stale=true` returns everyone ever registered — use it to answer "does this
+    agent exist at all", which a filtered roster cannot: an omitted row and a nonexistent
+    agent look identical to the caller.
+    """
     started = time.perf_counter()
-    agents = await run_in_threadpool(db.list_agents, active_within_seconds)
+    agents = await run_in_threadpool(db.list_agents, active_within_seconds, include_stale)
     elapsed_ms = (time.perf_counter() - started) * 1000
 
     if not agents:
@@ -130,26 +136,46 @@ async def agent_presence_diagnostics(
 
 @router.post("/messages", response_model=Message)
 async def post_message(body: PostMessage, request: Request) -> dict:
+    """Post a message. 400s on a recipient that has never registered.
+
+    That refusal is the point: the write is durable but delivery is unobservable, so a
+    typo'd recipient used to return 200 and then never be read by anyone. An *idle*
+    recipient still succeeds — it comes back with `delivery_warnings` instead, because
+    idle is a timing problem and unknown is a typo.
+    """
     author = await resolve_author(request)
-    row = await run_in_threadpool(
-        db.post_message,
-        body.agent_id,
-        body.message_type.value,
-        body.recipient,
-        body.repo,
-        body.branch,
-        body.resource_path,
-        body.issue_ref,
-        body.payload,
-        body.metadata,
-        body.mentions,
-        body.reply_to_id,
-        author,
-        body.summary,
-        body.event_time,
-    )
+    try:
+        row = await run_in_threadpool(
+            db.post_message,
+            body.agent_id,
+            body.message_type.value,
+            body.recipient,
+            body.repo,
+            body.branch,
+            body.resource_path,
+            body.issue_ref,
+            body.payload,
+                body.metadata,
+            body.mentions,
+            body.reply_to_id,
+            author,
+            body.summary,
+            body.event_time,
+            allow_unregistered_recipient=body.allow_unregistered_recipient,
+        )
+    except db.UnknownRecipient as exc:
+        log.warning("post_message REFUSED agent_id=%s recipient=%s", body.agent_id, exc.recipient)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unknown_recipient",
+                "recipient": exc.recipient,
+                "message": str(exc),
+                "suggestions": exc.suggestions,
+            },
+        )
     log.info(
-        "post_message ok id=%s agent_id=%s type=%s recipient=%s mentions=%s repo=%s branch=%s",
+        "post_message ok id=%s agent_id=%s type=%s recipient=%s mentions=%s repo=%s branch=%s warnings=%s",
         row.get("id"),
         body.agent_id,
         body.message_type.value,
@@ -157,6 +183,7 @@ async def post_message(body: PostMessage, request: Request) -> dict:
         len(body.mentions),
         body.repo,
         body.branch,
+        len(row.get("delivery_warnings") or []),
     )
     return row
 
@@ -280,6 +307,7 @@ async def ack_checkpoint(body: Checkpoint) -> dict:
 @router.post("/claims")
 async def claim_resource(body: ClaimRequest) -> dict:
     ttl = body.ttl_seconds or settings.default_claim_ttl_seconds
+    body.resource_type = body.resource_type or infer_resource_type(body.resource_path)
     acquired, claim = await run_in_threadpool(
         db.claim_resource,
         body.agent_id,
@@ -305,10 +333,10 @@ async def claim_resource(body: ClaimRequest) -> dict:
 
 @router.post("/claims/work-item")
 async def claim_work_item(body: ClaimWorkItemRequest) -> dict:
-    """Lease a work item plus the directories it touches, atomically."""
+    """Lease a work item plus what it touches (directories and/or src: refs), atomically."""
     ttl = body.ttl_seconds or settings.default_claim_ttl_seconds
     targets = [(body.work_item, infer_resource_type(body.work_item))]
-    targets += [(p, "directory") for p in body.paths]
+    targets += [(p, infer_resource_type(p)) for p in body.paths]
     acquired, claims, blocker = await run_in_threadpool(
         db.claim_targets,
         body.agent_id,

@@ -204,6 +204,27 @@ const MESSAGE_TYPES = [
   "done", "ack", "escalation", "summary",
 ] as const;
 
+/** Turn a rejected post into something the composer can act on.
+ *
+ *  The server refuses a recipient that has never registered — that is a typo, and a
+ *  typo'd handoff is undeliverable forever — and names the ids it probably meant. "HTTP
+ *  400" alone would leave the human guessing at exactly the moment we know the answer. */
+async function explainPostFailure(r: Response): Promise<string> {
+  try {
+    const detail = (await r.json())?.detail;
+    if (detail?.error === "unknown_recipient") {
+      const near = detail.suggestions?.length
+        ? ` Did you mean: ${detail.suggestions.join(", ")}?`
+        : "";
+      return `No agent has ever registered as "${detail.recipient}", so this could never be delivered.${near}`;
+    }
+    if (typeof detail === "string") return detail;
+  } catch {
+    /* fall through to the status code */
+  }
+  return `HTTP ${r.status}`;
+}
+
 /** Compose box: lets a human post to the line. Broadcast like any other message —
  *  agents see it via SSE push or their next get_unread poll. `@name` in the text
  *  becomes a mention (so only_for_me filters catch it). */
@@ -268,7 +289,12 @@ function Compose({ agents }: { agents: Agent[] }) {
           mentions,
         }),
       });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (!r.ok) throw new Error(await explainPostFailure(r));
+      const posted = await r.json();
+      // Delivery feedback, shown rather than left to be inferred from a later silence:
+      // the message IS stored, but a stale recipient means an answer may be a long way off.
+      const warnings: string[] = posted?.delivery_warnings ?? [];
+      setError(warnings.length ? `Sent — ${warnings.join(" · ")}` : null);
       setText(""); // stream updates itself via SSE
     } catch (err) {
       setError(String(err));

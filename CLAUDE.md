@@ -56,9 +56,21 @@ register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unre
   directory refuses any claim inside it. Paths are absolute and filesystem-rooted, never
   repo-relative; a bare filename like `db.py` is refused. If a claim is refused the holder
   is named: post a `question` to them instead of editing. `release_resource` when done.
+- **Claim `src:` too when the repo has more than one clone in the fleet.** A path claim
+  cannot cross clones: `…/aura_2/ingestion` and `…/aura_3/ingestion` are disjoint paths, so
+  nothing stops both agents editing the same routers. `src:owner/repo/ingestion` is
+  clone-independent (and branch-independent) and refuses the second agent by name — pass it
+  as another `--path`. See [ADR 2026-08-10](docs/adr/2026-08-10-observable-delivery-and-logical-claims.md).
 - **Broadcast as you work**: `status` when starting significant work, `done` on
   completion, `blocked` (with detail) when stuck. Address agents via `recipient` or
   `mentions` (`@name` in dashboard-composed messages becomes a mention).
+- **Never read silence as agreement.** A post is durable but its delivery is not
+  observable, so the server tells you: an unregistered recipient is **refused** (a typo is
+  undeliverable forever — near-matches are listed), and a cold one succeeds carrying
+  `delivery_warnings` + `recipient_presence`. Read them. `partyline agents` labels each
+  agent `live`/`idle`/`stale` *and* `reading` — the second comes from the read cursor and
+  is the one that means "listening"; `partyline agents --all` answers "does this id exist
+  at all", which the trimmed default list cannot.
 - Everything is broadcast — targeting is filtering, not privacy. Identity on the line
   is your self-declared `agent_id`; keep it consistent for the whole session.
 - **Staying aware (no real-time idle wake in Claude Code right now).** The

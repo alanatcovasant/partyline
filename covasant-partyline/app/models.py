@@ -92,6 +92,16 @@ class Agent(RegisterAgent):
     # the dashboard and VS Code extension). Null if the agent has never posted a status.
     last_status: str | None = None
     last_status_at: datetime | None = None
+    # Presence (see presence.py): liveness decays, identity never does. `status` is the
+    # heartbeat clock ("is this session alive"); `reading` is the checkpoint clock ("is it
+    # consuming the line"). They differ, and the difference is what tells a sender whether
+    # to expect an answer.
+    status: str = Field("stale", description="live | idle | stale (heartbeat clock)")
+    reading: bool = Field(False, description="Acked a checkpoint recently (read clock)")
+    heartbeat_age_seconds: int | None = None
+    read_age_seconds: int | None = Field(
+        None, description="Seconds since last ack; null means this agent has never read"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -121,6 +131,12 @@ class PostMessage(BaseModel):
     event_time: datetime | None = Field(
         None, description="Agent emit time (ISO-8601). Defaults server-side to now() when omitted."
     )
+    allow_unregistered_recipient: bool = Field(
+        False,
+        description="Permit a recipient that has never registered. Off by default: an "
+        "unknown id is a typo, and a typo'd handoff is undeliverable forever. Set it only "
+        "when deliberately addressing a session that has not started yet.",
+    )
 
 
 class Message(PostMessage):
@@ -131,6 +147,15 @@ class Message(PostMessage):
     )
     created_at: datetime
     received_at: datetime | None = None
+    # Delivery feedback, reported at write time rather than left to be inferred from a
+    # later silence. The message is durable regardless — these say who was listening.
+    recipient_presence: dict | None = Field(
+        None, description="Recipient's presence at send time (null when unaddressed)"
+    )
+    delivery_warnings: list[str] = Field(
+        default_factory=list,
+        description="Reasons this may not be read soon (stale recipient, unknown mentions)",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -152,15 +177,17 @@ class Checkpoint(BaseModel):
 
 
 class ClaimRequest(BaseModel):
-    """Input for claiming one target (FR5): an absolute directory or a work-item URI."""
+    """Input for claiming one target (FR5): a directory, a work item, or source."""
 
     agent_id: str
     repo: str
     resource_path: str = Field(
-        ..., description="Absolute filesystem path, or issue:owner/repo#N / pr:owner/repo#N"
+        ...,
+        description="Absolute filesystem path (this machine), issue:owner/repo#N / "
+        "pr:owner/repo#N (the task), or src:owner/repo/path (the source, in every clone)",
     )
     branch: str | None = None
-    resource_type: str | None = Field(None, description="issue|pr|directory|workdir|file")
+    resource_type: str | None = Field(None, description="issue|pr|source|directory|workdir|file")
     claim_scope: ClaimScope = ClaimScope.exclusive
     reason: str | None = None
     ttl_seconds: int | None = None

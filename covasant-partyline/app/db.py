@@ -13,6 +13,7 @@ auth.py — and stamped into ``messages.author``.
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import threading
@@ -23,6 +24,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from . import presence
 from .config import settings
 
 log = logging.getLogger("partyline.db")
@@ -522,14 +524,44 @@ def _heartbeat(conn, agent_id: str) -> None:
     _extend_workdir_claims(conn, agent_id)
 
 
-def list_agents(active_within_seconds: int = 3600) -> list[dict]:
+def _classify_row(row: dict) -> dict:
+    """Attach presence labels to an agent row that already carries both clock ages."""
+    row.update(
+        presence.classify(
+            row.get("heartbeat_age_seconds"),
+            row.get("read_age_seconds"),
+            settings.presence_live_seconds,
+            settings.presence_idle_seconds,
+        )
+    )
+    return row
+
+
+def list_agents(active_within_seconds: int = 3600, include_stale: bool = False) -> list[dict]:
+    """Registered agents, each labelled with its presence (never filtered into oblivion).
+
+    Every row carries `status` (live|idle|stale), `reading`, and both clock ages, so a
+    caller can tell "that agent is not listening" from "that agent does not exist". The
+    two are indistinguishable when a roster silently omits rows — the failure that made
+    a sender read silence as consent.
+
+    `include_stale=True` returns every agent ever registered. The default still applies
+    the window, because the SessionStart banner is a token budget, not an audit: callers
+    that need the truth ask for it, and nothing is ever deleted either way.
+    """
+    where = "" if include_stale else "WHERE a.last_heartbeat > now() - make_interval(secs => %(win)s)"
     with get_pool().connection() as conn:
         rows = conn.execute(
-            """SELECT a.agent_id, a.owner, a.repo, a.branch, a.display_name,
+            f"""SELECT a.agent_id, a.owner, a.repo, a.branch, a.display_name,
                       a.registered_at, a.last_heartbeat,
+                      EXTRACT(EPOCH FROM (now() - a.last_heartbeat))::BIGINT
+                          AS heartbeat_age_seconds,
+                      EXTRACT(EPOCH FROM (now() - c.updated_at))::BIGINT
+                          AS read_age_seconds,
                       s.payload    AS last_status,
                       s.created_at AS last_status_at
                FROM agents a
+               LEFT JOIN checkpoints c ON c.agent_id = a.agent_id
                LEFT JOIN LATERAL (
                    SELECT payload, created_at
                    FROM messages m
@@ -537,12 +569,56 @@ def list_agents(active_within_seconds: int = 3600) -> list[dict]:
                    ORDER BY m.created_at DESC
                    LIMIT 1
                ) s ON true
-               WHERE a.last_heartbeat > now() - make_interval(secs => %s)
+               {where}
                ORDER BY a.last_heartbeat DESC""",
-            (active_within_seconds,),
+            {"win": active_within_seconds},
         ).fetchall()
-    log.info("list_agents returned count=%s active_within_seconds=%s", len(rows), active_within_seconds)
-    return rows
+    log.info(
+        "list_agents returned count=%s active_within_seconds=%s include_stale=%s",
+        len(rows), active_within_seconds, include_stale,
+    )
+    return [_classify_row(r) for r in rows]
+
+
+def get_presence(conn, agent_ids: list[str]) -> dict[str, dict]:
+    """Presence for specific agents, keyed by agent_id. Missing ids are simply absent.
+
+    Takes an open connection so the send path can check and insert in one transaction.
+    """
+    if not agent_ids:
+        return {}
+    rows = conn.execute(
+        """SELECT a.agent_id,
+                  EXTRACT(EPOCH FROM (now() - a.last_heartbeat))::BIGINT
+                      AS heartbeat_age_seconds,
+                  EXTRACT(EPOCH FROM (now() - c.updated_at))::BIGINT
+                      AS read_age_seconds
+             FROM agents a
+             LEFT JOIN checkpoints c ON c.agent_id = a.agent_id
+            WHERE a.agent_id = ANY(%s)""",
+        (list(agent_ids),),
+    ).fetchall()
+    return {r["agent_id"]: _classify_row(r) for r in rows}
+
+
+def _suggest_agents(conn, unknown: str, limit: int = 3) -> list[str]:
+    """Closest known agent_ids to a typo, else the agents currently live.
+
+    A bare "unknown recipient" is only half an answer; the sender still has to guess the
+    right spelling. Near-matches catch the typo case, and the live list catches the
+    "I invented an id that never existed" case.
+    """
+    known = [r["agent_id"] for r in conn.execute("SELECT agent_id FROM agents").fetchall()]
+    close = difflib.get_close_matches(unknown, known, n=limit, cutoff=0.6)
+    if close:
+        return close
+    live = conn.execute(
+        """SELECT agent_id FROM agents
+            WHERE last_heartbeat > now() - make_interval(secs => %s)
+            ORDER BY last_heartbeat DESC LIMIT %s""",
+        (settings.presence_idle_seconds, limit),
+    ).fetchall()
+    return [r["agent_id"] for r in live]
 
 
 def get_agent_presence_diagnostics(active_within_seconds: int = 3600, sample_size: int = 50) -> dict:
@@ -565,20 +641,25 @@ def get_agent_presence_diagnostics(active_within_seconds: int = 3600, sample_siz
 
         rows = conn.execute(
             """SELECT
-                     agent_id,
-                     owner,
-                     repo,
-                     branch,
-                     display_name,
-                     registered_at,
-                     last_heartbeat,
-                     EXTRACT(EPOCH FROM (now() - last_heartbeat))::BIGINT AS heartbeat_age_seconds,
-                     (last_heartbeat > now() - make_interval(secs => %s)) AS is_active
-               FROM agents
-               ORDER BY last_heartbeat DESC
+                     a.agent_id,
+                     a.owner,
+                     a.repo,
+                     a.branch,
+                     a.display_name,
+                     a.registered_at,
+                     a.last_heartbeat,
+                     EXTRACT(EPOCH FROM (now() - a.last_heartbeat))::BIGINT
+                         AS heartbeat_age_seconds,
+                     EXTRACT(EPOCH FROM (now() - c.updated_at))::BIGINT
+                         AS read_age_seconds,
+                     (a.last_heartbeat > now() - make_interval(secs => %s)) AS is_active
+               FROM agents a
+               LEFT JOIN checkpoints c ON c.agent_id = a.agent_id
+               ORDER BY a.last_heartbeat DESC
                LIMIT %s""",
             (active_within_seconds, sample_size),
         ).fetchall()
+    rows = [_classify_row(r) for r in rows]
 
     return {
         "active_within_seconds": active_within_seconds,
@@ -699,6 +780,66 @@ def query_messages(
         return conn.execute(sql, tuple(live_params + arch_params + [limit])).fetchall()
 
 
+class UnknownRecipient(ValueError):
+    """A post addressed to an agent_id that has never registered.
+
+    Distinct from an idle one on purpose: idle is a timing problem (the message waits and
+    is eventually read), unknown is a typo (the message waits forever). Only the second is
+    worth failing the write for. Carries suggestions so the sender can fix it in one step.
+    """
+
+    def __init__(self, recipient: str, suggestions: list[str]) -> None:
+        self.recipient = recipient
+        self.suggestions = suggestions
+        did_you_mean = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        super().__init__(
+            f"unknown recipient {recipient!r} — no agent has ever registered under that id, "
+            f"so this message could never be delivered.{did_you_mean} "
+            "Pass allow_unregistered_recipient=true if you are deliberately addressing a "
+            "session that has not started yet."
+        )
+
+
+def _check_delivery(
+    conn,
+    recipient: str | None,
+    mentions: list[str],
+    allow_unregistered_recipient: bool,
+) -> tuple[dict | None, list[str]]:
+    """Resolve the addressees BEFORE inserting. Returns (recipient_presence, warnings).
+
+    Raises UnknownRecipient for an unregistered recipient (unless overridden). Unknown
+    *mentions* only warn: a recipient is a structured field someone typed deliberately,
+    while mentions are parsed out of prose (the dashboard turns '@name' into one), so a
+    hard failure there would reject a legitimate message over a false positive in its text.
+    """
+    wanted = [x for x in ([recipient] if recipient else []) + list(mentions) if x]
+    known = get_presence(conn, wanted)
+    warnings: list[str] = []
+
+    if recipient and recipient not in known:
+        if not allow_unregistered_recipient and settings.strict_recipients:
+            raise UnknownRecipient(recipient, _suggest_agents(conn, recipient))
+        warnings.append(
+            f"recipient {recipient!r} is not registered — delivered only if that id ever "
+            "registers and reads the line"
+        )
+
+    recipient_presence = known.get(recipient) if recipient else None
+    if recipient_presence:
+        warning = presence.delivery_warning(recipient, recipient_presence)
+        if warning:
+            warnings.append(warning)
+
+    unknown_mentions = [m for m in mentions if m not in known]
+    if unknown_mentions:
+        warnings.append(
+            f"unregistered mentions: {', '.join(sorted(unknown_mentions))} — "
+            "nothing will surface this to them"
+        )
+    return recipient_presence, warnings
+
+
 def post_message(
     agent_id: str,
     message_type: str,
@@ -714,14 +855,27 @@ def post_message(
     author: str | None,
     summary: str | None = None,
     event_time=None,  # datetime | ISO-str | None; agent emit time (None -> now())
+    *,
+    # Keyword-only on purpose: the bridge passes event_time as the trailing POSITIONAL
+    # arg (locked by tests/test_event_time.py), so anything added after it must never
+    # claim a positional slot.
+    allow_unregistered_recipient: bool = False,
 ) -> dict:
     """Insert a message, refresh presence, and emit a NOTIFY for push delivery (FR1/FR2).
 
     ``recipient`` is the primary addressee ("To:"); the message is still broadcast to the
     whole line — recipient/mentions are for targeting and filtering, not privacy.
+
+    The write is durable, but delivery is not observable: a post into a recipient with no
+    listener has always returned success, so the sender learned nothing and read silence
+    as agreement. The returned row therefore carries ``recipient_presence`` and
+    ``delivery_warnings``, and an unknown recipient raises instead of succeeding quietly.
     """
     log.info("post_message agent_id=%s type=%s recipient=%s repo=%s", agent_id, message_type, recipient, repo)
     with get_pool().connection() as conn:
+        recipient_presence, warnings = _check_delivery(
+            conn, recipient, mentions, allow_unregistered_recipient
+        )
         row = conn.execute(
             f"""INSERT INTO messages
                  (agent_id, author, message_type, recipient, repo, branch,
@@ -780,7 +934,12 @@ def post_message(
             ),
         )
         conn.commit()
-    log.info("post_message OK id=%s agent_id=%s", row["id"], agent_id)
+    # Reported on the write, not left for the sender to infer from silence later.
+    row["recipient_presence"] = recipient_presence
+    row["delivery_warnings"] = warnings
+    for warning in warnings:
+        log.warning("post_message id=%s delivery: %s", row["id"], warning)
+    log.info("post_message OK id=%s agent_id=%s warnings=%s", row["id"], agent_id, len(warnings))
     return row
 
 

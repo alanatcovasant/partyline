@@ -13,7 +13,15 @@ from app import db
 
 
 async def _post(client, agent_id, **fields):
-    await client.post("/api/agents", json={"agent_id": agent_id, "owner": "alan", "repo": "partyline"})
+    async def _register(who):
+        await client.post("/api/agents", json={"agent_id": who, "owner": "alan", "repo": "partyline"})
+
+    await _register(agent_id)
+    # Register the addressee too: posting to an id that never registered is now a 400
+    # (it is a typo, and a typo'd handoff is undeliverable forever). These tests are about
+    # the addressing FILTER, so they need a recipient that legitimately exists.
+    if fields.get("recipient"):
+        await _register(fields["recipient"])
     body = {"agent_id": agent_id, "message_type": fields.pop("message_type", "status")}
     body.update(fields)
     return (await client.post("/api/messages", json=body)).json()

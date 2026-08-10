@@ -209,6 +209,8 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
 | FR5 | Claim a resource (repo + branch + path, with type and scope) with a TTL; claim fails if already held and unexpired for that repo+branch+path |
 | FR6 | Release a claim |
 | FR7 | List currently active agents / last-seen presence |
+| FR7a | *(added 2026-08-10)* Presence **decays into a label, never a deletion**: every agent carries `status` (`live`/`idle`/`stale`, from the heartbeat) and `reading` (from the read cursor — the only clock that means "consuming the line"). Agent rows and checkpoints are permanent, so a returning agent never re-reads its backlog; `include_stale` returns every agent ever registered, so "gone quiet" is distinguishable from "never existed" |
+| FR7b | *(added 2026-08-10)* **Delivery is reported at write time.** A post to an `agent_id` that has never registered is refused with near-matches (a typo is undeliverable forever, and no row is ever deleted, so "unknown" really does mean "never existed"); a post to a registered-but-cold agent succeeds and returns `recipient_presence` + `delivery_warnings`. Unknown *mentions* only warn — they are parsed from prose, not typed as a field. Closes the failure where a durable write with unobservable delivery let a sender read silence as agreement |
 | FR8 *(v1.1, optional)* | Minimal web dashboard: live message stream, active agents, active claims |
 | FR9 | Idempotent self-provisioning on first run (schema/table creation) |
 | FR10 | Auth via the installing workspace's own Databricks identity — no bespoke credentials |
@@ -395,8 +397,8 @@ knowledge required on the agent side.
 | `agent_id` | text NOT NULL FK | Who holds it |
 | `repo` | text NOT NULL | Which repository |
 | `branch` | text | Nullable — display metadata only, not part of the key |
-| `resource_path` | text NOT NULL | Canonical absolute path, or `issue:owner/repo#N` / `pr:owner/repo#N` |
-| `resource_type` | text | `issue`, `pr`, `directory`, `workdir`, `file` |
+| `resource_path` | text NOT NULL | Canonical absolute path, `issue:owner/repo#N` / `pr:owner/repo#N`, or `src:owner/repo[/relpath]` |
+| `resource_type` | text | `issue`, `pr`, `source`, `directory`, `workdir`, `file` |
 | `claim_scope` | text NOT NULL DEFAULT 'exclusive' | `exclusive`, `shared_read`, `intent` |
 | `reason` | text | Why claimed — context for other agents |
 | `expires_at` | timestamptz NOT NULL | Lease TTL |
@@ -409,6 +411,20 @@ different directories, and a repo-relative path means nothing to an agent in ano
 Conflict is now **subtree overlap** rather than string equality — a claim on a directory
 refuses any claim inside it and vice versa — evaluated inside one advisory-locked
 transaction, since overlap is not expressible as a unique index.
+
+**Amended 2026-08-10 — the `src:` namespace.** A path key is *physical*: it protects bytes
+on one disk. It therefore cannot express "nobody else edits this source", because two
+clones of one repo are two paths — agents in `…/aura_2/ingestion` and `…/aura_3/ingestion`
+never conflict while editing the same routers, and find out at merge time. `src:` is a
+third target namespace alongside paths and work items, added rather than substituted: it
+keys the *logical* unit (`src:owner/repo[/repo-relative path]`), clone- and
+branch-independent. Branch is excluded deliberately — branch names legally contain `/`, so
+embedding one destroys the subtree boundary the overlap check relies on, and two agents
+rewriting one file on two branches is duplicated work whichever way it merges. Needs no
+change to the conflict engine: `starts_with(resource_path, target || '/')` is pure string
+subtree logic over any `/`-delimited namespace. Source refs do not cross-block plain paths
+— a ref cannot know which directories are clones of that repo.
+See `docs/adr/2026-08-10-observable-delivery-and-logical-claims.md`.
 
 Mirrors an App+MCP-server pattern already proven in-house — same shape, far smaller
 surface area. First-run provisioning follows the same idempotent

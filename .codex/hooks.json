@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -m covasant_partyline.hook --url https://mcp-covasant-partyline-7405607474919121.1.azure.databricksapps.com --profile dev-eastus2 --owner alan --repo covasant-partyline"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python partyline-plugin/hooks/check_unread.py"
+          }
+        ]
+      }
+    ]
+  }
+}

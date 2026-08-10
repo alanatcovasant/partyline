@@ -58,6 +58,26 @@ _HTTP_TIMEOUT = float(os.getenv("PARTYLINE_HTTP_TIMEOUT", "30"))
 _WATCH_READ_TIMEOUT = float(os.getenv("PARTYLINE_WATCH_READ_TIMEOUT", "60"))
 
 
+def _explain_http_error(code: int, raw: str) -> str:
+    """Turn a server refusal into something the caller can act on in one step.
+
+    An unknown recipient is the refusal agents will hit most, and it always carries a fix
+    (the id they probably meant), so it gets prose instead of a wall of JSON.
+    """
+    try:
+        detail = json.loads(raw).get("detail")
+    except (ValueError, AttributeError):
+        return f"HTTP {code}: {raw}"
+
+    if isinstance(detail, dict) and detail.get("error") == "unknown_recipient":
+        lines = [detail.get("message") or f"unknown recipient {detail.get('recipient')!r}"]
+        if detail.get("suggestions"):
+            lines.append("  registered ids that look close: " + ", ".join(detail["suggestions"]))
+        lines.append("  see who is on the line: partyline agents --all")
+        return "\n".join(lines)
+    return f"HTTP {code}: {raw}"
+
+
 def _request(method: str, base: str, path: str, body: dict | None = None) -> object:
     url = base.rstrip("/") + path
     data = json.dumps(body).encode() if body is not None else None
@@ -71,7 +91,8 @@ def _request(method: str, base: str, path: str, body: dict | None = None) -> obj
         with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
             return json.loads(resp.read() or "null")
     except urllib.error.HTTPError as e:
-        sys.exit(f"HTTP {e.code}: {e.read().decode(errors='replace')}")
+        raw = e.read().decode(errors="replace")
+        sys.exit(f"partyline: {_explain_http_error(e.code, raw)}")
     except (urllib.error.URLError, TimeoutError) as e:
         reason = getattr(e, "reason", e)
         sys.exit(f"Connection failed: {reason}")
@@ -90,13 +111,19 @@ def cmd_register(a: argparse.Namespace) -> None:
 
 
 def cmd_post(a: argparse.Namespace) -> None:
-    _print(_request("POST", a.url, "/api/messages", {
+    result = _request("POST", a.url, "/api/messages", {
         "agent_id": a.agent_id, "message_type": a.type, "recipient": a.recipient,
         "repo": a.repo, "branch": a.branch, "resource_path": a.resource,
         "issue_ref": a.issue, "summary": a.summary, "payload": a.payload,
         "metadata": json.loads(a.metadata) if a.metadata else {},
         "mentions": a.mention or [], "reply_to_id": a.reply_to,
-    }))
+        "allow_unregistered_recipient": a.allow_unregistered_recipient,
+    })
+    _print(result)
+    # On stderr, so it is visible to a human and to an agent reading the tool output, but
+    # never corrupts the JSON on stdout that scripts parse.
+    for warning in (result or {}).get("delivery_warnings") or []:
+        print(f"partyline: warning: {warning}", file=sys.stderr)
 
 
 def cmd_unread(a: argparse.Namespace) -> None:
@@ -137,7 +164,7 @@ def cmd_release(a: argparse.Namespace) -> None:
 
 
 def cmd_agents(a: argparse.Namespace) -> None:
-    _print(_request("GET", a.url, "/api/agents"))
+    _print(_request("GET", a.url, "/api/agents" + ("?include_stale=true" if a.all else "")))
 
 
 def cmd_claims(a: argparse.Namespace) -> None:
@@ -420,6 +447,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--metadata", help="JSON string")
     sp.add_argument("--mention", action="append", help="Mentioned agent id (repeatable)")
     sp.add_argument("--reply-to", type=int, dest="reply_to")
+    sp.add_argument("--allow-unregistered-recipient", action="store_true",
+                    dest="allow_unregistered_recipient",
+                    help="Permit a --recipient that has never registered. Off by default: "
+                         "an unknown id is a typo, and a typo'd handoff is undeliverable "
+                         "forever. Use only for a session that hasn't started yet.")
     sp.set_defaults(func=cmd_post)
 
     sp = sub.add_parser("unread", help="Get messages since an agent's checkpoint")
@@ -447,14 +479,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--ttl", type=int, help="Lease seconds")
     sp.set_defaults(func=cmd_claim_issue)
 
-    sp = sub.add_parser("claim", help="Claim one target (dir or work item)")
+    sp = sub.add_parser("claim", help="Claim one target (dir, work item, or source)")
     sp.add_argument("agent_id")
     sp.add_argument("repo")
     sp.add_argument("resource_path",
-                    help="Absolute directory ('.' = here) or issue:owner/repo#N")
+                    help="Absolute directory ('.' = here), issue:owner/repo#N, or "
+                         "src:owner/repo/path — the last claims the source in EVERY "
+                         "clone, which a path claim cannot do")
     sp.add_argument("--branch")
     sp.add_argument("--resource-type", dest="resource_type",
-                    choices=["issue", "pr", "directory", "workdir", "file"])
+                    choices=["issue", "pr", "source", "directory", "workdir", "file"])
     sp.add_argument("--scope", default="exclusive",
                     choices=["exclusive", "shared_read", "intent"])
     sp.add_argument("--reason")
@@ -468,7 +502,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--branch")
     sp.set_defaults(func=cmd_release)
 
-    sub.add_parser("agents", help="List active agents").set_defaults(func=cmd_agents)
+    sp = sub.add_parser("agents", help="List agents with presence (live/idle/stale)")
+    sp.add_argument("--all", action="store_true",
+                    help="Include stale agents. Nothing is ever deleted, so this answers "
+                         "'does this id exist at all' — which the trimmed list cannot.")
+    sp.set_defaults(func=cmd_agents)
     sub.add_parser("claims", help="List active claims").set_defaults(func=cmd_claims)
 
     sp = sub.add_parser("search", help="Field-filtered search over live + archived history")

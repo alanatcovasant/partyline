@@ -18,7 +18,8 @@ async def _clean_test_claims(started_app):
     with db.get_pool().connection() as conn:
         conn.execute(
             "DELETE FROM claims WHERE resource_path LIKE '/t/%%' "
-            "OR resource_path LIKE 'issue:covasant/aura#%%'"
+            "OR resource_path LIKE 'issue:covasant/aura#%%' "
+            "OR resource_path LIKE 'src:covasant/%%'"
         )
         conn.commit()
     yield
@@ -116,6 +117,55 @@ async def test_distinct_work_items_do_not_conflict(client):
     assert refused["acquired"] is False
     await _release(client, "ovl_a", "issue:covasant/aura#1")
     await _release(client, "ovl_b", "issue:covasant/aura#12")
+
+
+async def test_source_ref_conflicts_across_clones(client):
+    """The incident this scheme exists for.
+
+    Two agents in two clones of one repo (…/aura_2/… and …/aura_3/…) hold
+    non-overlapping *paths* and so never collide — but they are editing the same source.
+    A src: claim is clone-independent, so the second agent is refused and told who holds it.
+    """
+    await _register(client, "ovl_c2")
+    await _register(client, "ovl_c3")
+    assert (await _claim(client, "ovl_c2", "/t/clones/aura_2/ingestion")).json()["acquired"] is True
+    # Physically disjoint: no conflict, which is correct and also useless here.
+    assert (await _claim(client, "ovl_c3", "/t/clones/aura_3/ingestion")).json()["acquired"] is True
+
+    assert (await _claim(client, "ovl_c2", "src:covasant/aura/ingestion")).json()["acquired"] is True
+    refused = (await _claim(client, "ovl_c3", "src:covasant/aura/ingestion/routers.py")).json()
+    assert refused["acquired"] is False
+    assert refused["claim"]["agent_id"] == "ovl_c2"
+
+    for agent, path in (
+        ("ovl_c2", "/t/clones/aura_2/ingestion"),
+        ("ovl_c3", "/t/clones/aura_3/ingestion"),
+        ("ovl_c2", "src:covasant/aura/ingestion"),
+    ):
+        await _release(client, agent, path)
+
+
+async def test_source_refs_in_different_repos_do_not_conflict(client):
+    await _register(client, "ovl_c2")
+    await _register(client, "ovl_c3")
+    assert (await _claim(client, "ovl_c2", "src:covasant/aura/pkg")).json()["acquired"] is True
+    assert (await _claim(client, "ovl_c3", "src:covasant/aura-web/pkg")).json()["acquired"] is True
+    await _release(client, "ovl_c2", "src:covasant/aura/pkg")
+    await _release(client, "ovl_c3", "src:covasant/aura-web/pkg")
+
+
+async def test_source_ref_does_not_conflict_with_a_path(client):
+    """Different namespaces guard different invariants; they must not cross-block.
+
+    A src: claim can't know which directories are clones of that repo, so blocking a path
+    on its account would be a guess. Belt and braces means taking both claims.
+    """
+    await _register(client, "ovl_c2")
+    await _register(client, "ovl_c3")
+    assert (await _claim(client, "ovl_c2", "src:covasant/aura/pkg")).json()["acquired"] is True
+    assert (await _claim(client, "ovl_c3", "/t/clones/aura_9/pkg")).json()["acquired"] is True
+    await _release(client, "ovl_c2", "src:covasant/aura/pkg")
+    await _release(client, "ovl_c3", "/t/clones/aura_9/pkg")
 
 
 async def test_concurrent_parent_and_child_have_exactly_one_winner(started_app):

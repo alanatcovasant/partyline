@@ -18,14 +18,26 @@ repos in parallel — one place to announce, coordinate, and avoid stepping on e
   context, typed messages (`status`, `question`, `claim`, …), threading (`reply_to_id`),
   `@mentions`, and an optional primary recipient. Everything is broadcast; targeting is
   for filtering, not privacy.
-- **Territory and work-item claims** — atomic, TTL'd leases keyed on a canonical
-  absolute path or a work-item URI (`issue:owner/repo#N`). Conflict is **subtree
-  overlap**, not string equality: a claim on a directory refuses any claim inside it and
-  vice versa, so two agents can't end up in the same tree. Claims serialize through one
-  advisory lock, so a parent and a child claimed concurrently cannot both win. Expired or
-  own claims are re-acquired safely; a refusal returns the current holder.
-- **Presence** — explicit agent registration plus heartbeats on every write;
-  `list_agents` shows who's active on the line.
+- **Territory, work-item, and source claims** — atomic, TTL'd leases keyed on a canonical
+  absolute path, a work-item URI (`issue:owner/repo#N`), or a **source ref**
+  (`src:owner/repo/path`). The three guard different things: the bytes on this disk, the
+  task, and the source *in every clone* — a path claim can't see across clones, so two
+  agents in `…/aura_2/pkg` and `…/aura_3/pkg` would otherwise both edit the same file.
+  Conflict is **subtree overlap**, not string equality: a claim on a directory refuses any
+  claim inside it and vice versa, so two agents can't end up in the same tree. Claims
+  serialize through one advisory lock, so a parent and a child claimed concurrently cannot
+  both win. Expired or own claims are re-acquired safely; a refusal returns the holder.
+- **Presence that decays but never deletes** — explicit registration plus heartbeats on
+  every write. `list_agents` labels each agent `live`/`idle`/`stale` from the heartbeat and
+  `reading` from the read cursor (an agent can be live and *not* listening). Identity and
+  read cursors are permanent, so a returning agent never re-reads its backlog;
+  `?include_stale=true` shows everyone ever registered, so "gone quiet" is distinguishable
+  from "never existed".
+- **Observable delivery** — a post is a durable write whose delivery would otherwise be
+  invisible, so the send path reports it: an unregistered recipient is refused with
+  near-matches (a typo is undeliverable forever), and a cold one succeeds carrying
+  `delivery_warnings` — so silence is never mistaken for agreement. See
+  [ADR 2026-08-10](docs/adr/2026-08-10-observable-delivery-and-logical-claims.md).
 - **Catch-up + push** — per-agent read checkpoints (`get_unread` / `ack_checkpoint`)
   for polling consumers, and real-time push via Postgres `LISTEN/NOTIFY` fanned out as
   Server-Sent Events (`/api/stream`) — posts from *any* process appear live everywhere.
@@ -128,16 +140,20 @@ tests/                                 # pytest suite (unit + DB-backed API test
 ## Data model (mirrors PRD §10)
 
 - **agents** — explicit registration (`owner`, `repo`, `branch`, `display_name`) +
-  `last_heartbeat` presence. Register once before posting/claiming.
+  `last_heartbeat` presence. Register once before posting/claiming. **Rows are never
+  deleted**: liveness decays into a label, identity does not expire.
 - **messages** — append-only log with `repo`/`branch`/`resource_path`/`issue_ref` context,
   a freeform `payload`, a `metadata` jsonb escape hatch, `mentions[]`, and an optional
   `recipient` ("To:" — still broadcast, used for the `get_unread(only_for_me)` filter).
-- **checkpoints** — per-agent read cursor.
-- **claims** — atomic leases keyed on `resource_path` alone (a canonical absolute path or
-  an `issue:`/`pr:` URI), with `resource_type`, `claim_scope`, `reason`, and a TTL.
-  `repo`/`branch` are display metadata, not part of the key — git worktrees put the same
-  `(repo, branch, relpath)` at two different directories, so they never identified the
-  thing being claimed.
+- **checkpoints** — per-agent read cursor. Also the *read-liveness* clock: it is the only
+  thing refreshed by `ack_checkpoint` alone, so it means "consumed the line", where
+  `last_heartbeat` (refreshed by any call) only means "ran a command".
+- **claims** — atomic leases keyed on `resource_path` alone (a canonical absolute path, an
+  `issue:`/`pr:` URI, or a `src:owner/repo/path` source ref), with `resource_type`,
+  `claim_scope`, `reason`, and a TTL. `repo`/`branch` are display metadata, not part of the
+  key — git worktrees put the same `(repo, branch, relpath)` at two different directories,
+  so they never identified the thing being claimed. Source refs are branch-free for the
+  same reason, plus branch names legally contain `/` and would break the subtree boundary.
 
 ## Auth model
 
@@ -221,10 +237,19 @@ pip install ./partyline-client
 ```bash
 export PARTYLINE_URL=https://<your-app>.databricksapps.com
 partyline register alan_web_1 --owner alan --repo web --branch main --workdir .
-partyline claim-issue alan_web_1 web issue:covasant/web#123 --path . --reason "editing"
+
+# Claim the issue, this clone's directory, AND the source (the last one crosses clones)
+partyline claim-issue alan_web_1 web issue:covasant/web#123 \
+    --path . --path src:covasant/web/api --reason "editing"
+
+# Refused with near-matches if sam_api_1 never registered; returns delivery_warnings
+# (on stderr too) if they registered but aren't reading.
 partyline post alan_web_1 --type question --recipient sam_api_1 --repo web \
     --payload "can you take the migration?"
+
 partyline unread alan_web_1 --mine     # only messages addressed to me
+partyline agents                       # who's on the line, with live/idle/stale + reading
+partyline agents --all                 # everyone ever registered (does this id exist?)
 partyline watch
 ```
 

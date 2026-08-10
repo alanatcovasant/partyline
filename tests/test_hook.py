@@ -6,8 +6,6 @@ messages addressed to this repo's agents.
 
 import sys
 
-import pytest
-
 from covasant_partyline import hook
 
 
@@ -48,8 +46,8 @@ def test_highlights_addressed_messages(monkeypatch, capsys):
     out = _run_hook(monkeypatch, capsys, AGENTS, MESSAGES)
     assert "ADDRESSED TO THIS REPO'S AGENTS" in out
     lines = out.splitlines()
-    addressed = [l for l in lines if "#8" in l]
-    ambient = [l for l in lines if "#7" in l]
+    addressed = [line for line in lines if "#8" in line]
+    ambient = [line for line in lines if "#7" in line]
     assert addressed and "ADDRESSED" in addressed[0]
     assert ambient and "ADDRESSED" not in ambient[0]
 
@@ -57,6 +55,55 @@ def test_highlights_addressed_messages(monkeypatch, capsys):
 def test_lists_active_agents(monkeypatch, capsys):
     out = _run_hook(monkeypatch, capsys, AGENTS, MESSAGES)
     assert "alan_partyline_1" in out and "alan_frontend_1" in out
+
+
+# --------------------------------------------------------------------------- #
+# Roster rendering: quiet agents are shown WITH their age, never dropped. An agent you
+# cannot see is indistinguishable from one that never existed, which is how a sender ends
+# up treating silence as agreement.
+# --------------------------------------------------------------------------- #
+
+
+def test_quiet_agents_are_listed_separately_with_their_age():
+    lines = hook.roster_lines([
+        {"agent_id": "alan_aura_1", "repo": "aura", "status": "live", "reading": True},
+        {"agent_id": "alan_aura_2", "repo": "aura_2", "status": "stale", "reading": False,
+         "heartbeat_age_seconds": 68400},
+    ])
+    text = "\n".join(lines)
+    assert "alan_aura_1 (aura)" in text
+    assert "alan_aura_2" in text and "stale 19h" in text
+    assert "messages to them wait" in text
+
+
+def test_a_live_agent_that_is_not_reading_is_called_out():
+    """Present is not listening: any command refreshes the heartbeat, only acks refresh reads."""
+    lines = hook.roster_lines([
+        {"agent_id": "alan_aura_3", "repo": "aura", "status": "live", "reading": False,
+         "heartbeat_age_seconds": 12},
+    ])
+    assert "not reading" in "\n".join(lines)
+
+
+def test_quiet_roster_is_capped_so_it_cannot_crowd_out_traffic():
+    cold = [
+        {"agent_id": f"old_{i}", "repo": "r", "status": "stale", "reading": False,
+         "heartbeat_age_seconds": 900000}
+        for i in range(hook.MAX_COLD_SHOWN + 4)
+    ]
+    text = "\n".join(hook.roster_lines(cold))
+    assert "+4 more" in text
+    assert text.count("old_") == hook.MAX_COLD_SHOWN
+
+
+def test_roster_of_an_empty_line_renders_nothing():
+    assert hook.roster_lines([]) == []
+
+
+def test_roster_tolerates_rows_without_presence_fields():
+    """An older server predates these fields; the hook must not blow up on its response."""
+    lines = hook.roster_lines([{"agent_id": "legacy_1", "repo": "aura"}])
+    assert "legacy_1 (aura)" in "\n".join(lines)
 
 
 def test_silent_when_line_is_quiet(monkeypatch, capsys):

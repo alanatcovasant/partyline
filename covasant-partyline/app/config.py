@@ -45,6 +45,16 @@ class Settings:
     # longer TTL. Refreshed on every heartbeat, so a live session holds indefinitely and
     # a dead one releases one TTL later without a session-end hook.
     workdir_claim_ttl_seconds: int = int(os.getenv("PARTYLINE_WORKDIR_TTL", "3600"))
+    # Presence thresholds (see presence.py). Liveness DECAYS — it never removes a row.
+    # An agent within live_seconds is 'live', within idle_seconds is 'idle', beyond that
+    # 'stale'. Identity and read cursors survive all three: a returning agent must never
+    # re-read its whole backlog.
+    presence_live_seconds: int = int(os.getenv("PARTYLINE_PRESENCE_LIVE", "300"))
+    presence_idle_seconds: int = int(os.getenv("PARTYLINE_PRESENCE_IDLE", "3600"))
+    # Refuse a post addressed to an agent_id that has never registered. On by default: an
+    # unknown recipient is a typo, and a typo'd handoff is silently undeliverable forever.
+    # Callers with a genuine pre-registration handoff pass allow_unregistered_recipient.
+    strict_recipients: bool = os.getenv("PARTYLINE_STRICT_RECIPIENTS", "true").lower() == "true"
     # Local development mode — bypass Lakebase OAuth, use PGPASSWORD instead.
     local: bool = os.getenv("PARTYLINE_LOCAL", "").lower() in ("true", "1", "yes")
 

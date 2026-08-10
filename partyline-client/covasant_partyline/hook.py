@@ -35,6 +35,9 @@ from . import cli
 
 WINDOW_HOURS = 24
 MAX_SHOWN = 10
+# Quiet agents are shown, not hidden — but bounded, since the roster keeps every agent
+# that ever registered and this banner is prepended to every session's context.
+MAX_COLD_SHOWN = 6
 
 
 def _token(profile: str | None) -> str | None:
@@ -70,6 +73,53 @@ def _overlaps(a: str, b: str) -> bool:
     unrelated siblings, not an overlap.
     """
     return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def roster_lines(agents: list) -> list[str]:
+    """Render the roster so absence is visible rather than merely omitted.
+
+    Live agents are named. Idle/stale ones are named too, with their age, because an agent
+    you can't see is indistinguishable from one that never existed — which is how a sender
+    ends up reading silence as "no objection". Their count is capped so a long-running
+    fleet's history can't crowd out the traffic digest below.
+    """
+    if not agents:
+        return []
+
+    def label(x: dict) -> str:
+        repo = x.get("repo") or "?"
+        status = x.get("status") or "live"
+        if status == "live" and x.get("reading", True):
+            return f"{x['agent_id']} ({repo})"
+        age = _age(x.get("heartbeat_age_seconds"))
+        note = status if status != "live" else "not reading"
+        return f"{x['agent_id']} ({repo}, {note} {age})"
+
+    live = [x for x in agents if (x.get("status") or "live") == "live"]
+    cold = [x for x in agents if (x.get("status") or "live") != "live"]
+
+    lines = []
+    if live:
+        lines.append("Active agents: " + ", ".join(label(x) for x in live))
+    if cold:
+        shown = cold[:MAX_COLD_SHOWN]
+        more = f", +{len(cold) - len(shown)} more" if len(cold) > len(shown) else ""
+        lines.append(
+            "Quiet (still registered, messages to them wait): "
+            + ", ".join(label(x) for x in shown) + more
+        )
+    return lines
+
+
+def _age(seconds) -> str:
+    """Compact age; mirrors app/presence.humanize_age (separate deployables, no shared module)."""
+    if seconds is None:
+        return "never"
+    seconds = max(int(seconds), 0)
+    for limit, div, unit in ((60, 1, "s"), (3600, 60, "m"), (86400, 3600, "h")):
+        if seconds < limit:
+            return f"{seconds // div}{unit}"
+    return f"{seconds // 86400}d"
 
 
 def territory_warning(claims: list, cwd: str, agent_id: str) -> str:
@@ -138,7 +188,7 @@ def main() -> None:
         return  # remote app without a token would only 401; stay silent
 
     try:
-        agents = _get(f"{base}/api/agents", token)
+        agents = _get(f"{base}/api/agents?include_stale=true", token)
         messages = _get(f"{base}/api/messages?after_id=0&limit=500", token)
         claims = _get(f"{base}/api/claims", token)
     except Exception:
@@ -168,9 +218,7 @@ def main() -> None:
 
     prefix = f"{a.owner}_{a.repo}" if a.owner and a.repo else None
     lines = ["## Partyline (inter-agent line) — recent traffic"]
-    if agents:
-        lines.append("Active agents: " + ", ".join(
-            f"{x['agent_id']} ({x.get('repo') or '?'})" for x in agents))
+    lines += roster_lines(agents)
     for m in msgs:
         to = f" -> {m['recipient']}" if m.get("recipient") else ""
         star = ""

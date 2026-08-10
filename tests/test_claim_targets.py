@@ -5,6 +5,7 @@ import pytest
 from app.targets import (
     InvalidTarget,
     infer_resource_type,
+    is_source_ref,
     is_work_item,
     validate_target,
 )
@@ -18,6 +19,9 @@ from app.targets import (
         "/",
         "issue:covasant/aura#482",
         "pr:covasant/aura-web#17",
+        "src:covasant/aura",
+        "src:covasant/aura/aura_core/src/aura_core/domain",
+        "src:covasant/aura-web/client/src/App.tsx",
     ],
 )
 def test_canonical_targets_are_accepted(target):
@@ -38,6 +42,18 @@ def test_canonical_targets_are_accepted(target):
         ("/home//alan/code", "empty path segment"),
         ("issue:covasant/aura", "malformed work-item"),
         ("issue:aura#482", "malformed work-item"),
+        ("src:aura", "malformed source ref"),
+        ("src:", "malformed source ref"),
+        ("src:Covasant/Aura/pkg", "case-folded"),
+        ("src:covasant/aura/pkg/", "trailing slash"),
+        ("src:covasant/aura/pkg//mod.py", "empty path segment"),
+        ("src:covasant/aura/../pkg", "unresolved path segment"),
+        ("src:covasant/aura/./pkg", "unresolved path segment"),
+        ("src:covasant/aura/pkg\\mod.py", "backslash"),
+        # A pasted absolute path after owner/repo is the likely mistake in both spellings,
+        # so both get the "that part is repo-relative" diagnosis rather than a segment nit.
+        ("src:covasant/aura/c:/users/alana/pkg", "absolute"),
+        ("src:covasant/aura//home/alan/pkg", "absolute"),
     ],
 )
 def test_non_canonical_targets_are_refused(target, needle):
@@ -55,6 +71,20 @@ def test_work_item_detection_and_type():
     assert is_work_item("issue:covasant/aura#482")
     assert is_work_item("pr:covasant/aura#482")
     assert not is_work_item("/home/alan/code")
+    assert not is_work_item("src:covasant/aura/pkg")
     assert infer_resource_type("issue:covasant/aura#482") == "issue"
     assert infer_resource_type("pr:covasant/aura#482") == "pr"
     assert infer_resource_type("/home/alan/code") == "directory"
+
+
+def test_source_ref_detection_and_type():
+    assert is_source_ref("src:covasant/aura/aura_core")
+    assert is_source_ref("src:covasant/aura")
+    assert not is_source_ref("issue:covasant/aura#482")
+    assert not is_source_ref("/home/alan/code")
+    assert infer_resource_type("src:covasant/aura/aura_core") == "source"
+
+
+def test_source_ref_keeps_relpath_case():
+    """Git is case-sensitive: App.tsx and app.tsx are different files."""
+    validate_target("src:covasant/aura-web/client/src/App.tsx")

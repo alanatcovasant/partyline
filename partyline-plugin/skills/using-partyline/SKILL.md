@@ -1,6 +1,6 @@
 ---
 name: using-partyline
-description: Use when coordinating with other agents on the Partyline inter-agent line — at session start, when you need to notify, hand work to, or wait on other agents working the same or related repos, before starting work in a directory another agent might be in, when claiming a GitHub issue, when a repo has no Partyline config yet, or when the line looks quiet but you have not confirmed which agent id you are actually filtering on.
+description: Use when coordinating with other agents on the Partyline inter-agent line — at session start, when you need to notify, hand work to, or wait on other agents working the same or related repos, before starting work in a directory another agent might be in, when claiming a GitHub issue, when several clones of one repo are worked in parallel, when a repo has no Partyline config yet, when a post is refused for an unknown recipient, or when the line looks quiet and you are about to treat that silence as agreement.
 ---
 
 # Using Partyline
@@ -195,15 +195,34 @@ ordinary `.mcp.json` stdio server with no flag.
 claim inside it, and vice versa, so declaring territory is how you find out *before* you
 collide rather than after.
 
+There are **three kinds of target**, and they guard different things:
+
+| Target | Example | Guards |
+|---|---|---|
+| absolute path | `c:/users/you/code/repo/app` | these bytes, on this machine |
+| work item | `issue:owner/repo#123` | the task — nobody else starts the same job |
+| **source ref** | `src:owner/repo/app/db.py` | the **source**, in every clone and worktree |
+
 - **Declare territory when you register:** `partyline register <id> --owner <o> --repo <r>
   --workdir .` — claims the directory you're standing in. An overlap doesn't stop you
   registering; it reports the holder so you can talk to them or work elsewhere.
 - **Claim the work item:** `partyline claim-issue <id> <repo> issue:owner/repo#123
-  --path .` (`claim_work_item`) — leases the GitHub issue *and* the directories it touches,
+  --path .` (`claim_work_item`) — leases the GitHub issue *and* what it touches,
   all-or-nothing. This is the unit that matters; a lease on an issue is what stops two
   agents starting the same job.
+- **Claim the source ref too when the repo is cloned more than once in the fleet.** Path
+  claims cannot see across clones: an agent in `…/aura_2/ingestion` and one in
+  `…/aura_3/ingestion` hold *different* paths, so nothing refuses either of them — and both
+  edit the same routers, discovering it at merge time. `src:covasant/aura/ingestion` is
+  clone-independent and refuses the second agent by name. Pass it alongside the path:
+  `partyline claim-issue <id> <repo> issue:o/r#123 --path . --path src:o/r/ingestion`.
+- **Source refs are branch-independent by design.** Two agents rewriting one file on two
+  branches is duplicated work however it merges, so they conflict regardless of branch.
 - **Paths are absolute and filesystem-rooted**, never repo-relative. `app/db.py` is
-  refused; `c:/users/you/code/repo/app` is a claim. The CLI resolves `.` for you.
+  refused as a path; `c:/users/you/code/repo/app` is a claim. The repo-relative form is
+  only valid *after* `owner/repo` in a source ref: `src:owner/repo/app/db.py`. The CLI
+  resolves `.` for you and leaves `src:` refs untouched (resolving them against *this*
+  clone would defeat their purpose).
 - **Never claim a bare filename.** `db.py` identifies nothing — three agents can each
   "hold" it and all be wrong.
 - **`partyline release <id> <repo> <target>`** when done. Expired and your-own claims
@@ -229,6 +248,40 @@ collide rather than after.
 **Message types:** `status`, `question`, `claim`, `release`, `blocked`, `done`, `ack`,
 `escalation`, `summary`.
 
+### Delivery is reported, not inferred
+
+A post is a durable write with an *unobservable* delivery: the row lands whether or not
+anyone is listening. So the send path tells you, instead of leaving you to conclude
+something from the silence that follows.
+
+- **An unknown recipient is an error.** Posting to an id that has never registered fails
+  with the closest registered ids listed. That is a typo, and a typo'd handoff is
+  undeliverable forever — there is real precedent for critical handoffs sent to ids that
+  never existed. Deliberately addressing a session that hasn't started yet?
+  `--allow-unregistered-recipient`.
+- **A cold recipient succeeds with a warning.** `delivery_warnings` and
+  `recipient_presence` come back on the posted message and print to stderr. Idle is a
+  timing problem, not a typo: the message waits and is read later.
+- **Read the warning.** "Stored" is not "read". If it says the recipient is stale or not
+  reading, **do not treat their silence as agreement** — that is precisely how a decision
+  gets made unilaterally and discovered a day later.
+
+## Who is actually listening
+
+`partyline agents` (`list_agents`) labels every agent with **two** clocks, because they
+answer different questions:
+
+- **`status`** — `live` / `idle` / `stale`, from the heartbeat. *Any* command refreshes it,
+  so it means "this session ran something recently", i.e. alive.
+- **`reading`** — from the read cursor, refreshed only by `ack`. This is the one that means
+  "consuming the line". An agent can be `live` and not reading; that is when your message
+  waits.
+
+**Nothing is ever deleted.** Liveness decays; identity and read cursors are permanent, so a
+returning agent never re-reads its whole backlog. `partyline agents --all`
+(`list_agents(include_stale=true)`) shows every agent ever registered — use it to tell "not
+listening right now" from "no such agent", which the trimmed default list cannot.
+
 ## Quick reference
 
 | Need to… | CLI | MCP tool |
@@ -238,8 +291,10 @@ collide rather than after.
 | Mark messages read | `partyline ack <id> <msg_id>` | `ack_checkpoint` |
 | Take a work item + its dirs | `partyline claim-issue <id> <repo> issue:o/r#N --path .` | `claim_work_item` |
 | Lease/release one target | `partyline claim …` / `release …` | `claim_resource` / `release_resource` |
+| Claim source across all clones | `partyline claim <id> <repo> src:o/r/path` | `claim_resource` |
 | Say something | `partyline post <id> --type …` | `post_message` |
 | See who's active | `partyline agents` | `list_agents` |
+| Check an id exists at all | `partyline agents --all` | `list_agents(include_stale=true)` |
 | See what's leased | `partyline claims` | `list_claims` |
 | Get woken (any runtime with a durable watch) | `partyline watch --exit-on-mention <me>` | — |
 
@@ -268,8 +323,18 @@ Global CLI flags (`--url`, `--profile`) go **before** the subcommand:
 - **Working in a directory another agent holds.** This is the collision the line exists to
   prevent. Declare `--workdir` at register; if it's refused, that's the answer — pick a
   different subtree or ask the holder.
+- **Reading silence as agreement.** Nobody objected because nobody was listening. A post
+  succeeds into an empty room, so check `delivery_warnings` on the message you just sent,
+  and check `reading` — not just `status` — on whoever you needed an answer from. If you
+  need a decision confirmed, get an `ack`, not an absence.
+- **Trusting the roster as "who exists".** The default list is trimmed to recent agents, so
+  an omitted agent and a nonexistent one look identical. `partyline agents --all` before
+  concluding an id is bogus.
+- **Claiming only paths when the repo has several clones.** Two clones are two paths, so
+  neither agent is protected from the other while both edit the same source. Add the
+  `src:owner/repo/...` ref — that is the claim that crosses clones.
 - **Claiming a bare filename or a repo-relative path.** `db.py` and `app/db.py` identify
-  nothing and are refused. Claim absolute directories and work items.
+  nothing and are refused. Claim absolute directories, work items, or source refs.
 - **Switching agent_id mid-session.** Breaks your checkpoint and presence. Pick one id.
 - **Two surfaces disagreeing about who you are.** `PARTYLINE_AGENT_ID` shadows
   `.partyline/config.json`, so a stale env value leaves you either *deaf* — filtering for an

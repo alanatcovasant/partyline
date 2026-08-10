@@ -108,6 +108,7 @@ async def post_message(
     metadata: dict | None = None,
     mentions: list[str] | None = None,
     reply_to_id: int | None = None,
+    allow_unregistered_recipient: bool = False,
 ) -> dict:
     """Post a structured coordination message.
 
@@ -120,6 +121,12 @@ async def post_message(
     detail (logs, rationale, context) in `payload`; readers fetch it on demand only when the
     summary isn't enough. A message with only payload still works (readers fall back to it),
     but always prefer summary+payload. metadata is an opaque bag.
+
+    DELIVERY IS REPORTED, NOT INFERRED. A recipient that never registered is an ERROR
+    (a typo is undeliverable forever); an idle one succeeds but returns
+    `delivery_warnings` plus `recipient_presence`. READ THEM: a stored message is not a
+    read one, so do not treat silence from a stale agent as agreement. Set
+    allow_unregistered_recipient=true only to address a session that has not started yet.
     """
     log.info(
         "post_message agent_id=%s type=%s recipient=%s mentions=%s repo=%s",
@@ -129,23 +136,40 @@ async def post_message(
         mentions,
         repo,
     )
-    result = await run_in_threadpool(
-        db.post_message,
-        agent_id,
-        message_type,
-        recipient,
-        repo,
-        branch,
-        resource_path,
-        issue_ref,
-        payload,
-        metadata or {},
-        mentions or [],
-        reply_to_id,
-        None,  # author (OBO principal) — set by the REST layer, not MCP
-        summary,
+    try:
+        result = await run_in_threadpool(
+            db.post_message,
+            agent_id,
+            message_type,
+            recipient,
+            repo,
+            branch,
+            resource_path,
+            issue_ref,
+            payload,
+            metadata or {},
+            mentions or [],
+            reply_to_id,
+            None,  # author (OBO principal) — set by the REST layer, not MCP
+            summary,
+            None,  # event_time — the bridge stamps this on the REST path
+            allow_unregistered_recipient=allow_unregistered_recipient,
+        )
+    except db.UnknownRecipient as exc:
+        # Structured refusal, like _invalid(): the agent gets a correction it can apply
+        # rather than an opaque tool error.
+        log.warning("post_message REFUSED agent_id=%s recipient=%s", agent_id, exc.recipient)
+        return {
+            "posted": False,
+            "reason": "unknown_recipient",
+            "recipient": exc.recipient,
+            "message": str(exc),
+            "suggestions": exc.suggestions,
+        }
+    log.info(
+        "post_message OK id=%s agent_id=%s warnings=%s",
+        result.get("id"), agent_id, len(result.get("delivery_warnings") or []),
     )
-    log.info("post_message OK id=%s agent_id=%s", result.get("id"), agent_id)
     return result
 
 
@@ -260,14 +284,22 @@ async def claim_resource(
     reason: str | None = None,
     ttl_seconds: int | None = None,
 ) -> dict:
-    """Claim ONE target with a TTL'd lease: an absolute directory, or issue:owner/repo#N.
+    """Claim ONE target with a TTL'd lease. Three kinds of target, three guarantees:
 
-    Prefer claim_work_item — claiming the GitHub issue plus the directories it touches, in
-    one atomic call, is the documented unit of coordination.
+    * absolute directory ('c:/users/you/code/repo/app') — this machine's bytes;
+    * 'issue:owner/repo#N' / 'pr:owner/repo#N' — the task;
+    * 'src:owner/repo/path/in/repo' — the SOURCE, in every clone and worktree anywhere.
 
-    A claim on a directory refuses any claim inside it, and vice versa: two agents must
-    never work the same directory. Paths must be absolute and filesystem-rooted
-    ('c:/users/you/code/repo/app'), never repo-relative — 'app/db.py' is refused.
+    Claim the source ref too when the repo has more than one clone in the fleet. Two
+    agents in …/aura_2/pkg and …/aura_3/pkg hold different paths, so path claims let them
+    edit the same file and only find out at merge time; the src: ref conflicts correctly.
+    Note it is branch-independent by design.
+
+    A claim refuses any claim inside it, and vice versa. Paths must be absolute and
+    filesystem-rooted, never repo-relative — 'app/db.py' is refused (as a path; the
+    repo-relative form belongs after owner/repo in a src: ref).
+
+    Prefer claim_work_item — the issue plus what it touches, in one atomic call.
 
     Returns {acquired: bool, claim: {...}}; on refusal `claim` is the current holder.
     """
@@ -304,12 +336,14 @@ async def claim_work_item(
     reason: str | None = None,
     ttl_seconds: int | None = None,
 ) -> dict:
-    """Claim the work you're taking: a GH issue/PR plus the directories it touches.
+    """Claim the work you're taking: a GH issue/PR plus what it touches.
 
-    work_item is 'issue:owner/repo#123' or 'pr:owner/repo#123'; paths are absolute
-    filesystem directories. All-or-nothing — if any target is held, nothing is leased and
-    `blocker` names the holder, so you can never own the issue while someone else owns the
-    directory. Ask the holder; don't edit.
+    work_item is 'issue:owner/repo#123' or 'pr:owner/repo#123'. `paths` takes absolute
+    filesystem directories AND 'src:owner/repo/path' source refs — pass both when the repo
+    is cloned more than once in the fleet, since a path claim cannot see another clone.
+    All-or-nothing: if any target is held, nothing is leased and `blocker` names the
+    holder, so you can never own the issue while someone else owns the code. Ask the
+    holder; don't edit.
 
     Returns {acquired: bool, claims: [...], blocker: {...} | None}.
     """
@@ -322,7 +356,7 @@ async def claim_work_item(
 
     ttl = ttl_seconds or settings.default_claim_ttl_seconds
     targets = [(work_item, infer_resource_type(work_item))]
-    targets += [(p, "directory") for p in (paths or [])]
+    targets += [(p, infer_resource_type(p)) for p in (paths or [])]
     log.info(
         "claim_work_item agent_id=%s work_item=%s paths=%s", agent_id, work_item, len(paths or [])
     )
@@ -343,10 +377,19 @@ async def release_resource(agent_id: str, repo: str, resource_path: str, branch:
 
 
 @mcp.tool()
-async def list_agents(active_within_seconds: int = 3600) -> list[dict]:
-    """List agents seen recently (presence)."""
-    log.info("list_agents active_within_seconds=%s", active_within_seconds)
-    rows = await run_in_threadpool(db.list_agents, active_within_seconds)
+async def list_agents(active_within_seconds: int = 3600, include_stale: bool = False) -> list[dict]:
+    """List agents with presence labels.
+
+    Each row carries `status` (live|idle|stale, from the heartbeat) and `reading` (from
+    the read cursor) — an agent can be live and still not reading, which is when your
+    message waits. Pass include_stale=true to see every agent ever registered; use that
+    to tell "not listening right now" from "no such agent", which the filtered list can't.
+    """
+    log.info(
+        "list_agents active_within_seconds=%s include_stale=%s",
+        active_within_seconds, include_stale,
+    )
+    rows = await run_in_threadpool(db.list_agents, active_within_seconds, include_stale)
     log.info("list_agents OK returned=%s", len(rows))
     return rows
 
