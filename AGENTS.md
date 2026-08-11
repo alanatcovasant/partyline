@@ -23,7 +23,7 @@ Multiple agents work these repos in parallel. There are two ways to reach the li
 - **CLI + hooks (default, near-zero standing cost).** Actions go through the `partyline`
   CLI — `partyline.cmd` / `./partyline.sh`, or `python -m covasant_partyline.cli` — which
   hits the *same* REST API as the MCP tools but keeps nothing resident in context between
-  calls. Awareness comes from the lifecycle hooks in `.Codex/settings.json`: a
+  calls. Awareness comes from the lifecycle hooks in `.codex/hooks.json`: a
   `SessionStart` hook injects recent line traffic, and a `UserPromptSubmit` hook
   (`partyline-plugin/hooks/check_unread.py`) peeks for anything addressed to you before
   each turn (silent when the line is quiet). This covers most coordinated work.
@@ -32,15 +32,20 @@ Multiple agents work these repos in parallel. There are two ways to reach the li
   are re-sent every turn: a per-turn token tax on every unrelated solo session (Anthropic
   measures comparable servers at ~700–2,000 tokens/tool — see `docs/Covasant Partyline Whitepaper.md`
   §3.8). Load it only for a genuine **epic-scale, multi-agent coordinated effort** where
-  typed, discoverable tools earn their keep:
+  typed, discoverable tools earn their keep. Codex configures MCP servers in
+  `.codex/config.toml` (there is no `--mcp-config` flag — that is the Claude Code CLI).
+  Add a `[mcp_servers.partyline]` block that runs the bridge:
 
-  ```bash
-  Codex --mcp-config partyline.mcp.json    # add --strict-mcp-config for ONLY these servers
+  ```toml
+  [mcp_servers.partyline]
+  command = "python"
+  args = ["-m", "covasant_partyline.bridge", "--app-name", "mcp-covasant-partyline", "--agent-id", "alan_partyline_1"]
+  env = { DATABRICKS_CONFIG_PROFILE = "dev-eastus2", PARTYLINE_METRICS = "1" }
   ```
 
   Requires `pip install -e ./partyline-client` (editable — a stale bridge hangs the MCP
-  connection) and a valid `dev-eastus2` Databricks profile. Edit the `--agent-id` /
-  `PARTYLINE_AGENT_ID` in `partyline.mcp.json` per agent instance.
+  connection) and a valid `dev-eastus2` Databricks profile. Edit the `--agent-id` per
+  agent instance.
 
 The protocol below is identical whether you drive it via CLI or MCP tools (`partyline
 register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unread(only_for_me=true)`, etc.).
@@ -73,14 +78,13 @@ register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unre
   at all", which the trimmed default list cannot.
 - Everything is broadcast — targeting is filtering, not privacy. Identity on the line
   is your self-declared `agent_id`; keep it consistent for the whole session.
-- **Staying aware (no real-time idle wake in Codex right now).** The
-  `partyline-channel` push was the only mechanism that could interrupt an *idle* session,
-  and it is currently **blocked by org policy**: `--dangerously-load-development-channels`
-  is refused until an administrator sets `channelsEnabled: true` in managed settings, so
-  inbound channel messages are silently dropped. The CLI `watch` background task can't
-  substitute here either — Codex reaps background tasks at each turn boundary, so it
-  dies within the turn and never catches a mention. Until the channel is unblocked, rely
-  on the hooks plus on-demand checks:
+- **Staying aware (no real-time idle wake under Codex).** Codex has no inbound push that
+  can interrupt an *idle* session: it implements the Claude-compatible `SessionStart` /
+  `UserPromptSubmit` hooks (which inject context, but only fire around a turn, not while
+  idle), and its `notify` config is *outbound* — Codex appends a JSON payload as the final
+  argv of an external program on events like turn-complete, so it pushes data out and
+  cannot feed context back in. There is no `partyline-channel` equivalent. Rely on the
+  hooks plus on-demand checks:
   - the **SessionStart hook** — recent line traffic injected at session start;
   - the **UserPromptSubmit hook** (`partyline-plugin/hooks/check_unread.py`) — peeks for
     messages addressed to you before each turn, silent when the line is quiet;

@@ -20,6 +20,12 @@ scratch/**
 .partyline/
 .worktrees/
 
+# Per-clone Codex config (agent identity + secrets like ANTHROPIC_AUTH_TOKEN) — never
+# tracked. .codex/hooks.json stays tracked (shared, no secrets); config.toml/settings.json
+# are per-clone — see the [mcp_servers.partyline] block documented in AGENTS.md to recreate.
+.codex/config.toml
+.codex/settings.json
+
 # Captured Databricks Apps runtime/deploy log (artifact, not source)
 log.txt
 deploy.stdout.txt
