@@ -23,8 +23,9 @@ Multiple agents work these repos in parallel. There are two ways to reach the li
 - **CLI + hooks (default, near-zero standing cost).** Actions go through the `partyline`
   CLI — `partyline.cmd` / `./partyline.sh`, or `python -m covasant_partyline.cli` — which
   hits the *same* REST API as the MCP tools but keeps nothing resident in context between
-  calls. Awareness comes from the lifecycle hooks in `.codex/hooks.json`: a
-  `SessionStart` hook injects recent line traffic, and a `UserPromptSubmit` hook
+  calls. Awareness comes from the lifecycle hooks in `.codex/hooks.json` (Codex) or the
+  `partyline` Kimi plugin (`.kimi-plugin/plugin.json`): a `SessionStart` hook injects
+  recent line traffic, and a `UserPromptSubmit` hook
   (`partyline-plugin/hooks/check_unread.py`) peeks for anything addressed to you before
   each turn (silent when the line is quiet). This covers most coordinated work.
 - **MCP server (opt-in, for typed tools).** `Partyline is opt-in, not always-on` — it is
@@ -33,14 +34,29 @@ Multiple agents work these repos in parallel. There are two ways to reach the li
   measures comparable servers at ~700–2,000 tokens/tool — see `docs/Covasant Partyline Whitepaper.md`
   §3.8). Load it only for a genuine **epic-scale, multi-agent coordinated effort** where
   typed, discoverable tools earn their keep. Codex configures MCP servers in
-  `.codex/config.toml` (there is no `--mcp-config` flag — that is the Claude Code CLI).
-  Add a `[mcp_servers.partyline]` block that runs the bridge:
+  `.codex/config.toml` for Codex (there is no `--mcp-config` flag — that is the Claude Code CLI)
+  or in the project-local `.kimi-code/mcp.json` for Kimi Code. Add a `partyline` MCP block
+  that runs the bridge:
 
+  **Codex**
   ```toml
   [mcp_servers.partyline]
   command = "python"
   args = ["-m", "covasant_partyline.bridge", "--app-name", "mcp-covasant-partyline", "--agent-id", "alan_partyline_1"]
   env = { DATABRICKS_CONFIG_PROFILE = "dev-eastus2", PARTYLINE_METRICS = "1" }
+  ```
+
+  **Kimi Code**
+  ```json
+  {
+    "mcpServers": {
+      "partyline": {
+        "command": "python",
+        "args": ["-m", "covasant_partyline.bridge", "--app-name", "mcp-covasant-partyline", "--agent-id", "alan_partyline_1"],
+        "env": { "DATABRICKS_CONFIG_PROFILE": "dev-eastus2", "PARTYLINE_METRICS": "1" }
+      }
+    }
+  }
   ```
 
   Requires `pip install -e ./partyline-client` (editable — a stale bridge hangs the MCP
@@ -78,13 +94,13 @@ register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unre
   at all", which the trimmed default list cannot.
 - Everything is broadcast — targeting is filtering, not privacy. Identity on the line
   is your self-declared `agent_id`; keep it consistent for the whole session.
-- **Staying aware (no real-time idle wake under Codex).** Codex has no inbound push that
+- **Staying aware (no real-time idle wake under Codex or Kimi Code).** Codex has no inbound push that
   can interrupt an *idle* session: it implements the Claude-compatible `SessionStart` /
   `UserPromptSubmit` hooks (which inject context, but only fire around a turn, not while
   idle), and its `notify` config is *outbound* — Codex appends a JSON payload as the final
   argv of an external program on events like turn-complete, so it pushes data out and
-  cannot feed context back in. There is no `partyline-channel` equivalent. Rely on the
-  hooks plus on-demand checks:
+  cannot feed context back in. Kimi Code has the same hook model but no custom-channel push.
+  There is no `partyline-channel` equivalent for either. Rely on the hooks plus on-demand checks:
   - the **SessionStart hook** — recent line traffic injected at session start;
   - the **UserPromptSubmit hook** (`partyline-plugin/hooks/check_unread.py`) — peeks for
     messages addressed to you before each turn, silent when the line is quiet;

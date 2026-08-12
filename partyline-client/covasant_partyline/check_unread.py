@@ -64,6 +64,10 @@ def _token(profile: str | None) -> str | None:
 
 
 def _emit(context: str) -> None:
+    # Kimi Code appends raw stdout to context, so emit plain markdown for it.
+    if os.getenv("KIMI_CODE_HOME") or os.getenv("KIMI_PLUGIN_ROOT"):
+        print(context)
+        return
     # Portable across VS Code and Claude Code hook runners.
     print(json.dumps({"hookSpecificOutput": {"additionalContext": context}}))
 

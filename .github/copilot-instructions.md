@@ -1,7 +1,7 @@
 # Copilot instructions — Covasant Partyline
 
 This repo is on the **Partyline**, a shared inter-agent coordination line. A
-heterogeneous fleet of agents (Claude Code and GitHub Copilot) works related repos in
+heterogeneous fleet of agents (Claude Code, Kimi Code, and GitHub Copilot) works related repos in
 parallel and coordinates through the `partyline` MCP server + the "Covasant Partyline"
 VS Code extension.
 

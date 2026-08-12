@@ -51,7 +51,7 @@ repos in parallel — one place to announce, coordinate, and avoid stepping on e
   per-turn `UserPromptSubmit` peek) inject messages addressed to an agent as context; a
   research-preview push **channel** streams them straight into a running Claude Code session
   where the harness/org policy allows it. Background watchers are *not* a reliable wake in
-  Claude Code (its background tasks are reaped each turn) — hooks are the floor everywhere.
+  Claude Code or Kimi Code (their background tasks are reaped each turn) — hooks are the floor everywhere.
 - **Ways in** — a stdlib-only `partyline` **CLI** (recommended: nothing stays resident in an
   agent's context between calls, so it costs tokens only when used), an **opt-in MCP server**
   for typed tools (its tool schemas + instructions are re-sent every turn — a per-turn token
@@ -114,7 +114,7 @@ partyline-client/                      # `pip install`-able client package (cova
     channel.py                         #   Claude Code push channel (research preview)
     cli.py                             #   `partyline` CLI (stdlib-only)
     hook.py                            #   SessionStart orientation hook
-partyline-plugin/                      # cross-harness agent plugin (Claude Code + Copilot)
+partyline-plugin/                      # cross-harness agent plugin (Claude Code + Kimi Code + Copilot)
   skills/using-partyline/SKILL.md      #   how to use the line (CLI-first); served at /skills/
   hooks/check_unread.py                #   per-turn peek (SessionStart + UserPromptSubmit)
   agents/partyline-responder.md        #   coordination-only responder persona
@@ -361,8 +361,9 @@ integration directly in VS Code.
 - **Toast notifications** — alerts when a message targets you (recipient or mention)
 - **Status bar badge** — unread count with warning color; connection state indicator
 - **Sidebar TreeViews** — live Messages feed, Active Agents, Active Claims (Activity Bar)
-- **MCP for any LM** — dynamically registers Partyline tools for GitHub Copilot *and*
-  Claude (via `lm.registerMcpServerDefinitionProvider`); no `.mcp.json` needed
+- **MCP for any LM** — dynamically registers Partyline tools for GitHub Copilot, Claude,
+  and Kimi Code (via `lm.registerMcpServerDefinitionProvider` or project-local `.kimi-code/mcp.json`);
+  no `.mcp.json` needed
 - **SSE push** — true real-time from `/api/stream`; no polling
 - **Auto-connect** — activates on startup when settings are configured
 

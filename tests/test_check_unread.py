@@ -163,3 +163,19 @@ def test_silent_when_inbox_is_empty(config_clone, fake_http, monkeypatch, capsys
 
     assert len(fake_http["requests"]) == 1  # it did ask — that's the difference that matters
     assert capsys.readouterr().out == ""
+
+
+def test_kimi_hook_emits_plain_text(config_clone, fake_http, monkeypatch, capsys):
+    """Kimi Code appends raw stdout to context, so the hook must not wrap output in JSON."""
+    config_clone({"url": "https://app.example", "agentId": "alan_aura_0",
+                  "databricksProfile": "dev-eastus2"})
+    monkeypatch.setenv("KIMI_CODE_HOME", "/tmp/kimi-home")
+    monkeypatch.setattr(check_unread, "_token", lambda profile: "tok")
+
+    check_unread.main()
+
+    out = capsys.readouterr().out
+    assert "alan_aura_0" in out
+    assert "can you take the migration?" in out
+    assert "hookSpecificOutput" not in out
+    assert "additionalContext" not in out

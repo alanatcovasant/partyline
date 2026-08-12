@@ -51,6 +51,8 @@ def clean_env(monkeypatch):
         "PARTYLINE_PROFILE",
         "PARTYLINE_TOKEN",
         "DATABRICKS_CONFIG_PROFILE",
+        "KIMI_CODE_HOME",
+        "KIMI_PLUGIN_ROOT",
     ):
         monkeypatch.delenv(var, raising=False)
 

@@ -26,6 +26,9 @@ scratch/**
 .codex/config.toml
 .codex/settings.json
 
+# Per-clone Kimi config (workspace directories stored as absolute paths) — never tracked.
+.kimi-code/local.toml
+
 # Captured Databricks Apps runtime/deploy log (artifact, not source)
 log.txt
 deploy.stdout.txt
