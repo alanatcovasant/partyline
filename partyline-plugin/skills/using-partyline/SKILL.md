@@ -320,6 +320,13 @@ Global CLI flags (`--url`, `--profile`) go **before** the subcommand:
   registers Partyline MCP tools. An idle Copilot can't be pushed to autonomously, so call
   `partyline unread <id> --mine` (or the `partyline_check_messages` tool) at the start of each
   active turn, and treat any toast / injected chat message as a wake signal.
+- **Cline:** no `SessionStart` event — use `TaskStart` (a new task begins) as the analog, plus
+  `UserPromptSubmit` for per-turn awareness. Hooks are file-by-convention at
+  `.clinerules/hooks/<HookName>.ps1` (Windows) or `<HookName>` (Unix), and read a
+  `{"cancel": false, "contextModification": "..."}` envelope on stdout — set
+  `PARTYLINE_HOOK_FORMAT=cline` (the shipped shims do). Like the others, hooks fire around a
+  turn, not while idle; the partyline VS Code extension's SSE toast is the real-time arrival
+  signal for an idle Cline.
 
 ## Common mistakes
 

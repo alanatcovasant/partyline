@@ -179,3 +179,22 @@ def test_kimi_hook_emits_plain_text(config_clone, fake_http, monkeypatch, capsys
     assert "can you take the migration?" in out
     assert "hookSpecificOutput" not in out
     assert "additionalContext" not in out
+
+
+def test_cline_hook_emits_context_modification_envelope(config_clone, fake_http, monkeypatch, capsys):
+    """Cline reads {"cancel": false, "contextModification": "..."} on stdout, not the
+    Claude Code hookSpecificOutput schema."""
+    config_clone({"url": "https://app.example", "agentId": "alan_aura_0",
+                  "databricksProfile": "dev-eastus2"})
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "cline")
+    monkeypatch.setattr(check_unread, "_token", lambda profile: "tok")
+
+    check_unread.main()
+
+    out = capsys.readouterr().out
+    parsed = json.loads(out)
+    assert parsed["cancel"] is False
+    assert "alan_aura_0" in parsed["contextModification"]
+    assert "can you take the migration?" in parsed["contextModification"]
+    assert "hookSpecificOutput" not in out
+    assert "additionalContext" not in out

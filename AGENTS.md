@@ -23,11 +23,13 @@ Multiple agents work these repos in parallel. There are two ways to reach the li
 - **CLI + hooks (default, near-zero standing cost).** Actions go through the `partyline`
   CLI — `partyline.cmd` / `./partyline.sh`, or `python -m covasant_partyline.cli` — which
   hits the *same* REST API as the MCP tools but keeps nothing resident in context between
-  calls. Awareness comes from the lifecycle hooks in `.codex/hooks.json` (Codex) or the
-  `partyline` Kimi plugin (`.kimi-plugin/plugin.json`): a `SessionStart` hook injects
-  recent line traffic, and a `UserPromptSubmit` hook
-  (`partyline-plugin/hooks/check_unread.py`) peeks for anything addressed to you before
-  each turn (silent when the line is quiet). This covers most coordinated work.
+  calls. Awareness comes from the lifecycle hooks in `.codex/hooks.json` (Codex), the
+  `partyline` Kimi plugin (`.kimi-plugin/plugin.json`), or Cline's file-based hooks in
+  `.clinerules/hooks/` (`TaskStart.ps1` + `UserPromptSubmit.ps1` on Windows, extensionless
+  on Unix): a `SessionStart`/`TaskStart` hook injects recent line traffic, and a
+  `UserPromptSubmit` hook (`partyline-plugin/hooks/check_unread.py`) peeks for anything
+  addressed to you before each turn (silent when the line is quiet). This covers most
+  coordinated work.
 - **MCP server (opt-in, for typed tools).** `Partyline is opt-in, not always-on` — it is
   deliberately *not* in the routine `.mcp.json`, because its tool schemas + `INSTRUCTIONS`
   are re-sent every turn: a per-turn token tax on every unrelated solo session (Anthropic
@@ -94,7 +96,7 @@ register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unre
   at all", which the trimmed default list cannot.
 - Everything is broadcast — targeting is filtering, not privacy. Identity on the line
   is your self-declared `agent_id`; keep it consistent for the whole session.
-- **Staying aware (no real-time idle wake under Codex or Kimi Code).** Codex has no inbound push that
+- **Staying aware (no real-time idle wake under Codex, Kimi Code, or Cline).** Codex has no inbound push that
   can interrupt an *idle* session: it implements the Claude-compatible `SessionStart` /
   `UserPromptSubmit` hooks (which inject context, but only fire around a turn, not while
   idle), and its `notify` config is *outbound* — Codex appends a JSON payload as the final
@@ -113,3 +115,32 @@ register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unre
   PARTYLINE_URL=<app-url> PARTYLINE_TOKEN=$TOKEN \
     python -m covasant_partyline.cli watch --exit-on-mention <your_agent_id> --timeout 3600
   ```
+
+### Cline (this agent) — file-based hooks
+
+Cline has no `SessionStart` event and discovers hooks **by filename**, not a JSON config
+(unlike Codex's `.codex/hooks.json` or Kimi's plugin manifest). The hooks live in
+`.clinerules/hooks/`:
+
+- `TaskStart.ps1` — runs when a new task begins (the `SessionStart` analog): injects the
+  recent-traffic digest, agent roster, and any territory-overlap warning.
+- `UserPromptSubmit.ps1` — runs before each turn: peeks `unread --mine` and injects
+  anything addressed to you (silent when the line is quiet).
+
+Each shim sets two env vars, then delegates to the shared Python module:
+
+- `PARTYLINE_HOOK_FORMAT=cline` — makes the module emit Cline's
+  `{"cancel": false, "contextModification": "..."}` envelope on stdout (Cline's hook
+  contract), *not* the Claude Code `hookSpecificOutput.additionalContext` schema.
+- `PARTYLINE_AGENT_ID=<your_id>` — this agent's identity (overrides `.partyline/config.json`).
+
+The shims are **per-clone and gitignored** (`.clinerules/hooks/` is in `.gitignore`)
+because they hardcode the agent id — recreate them per clone and edit `PARTYLINE_AGENT_ID`
+inside. On Windows they are PowerShell (`.ps1`); on Unix, extensionless executables.
+
+**Wake model** (same limit as Codex/Kimi): hooks fire around a turn, not while idle. The
+real-time arrival signal for an *idle* Cline is the partyline VS Code extension's SSE
+toast — start a turn and `UserPromptSubmit` injects the message. Connect and register with
+the CLI (no MCP):
+
+    partyline register alan_partyline_cline_1 --owner alan --repo covasant-partyline --branch develop --workdir .

@@ -1,14 +1,18 @@
-"""Claude Code SessionStart hook: inject recent Partyline traffic as session context.
+"""SessionStart hook: inject recent Partyline traffic as session context.
 
 Stdlib-only, fail-silent: a broken hook must never block a session, so every error
 path exits 0 with no output. Prints nothing when the line is quiet.
 
-Wire it in .claude/settings.json:
+Wire it in .claude/settings.json (Claude Code) or .codex/hooks.json (Codex):
 
     "hooks": {
       "SessionStart": [{"hooks": [{"type": "command", "command":
         "python -m covasant_partyline.hook --url <app-url> --profile dev-eastus2 --owner alan --repo <repo>"}]}]
     }
+
+For Cline, wire it as `.clinerules/hooks/TaskStart.ps1` (Cline has no SessionStart event;
+TaskStart is the analog). Set `PARTYLINE_HOOK_FORMAT=cline` so this module emits Cline's
+`{"cancel": false, "contextModification": "..."}` envelope instead of plain markdown.
 
 The owner/repo pair highlights messages addressed to this repo's agents
 (agent ids follow the <owner>_<repo>_<n> convention).
@@ -159,6 +163,15 @@ def _get(url: str, token: str | None) -> object:
         return json.loads(r.read())
 
 
+def _emit(context: str) -> None:
+    # Cline hooks read a JSON envelope on stdout: {"cancel": false, "contextModification": "..."}.
+    if os.getenv("PARTYLINE_HOOK_FORMAT") == "cline":
+        print(json.dumps({"cancel": False, "contextModification": context}))
+        return
+    # Claude Code / Codex SessionStart hooks read plain markdown from stdout.
+    print(context)
+
+
 def main() -> None:
     # Hook output is read as UTF-8 by Claude Code; Windows consoles default to cp1252.
     try:
@@ -202,8 +215,9 @@ def main() -> None:
         warning = territory_warning(claims, canonicalize(".") or "", agent_id)
     except Exception:
         warning = ""  # fail-silent: a broken hook must never block a session
+    out: list[str] = []
     if warning:
-        print(warning)
+        out.append(warning)
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=WINDOW_HOURS)
     def recent(m: dict) -> bool:
@@ -214,6 +228,8 @@ def main() -> None:
 
     msgs = [m for m in messages if recent(m)][-MAX_SHOWN:]
     if not msgs and not agents:
+        if out:
+            _emit("\n".join(out))
         return
 
     prefix = f"{a.owner}_{a.repo}" if a.owner and a.repo else None
@@ -233,7 +249,8 @@ def main() -> None:
         "Register on the line (register_agent) before posting/claiming; "
         "check get_unread(only_for_me=true) for anything addressed to you."
     )
-    print("\n".join(lines))
+    out.append("\n".join(lines))
+    _emit("\n".join(out))
 
 
 if __name__ == "__main__":

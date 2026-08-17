@@ -29,6 +29,10 @@ scratch/**
 # Per-clone Kimi config (workspace directories stored as absolute paths) — never tracked.
 .kimi-code/local.toml
 
+# Per-clone Cline hooks (agent identity hardcoded in the .ps1 shims) — never tracked.
+# Recreate from the template in AGENTS.md / the using-partyline skill.
+.clinerules/hooks/
+
 # Captured Databricks Apps runtime/deploy log (artifact, not source)
 log.txt
 deploy.stdout.txt

@@ -4,6 +4,7 @@ The hook must be fail-silent (never break a session) and must highlight
 messages addressed to this repo's agents.
 """
 
+import json
 import sys
 
 from covasant_partyline import hook
@@ -55,6 +56,16 @@ def test_highlights_addressed_messages(monkeypatch, capsys):
 def test_lists_active_agents(monkeypatch, capsys):
     out = _run_hook(monkeypatch, capsys, AGENTS, MESSAGES)
     assert "alan_partyline_1" in out and "alan_frontend_1" in out
+
+
+def test_cline_hook_emits_context_modification_envelope(monkeypatch, capsys):
+    """Cline reads {"cancel": false, "contextModification": "..."} on stdout, not plain markdown."""
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "cline")
+    out = _run_hook(monkeypatch, capsys, AGENTS, MESSAGES)
+    parsed = json.loads(out)
+    assert parsed["cancel"] is False
+    assert "alan_partyline_1" in parsed["contextModification"]
+    assert "ADDRESSED TO THIS REPO'S AGENTS" in parsed["contextModification"]
 
 
 # --------------------------------------------------------------------------- #

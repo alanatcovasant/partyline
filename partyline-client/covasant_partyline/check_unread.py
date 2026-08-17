@@ -1,9 +1,11 @@
 """Partyline lifecycle hook: inject messages addressed to this agent as context.
 
-Runs on SessionStart / UserPromptSubmit in both VS Code and Claude Code (both honor the
-`hookSpecificOutput.additionalContext` output schema). Fail-silent by contract — a broken
-hook must never block a turn, so every error path exits 0 with no output. Prints nothing
-when there's nothing addressed to you.
+Runs on SessionStart / UserPromptSubmit in VS Code, Claude Code, and Cline. VS Code and
+Claude Code honor the `hookSpecificOutput.additionalContext` output schema; Cline honors
+`{"cancel": false, "contextModification": "..."}` (selected by setting
+`PARTYLINE_HOOK_FORMAT=cline`, which the Cline `.ps1` shims do). Fail-silent by contract —
+a broken hook must never block a turn, so every error path exits 0 with no output. Prints
+nothing when there's nothing addressed to you.
 
 Invoke as a module so it resolves regardless of the process CWD (a relative script path
 breaks the moment a session runs from another repo):
@@ -64,6 +66,10 @@ def _token(profile: str | None) -> str | None:
 
 
 def _emit(context: str) -> None:
+    # Cline hooks read a JSON envelope on stdout: {"cancel": false, "contextModification": "..."}.
+    if os.getenv("PARTYLINE_HOOK_FORMAT") == "cline":
+        print(json.dumps({"cancel": False, "contextModification": context}))
+        return
     # Kimi Code appends raw stdout to context, so emit plain markdown for it.
     if os.getenv("KIMI_CODE_HOME") or os.getenv("KIMI_PLUGIN_ROOT"):
         print(context)
