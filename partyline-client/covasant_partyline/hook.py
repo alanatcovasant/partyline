@@ -3,12 +3,17 @@
 Stdlib-only, fail-silent: a broken hook must never block a session, so every error
 path exits 0 with no output. Prints nothing when the line is quiet.
 
-Wire it in .claude/settings.json (Claude Code) or .codex/hooks.json (Codex):
+Wire it in .claude/settings.json (Claude Code), .codex/hooks.json (Codex), or
+.qwen/settings.json (Qwen Code):
 
     "hooks": {
       "SessionStart": [{"hooks": [{"type": "command", "command":
         "python -m covasant_partyline.hook --url <app-url> --profile dev-eastus2 --owner alan --repo <repo>"}]}]
     }
+
+For Qwen Code, set `PARTYLINE_HOOK_FORMAT=qwen` in the hook entry's `env` — Qwen injects
+context only from the JSON `{"hookSpecificOutput": {"hookEventName": "SessionStart",
+"additionalContext": "..."}}` envelope, not from plain stdout.
 
 For Cline, wire it as `.clinerules/hooks/TaskStart.ps1` (Cline has no SessionStart event;
 TaskStart is the analog). Set `PARTYLINE_HOOK_FORMAT=cline` so this module emits Cline's
@@ -55,7 +60,10 @@ def _token(profile: str | None) -> str | None:
     try:
         out = subprocess.run(
             [exe, "auth", "token", "-p", profile],
-            capture_output=True, text=True, timeout=30, check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
         ).stdout
         return json.loads(out).get("access_token")
     except Exception:
@@ -108,10 +116,7 @@ def roster_lines(agents: list) -> list[str]:
     if cold:
         shown = cold[:MAX_COLD_SHOWN]
         more = f", +{len(cold) - len(shown)} more" if len(cold) > len(shown) else ""
-        lines.append(
-            "Quiet (still registered, messages to them wait): "
-            + ", ".join(label(x) for x in shown) + more
-        )
+        lines.append("Quiet (still registered, messages to them wait): " + ", ".join(label(x) for x in shown) + more)
     return lines
 
 
@@ -164,9 +169,15 @@ def _get(url: str, token: str | None) -> object:
 
 
 def _emit(context: str) -> None:
+    fmt = os.getenv("PARTYLINE_HOOK_FORMAT") or ""
     # Cline hooks read a JSON envelope on stdout: {"cancel": false, "contextModification": "..."}.
-    if os.getenv("PARTYLINE_HOOK_FORMAT") == "cline":
+    if fmt == "cline":
         print(json.dumps({"cancel": False, "contextModification": context}))
+        return
+    # Qwen Code SessionStart hooks inject context only from the JSON envelope —
+    # plain stdout is not added to the session. hookEventName is required.
+    if fmt == "qwen":
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}))
         return
     # Claude Code / Codex SessionStart hooks read plain markdown from stdout.
     print(context)
@@ -202,7 +213,11 @@ def main() -> None:
 
     try:
         agents = _get(f"{base}/api/agents?include_stale=true", token)
-        messages = _get(f"{base}/api/messages?after_id=0&limit=500", token)
+        # latest=true: the NEWEST 500 rows, ascending. after_id=0 tails from the start
+        # of history and returns the OLDEST 500 — on any line with a backlog the 24h
+        # window below then renders empty and the session starts blind (the same trap
+        # the dashboard's get_recent docstring warns about).
+        messages = _get(f"{base}/api/messages?latest=true&limit=500", token)
         claims = _get(f"{base}/api/claims", token)
     except Exception:
         return
@@ -220,6 +235,7 @@ def main() -> None:
         out.append(warning)
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=WINDOW_HOURS)
+
     def recent(m: dict) -> bool:
         try:
             return datetime.fromisoformat(m["created_at"].replace("Z", "+00:00")) >= cutoff
@@ -238,12 +254,14 @@ def main() -> None:
     for m in msgs:
         to = f" -> {m['recipient']}" if m.get("recipient") else ""
         star = ""
-        if prefix and (str(m.get("recipient") or "").startswith(prefix)
-                       or any(str(x).startswith(prefix) for x in m.get("mentions") or [])):
+        if prefix and (
+            str(m.get("recipient") or "").startswith(prefix)
+            or any(str(x).startswith(prefix) for x in m.get("mentions") or [])
+        ):
             star = " [ADDRESSED TO THIS REPO'S AGENTS]"
+        # summary-only posts are the token-frugal shape — fall back so lines don't render blank
         lines.append(
-            f"- #{m['id']} [{m['message_type']}] {m['agent_id']}{to}: "
-            f"{(m.get('payload') or '')[:160]}{star}"
+            f"- #{m['id']} [{m['message_type']}] {m['agent_id']}{to}: {(m.get('payload') or m.get('summary') or '')[:160]}{star}"
         )
     lines.append(
         "Register on the line (register_agent) before posting/claiming; "

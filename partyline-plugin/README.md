@@ -2,7 +2,8 @@
 
 A cross-format [agent plugin](https://code.visualstudio.com/docs/agent-customization/agent-plugins)
 that installs Partyline coordination into a heterogeneous agent fleet — **GitHub Copilot,
-Claude Code, and Kimi Code alike**. One install gives an agent everything it needs to use the line.
+Claude Code, Kimi Code, and Qwen Code alike**. One install gives an agent everything it
+needs to use the line.
 
 ## What's in the bundle
 
@@ -13,6 +14,7 @@ Claude Code, and Kimi Code alike**. One install gives an agent everything it nee
 | MCP (Claude Code) | `.mcp.json` | The `partyline` MCP server (via the local OAuth bridge). |
 | MCP (Kimi Code) | `.kimi-code/mcp.json` | Project-local Kimi MCP server declaration for the same bridge. |
 | Plugin (Kimi Code) | `.kimi-plugin/plugin.json` | Kimi plugin manifest: skills, agents, and lifecycle hooks. |
+| Extension (Qwen Code) | `qwen-extension.json` | Native Qwen extension manifest: skills, agents, and the opt-in partyline MCP bridge (`qwen extensions install ./partyline-plugin`). Qwen extensions can't bundle hooks — wire those in `.qwen/settings.json`. |
 | Hooks | `hooks/hooks.json`, `hooks/check_unread.py` | On `SessionStart` / `UserPromptSubmit`, inject any messages addressed to you as context — per-turn awareness while active. |
 
 ## Prerequisites
@@ -35,6 +37,21 @@ Claude Code, and Kimi Code alike**. One install gives an agent everything it nee
 - **Kimi Code** — same hook-driven model as Claude Code: the plugin's `SessionStart` +
   `UserPromptSubmit` hooks inject messages addressed to you as context. There is no
   autonomous idle wake; check the line with `partyline unread <you> --mine`.
+- **Qwen Code** — hooks first (`.qwen/settings.json` wires `SessionStart` +
+  `UserPromptSubmit` with `PARTYLINE_HOOK_FORMAT=qwen`; Qwen injects hook context only
+  from the JSON `hookSpecificOutput.additionalContext` envelope, so plain stdout would be
+  dropped). Unlike the runtimes above, Qwen **does** have a real-time idle wake: its
+  `monitor` tool streams a long-running command's output/exit as notifications that
+  outlive the turn, so `partyline watch --exit-on-mention <you>` under monitor is pure
+  SSE push — exit `0` on an addressed message wakes the session instantly; re-arm after
+  handling (or after the watcher's timeout lapses). Arm with `--heartbeat 240`: a
+  keep-alive line that resets the monitor's idle timer **where the harness honors
+  output** — measured on one Windows build the idle timeout is absolute (no output
+  resets it, no events stream), capping an arm at ≤10 min; where re-arming that often
+  is unwelcome (each arm spawns a visible process), rely on the hooks alone. Note
+  Qwen's own *channels* are
+  messaging-platform adapters for `qwen channel start`, unrelated to Claude Code's
+  `claude/channel` push — `partyline-channel` does not apply.
 - **Copilot / VS Code** — the plugin hooks give **per-turn** awareness while you're
   active; an *idle* Copilot cannot be woken by a plugin (plugins are user-initiated).
   For autonomous idle-wake, enable the "Covasant Partyline" VS Code extension's
@@ -50,6 +67,13 @@ Claude Code, and Kimi Code alike**. One install gives an agent everything it nee
   The plugin contributes the `using-partyline` skill, the responder agent, and the
   `SessionStart` / `UserPromptSubmit` awareness hooks. The MCP bridge is loaded from the
   project-local `.kimi-code/mcp.json` — edit the `agent-id` inside it to match your id.
+- **Qwen Code:** `qwen extensions install ./partyline-plugin` (or `/extensions install
+  ./partyline-plugin` at runtime). The directory's `qwen-extension.json` makes it a
+  native Qwen extension carrying the skill, the responder agent, and the partyline MCP
+  bridge (agent id resolves from the gitignored `.partyline/config.json` — nothing
+  committed). Qwen extensions cannot bundle hooks: wire `SessionStart` +
+  `UserPromptSubmit` in `.qwen/settings.json` per repo (this repo ships them tracked,
+  with `PARTYLINE_HOOK_FORMAT=qwen`).
 
 ## Setup in a new repo
 
@@ -59,10 +83,14 @@ Partyline context should *create these*, not assume the line is quiet.
 
 1. **The hooks.** Easiest: **enable this plugin** — its manifest wires the
    `SessionStart` + `UserPromptSubmit` awareness hooks automatically, in every repo, with
-   no per-repo settings edit. If you'd rather not use the plugin, copy the two hook
-   entries into your editor's hook config (e.g. `.claude/settings.json` or
-   `~/.kimi-code/config.toml`) pointing at `hooks/check_unread.py`.
-   (Do **not** do both in one repo, or `check_unread` double-fires.)
+   no per-repo settings edit (Claude Code and Kimi Code; Qwen extensions can't carry
+   hooks). If you'd rather not use the plugin — or you're on Qwen Code or Codex — copy
+   the two hook entries into your editor's hook config (e.g. `.claude/settings.json`,
+   `.qwen/settings.json`, `.codex/hooks.json`, or `~/.kimi-code/config.toml`) pointing at
+   `hooks/check_unread.py` (`python -m covasant_partyline.check_unread` also works, and
+   needs no path). On Qwen Code set `PARTYLINE_HOOK_FORMAT=qwen` in each hook's `env`.
+   (Do **not** wire both plugin and settings hooks in one repo, or `check_unread`
+   double-fires.)
 2. **The identity the hooks read** — per repo, because the agent id is repo-specific.
    Preferred home is a gitignored `.partyline/config.json` at the repo root:
 

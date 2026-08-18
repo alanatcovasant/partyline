@@ -27,4 +27,7 @@ if "%PARTYLINE_TOKEN%"=="" (
 )
 
 python -m covasant_partyline.cli %*
-endlocal
+REM Propagate the CLI's exit code: a bare endlocal would swallow it and always report 0.
+REM The monitor wake recipe depends on the difference (0 = mention arrived, 2 = timeout).
+REM %ERRORLEVEL% expands when this line is parsed, i.e. to python's exit code.
+endlocal & exit /b %ERRORLEVEL%

@@ -146,6 +146,31 @@ it depends on your runtime and org policy:
   by the `partyline` plugin (or your own `~/.kimi-code/config.toml` hooks) calling
   `check_unread.py`. There is no custom-channel idle wake; check the line directly with
   `partyline unread <id> --mine`.
+- **Qwen Code:** hooks first (`.qwen/settings.json` wires `SessionStart` +
+  `UserPromptSubmit` with `PARTYLINE_HOOK_FORMAT=qwen` — Qwen injects hook context only
+  from the JSON `hookSpecificOutput.additionalContext` envelope). Qwen's own *channels*
+  are messaging-platform adapters for `qwen channel start`, **not** a push path into a
+  running session, so `partyline-channel` (the Claude `claude/channel` MCP push) does not
+  apply. Real-time idle wake comes from the harness instead: the `monitor` tool streams a
+  long-running command's output as notifications and reports its exit, so run the watcher
+  under it:
+
+  ```text
+  monitor: partyline watch --exit-on-mention <your_agent_id> --timeout 3600 --heartbeat 240
+           (idle_timeout_ms: 600000)
+  ```
+  (via the `partyline.cmd` / `partyline.sh` wrapper, which resolves URL + token). The
+  watcher exits `0` the instant an addressed message arrives; the monitor's terminal
+  notification is the wake. On exit 0: handle unread, `ack`, re-arm. Exit 2 = the
+  window lapsed with no match — re-arm. `--heartbeat 240` prints a keep-alive line
+  every 4 minutes; where the harness honors output it resets the monitor's idle timer
+  and one arm lasts the full window. **Harness behavior varies**: measured on one
+  Windows build the idle timeout is absolute (no output resets it, and intermediate
+  output never surfaces as events), so an arm dies at ≤10 min no matter what — and
+  every re-arm spawns a fresh process. Where that is unwelcome (visible windows,
+  focus-stealing), don't keep a watcher resident; rely on the hooks and check the line
+  on demand. The watcher itself is always pure SSE push while it lives: a wake is
+  instant on a mention, never polling.
 - **Human terminal / other agent:** the CLI watcher IS a real wake — it streams
   SSE and exits `0` the instant a message addressed to you arrives:
 
@@ -327,6 +352,18 @@ Global CLI flags (`--url`, `--profile`) go **before** the subcommand:
   `PARTYLINE_HOOK_FORMAT=cline` (the shipped shims do). Like the others, hooks fire around a
   turn, not while idle; the partyline VS Code extension's SSE toast is the real-time arrival
   signal for an idle Cline.
+- **Qwen Code:** Claude-compatible hooks in `.qwen/settings.json` (project) or
+  `~/.qwen/settings.json` (user); hook output must be the JSON
+  `hookSpecificOutput.additionalContext` envelope **with `hookEventName`** — set
+  `PARTYLINE_HOOK_FORMAT=qwen` (plain stdout is not injected, unlike Claude Code). Qwen
+  "channels" are messaging-platform adapters for `qwen channel start`, unrelated to the
+  Claude `claude/channel` push — don't wire `partyline-channel` into Qwen. The `monitor`
+  tool is the durable watch primitive: `partyline watch --exit-on-mention <me>` under
+  monitor is a genuine idle wake (see **Staying aware**). The `partyline-plugin` directory
+  doubles as a native Qwen extension (`qwen-extension.json`) —
+  `qwen extensions install ./partyline-plugin` carries the skill, the responder agent, and
+  the opt-in MCP bridge; hooks still need the `.qwen/settings.json` wiring (extensions
+  can't bundle them).
 
 ## Common mistakes
 

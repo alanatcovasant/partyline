@@ -1,7 +1,10 @@
 """Partyline lifecycle hook: inject messages addressed to this agent as context.
 
-Runs on SessionStart / UserPromptSubmit in VS Code, Claude Code, and Cline. VS Code and
-Claude Code honor the `hookSpecificOutput.additionalContext` output schema; Cline honors
+Runs on SessionStart / UserPromptSubmit in VS Code, Claude Code, Qwen Code, and Cline.
+VS Code and Claude Code honor the `hookSpecificOutput.additionalContext` output schema;
+Qwen Code honors the same envelope but *requires* `hookEventName` inside
+`hookSpecificOutput` — set `PARTYLINE_HOOK_FORMAT=qwen` (the `.qwen/settings.json`
+entries in this repo do) to emit it. Cline honors
 `{"cancel": false, "contextModification": "..."}` (selected by setting
 `PARTYLINE_HOOK_FORMAT=cline`, which the Cline `.ps1` shims do). Fail-silent by contract —
 a broken hook must never block a turn, so every error path exits 0 with no output. Prints
@@ -58,17 +61,26 @@ def _token(profile: str | None) -> str | None:
     try:
         out = subprocess.run(
             [exe, "auth", "token", "-p", profile],
-            capture_output=True, text=True, timeout=15, check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
         ).stdout
         return json.loads(out).get("access_token")
     except Exception:
         return None
 
 
-def _emit(context: str) -> None:
+def _emit(context: str, hook_event_name: str = "UserPromptSubmit") -> None:
+    fmt = os.getenv("PARTYLINE_HOOK_FORMAT") or ""
     # Cline hooks read a JSON envelope on stdout: {"cancel": false, "contextModification": "..."}.
-    if os.getenv("PARTYLINE_HOOK_FORMAT") == "cline":
+    if fmt == "cline":
         print(json.dumps({"cancel": False, "contextModification": context}))
+        return
+    # Qwen Code reads the same JSON envelope as VS Code / Claude Code, but requires
+    # hookEventName inside hookSpecificOutput — echo the one we were invoked with.
+    if fmt == "qwen":
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": hook_event_name, "additionalContext": context}}))
         return
     # Kimi Code appends raw stdout to context, so emit plain markdown for it.
     if os.getenv("KIMI_CODE_HOME") or os.getenv("KIMI_PLUGIN_ROOT"):
@@ -84,10 +96,17 @@ def main() -> None:
     except Exception:
         pass
 
-    # Drain stdin (hook payload); we don't need its fields, but read it so the runner
-    # doesn't see a broken pipe.
+    # Drain stdin (hook payload) so the runner doesn't see a broken pipe. The Qwen Code
+    # format additionally echoes hook_event_name back inside hookSpecificOutput.
+    hook_event_name = "UserPromptSubmit"
     try:
-        sys.stdin.read()
+        raw = sys.stdin.read()
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                hook_event_name = payload.get("hook_event_name") or hook_event_name
+        except ValueError:
+            pass
     except Exception:
         pass
 
@@ -106,9 +125,7 @@ def main() -> None:
     path = f"/api/agents/{urllib.parse.quote(agent_id)}/unread"
     # include_payload=false: this peek only renders the concise summary (falling back to
     # payload when a message has none), so don't pull full payloads over the wire.
-    query = urllib.parse.urlencode(
-        {"only_for_me": "true", "limit": 50, "include_payload": "false"}
-    )
+    query = urllib.parse.urlencode({"only_for_me": "true", "limit": 50, "include_payload": "false"})
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     req = urllib.request.Request(f"{url}{path}?{query}", headers=headers)
     try:
@@ -132,7 +149,7 @@ def main() -> None:
         # Prefer the concise summary; fall back to payload when a message has no summary.
         text = (m.get("summary") or m.get("payload") or "").replace("\n", " ")[:200]
         lines.append(f"- #{m.get('id')} [{typ}] from {frm}: {text}")
-    _emit("\n".join(lines))
+    _emit("\n".join(lines), hook_event_name)
 
 
 if __name__ == "__main__":

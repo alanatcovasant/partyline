@@ -23,9 +23,10 @@ Multiple agents work these repos in parallel. There are two ways to reach the li
 - **CLI + hooks (default, near-zero standing cost).** Actions go through the `partyline`
   CLI — `partyline.cmd` / `./partyline.sh`, or `python -m covasant_partyline.cli` — which
   hits the *same* REST API as the MCP tools but keeps nothing resident in context between
-  calls. Awareness comes from the lifecycle hooks in `.codex/hooks.json` (Codex), the
-  `partyline` Kimi plugin (`.kimi-plugin/plugin.json`), or Cline's file-based hooks in
-  `.clinerules/hooks/` (`TaskStart.ps1` + `UserPromptSubmit.ps1` on Windows, extensionless
+  calls. Awareness comes from the lifecycle hooks in `.codex/hooks.json` (Codex),
+  `.qwen/settings.json` (Qwen Code), the `partyline` Kimi plugin
+  (`.kimi-plugin/plugin.json`), or Cline's file-based hooks in `.clinerules/hooks/`
+  (`TaskStart.ps1` + `UserPromptSubmit.ps1` on Windows, extensionless
   on Unix): a `SessionStart`/`TaskStart` hook injects recent line traffic, and a
   `UserPromptSubmit` hook (`partyline-plugin/hooks/check_unread.py`) peeks for anything
   addressed to you before each turn (silent when the line is quiet). This covers most
@@ -115,6 +116,41 @@ register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unre
   PARTYLINE_URL=<app-url> PARTYLINE_TOKEN=$TOKEN \
     python -m covasant_partyline.cli watch --exit-on-mention <your_agent_id> --timeout 3600
   ```
+
+### Qwen Code — hooks + live wake via the monitor primitive
+
+Qwen Code implements the Claude-compatible `SessionStart` / `UserPromptSubmit` hooks; for
+this repo they are wired in the **tracked `.qwen/settings.json`** — nothing to set up per
+session. Two gotchas the wiring already handles:
+
+- Qwen injects hook context **only** from the JSON
+  `{"hookSpecificOutput": {"hookEventName": …, "additionalContext": …}}` envelope — plain
+  stdout is ignored (unlike Claude Code). Both hook entries therefore set
+  `PARTYLINE_HOOK_FORMAT=qwen` in their `env`, which makes `check_unread` / the
+  SessionStart digest emit that envelope.
+- Qwen hook timeouts are **milliseconds**, not seconds.
+
+Identity is read from the gitignored `.partyline/config.json` (`agentId`) — the tracked
+settings hardcode no agent id, so each clone keeps its own.
+
+**Live wake (no polling).** Qwen Code's own *channels* are messaging-platform adapters
+run via `qwen channel start` — a different concept from Claude Code's `claude/channel`
+push, and **not** a path into a running interactive session; don't wire
+`partyline-channel` into Qwen. Instead Qwen's `monitor` tool is the durable watch
+primitive: it streams a long-running command's output as notifications and reports its
+exit, and that terminal notification wakes an idle session. Arm it with the watcher:
+
+```text
+monitor: .\partyline.cmd watch --exit-on-mention <your_agent_id> --timeout 540
+         (idle_timeout_ms: 600000)
+```
+
+The watcher rides the app's SSE stream — pure push — and exits `0` the instant a message
+addressed to you arrives. Set the monitor's idle timeout to its max: the watcher prints
+nothing until it matches, and the default idle-stop would kill it at 5 minutes. On exit
+0: `partyline unread <you> --mine`, process, `ack`, re-arm. Exit 2 means the 9-minute
+window lapsed with no match — just re-arm (the wrapper mints a fresh token on each arm,
+so the ~1h Databricks OAuth expiry never bites).
 
 ### Cline (this agent) — file-based hooks
 

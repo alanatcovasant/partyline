@@ -103,22 +103,44 @@ def _print(obj: object) -> None:
 
 
 def cmd_register(a: argparse.Namespace) -> None:
-    _print(_request("POST", a.url, "/api/agents", {
-        "agent_id": a.agent_id, "owner": a.owner, "repo": a.repo,
-        "branch": a.branch, "display_name": a.display_name,
-        "workdirs": [normalize_target(d) for d in (a.workdir or [])],
-    }))
+    _print(
+        _request(
+            "POST",
+            a.url,
+            "/api/agents",
+            {
+                "agent_id": a.agent_id,
+                "owner": a.owner,
+                "repo": a.repo,
+                "branch": a.branch,
+                "display_name": a.display_name,
+                "workdirs": [normalize_target(d) for d in (a.workdir or [])],
+            },
+        )
+    )
 
 
 def cmd_post(a: argparse.Namespace) -> None:
-    result = _request("POST", a.url, "/api/messages", {
-        "agent_id": a.agent_id, "message_type": a.type, "recipient": a.recipient,
-        "repo": a.repo, "branch": a.branch, "resource_path": a.resource,
-        "issue_ref": a.issue, "summary": a.summary, "payload": a.payload,
-        "metadata": json.loads(a.metadata) if a.metadata else {},
-        "mentions": a.mention or [], "reply_to_id": a.reply_to,
-        "allow_unregistered_recipient": a.allow_unregistered_recipient,
-    })
+    result = _request(
+        "POST",
+        a.url,
+        "/api/messages",
+        {
+            "agent_id": a.agent_id,
+            "message_type": a.type,
+            "recipient": a.recipient,
+            "repo": a.repo,
+            "branch": a.branch,
+            "resource_path": a.resource,
+            "issue_ref": a.issue,
+            "summary": a.summary,
+            "payload": a.payload,
+            "metadata": json.loads(a.metadata) if a.metadata else {},
+            "mentions": a.mention or [],
+            "reply_to_id": a.reply_to,
+            "allow_unregistered_recipient": a.allow_unregistered_recipient,
+        },
+    )
     _print(result)
     # On stderr, so it is visible to a human and to an agent reading the tool output, but
     # never corrupts the JSON on stdout that scripts parse.
@@ -132,35 +154,73 @@ def cmd_unread(a: argparse.Namespace) -> None:
 
 
 def cmd_ack(a: argparse.Namespace) -> None:
-    _print(_request("POST", a.url, "/api/checkpoints", {
-        "agent_id": a.agent_id, "last_read_message_id": a.message_id,
-    }))
+    _print(
+        _request(
+            "POST",
+            a.url,
+            "/api/checkpoints",
+            {
+                "agent_id": a.agent_id,
+                "last_read_message_id": a.message_id,
+            },
+        )
+    )
 
 
 def cmd_claim(a: argparse.Namespace) -> None:
-    _print(_request("POST", a.url, "/api/claims", {
-        "agent_id": a.agent_id, "repo": a.repo,
-        "resource_path": normalize_target(a.resource_path),
-        "branch": a.branch, "resource_type": a.resource_type,
-        "claim_scope": a.scope, "reason": a.reason, "ttl_seconds": a.ttl,
-    }))
+    _print(
+        _request(
+            "POST",
+            a.url,
+            "/api/claims",
+            {
+                "agent_id": a.agent_id,
+                "repo": a.repo,
+                "resource_path": normalize_target(a.resource_path),
+                "branch": a.branch,
+                "resource_type": a.resource_type,
+                "claim_scope": a.scope,
+                "reason": a.reason,
+                "ttl_seconds": a.ttl,
+            },
+        )
+    )
 
 
 def cmd_claim_issue(a: argparse.Namespace) -> None:
-    _print(_request("POST", a.url, "/api/claims/work-item", {
-        "agent_id": a.agent_id, "repo": a.repo,
-        "work_item": normalize_target(a.work_item),
-        "paths": [normalize_target(p) for p in (a.path or [])],
-        "branch": a.branch, "claim_scope": a.scope, "reason": a.reason,
-        "ttl_seconds": a.ttl,
-    }))
+    _print(
+        _request(
+            "POST",
+            a.url,
+            "/api/claims/work-item",
+            {
+                "agent_id": a.agent_id,
+                "repo": a.repo,
+                "work_item": normalize_target(a.work_item),
+                "paths": [normalize_target(p) for p in (a.path or [])],
+                "branch": a.branch,
+                "claim_scope": a.scope,
+                "reason": a.reason,
+                "ttl_seconds": a.ttl,
+            },
+        )
+    )
 
 
 def cmd_release(a: argparse.Namespace) -> None:
-    _print(_request("POST", a.url, "/api/claims/release", {
-        "agent_id": a.agent_id, "repo": a.repo,
-        "resource_path": normalize_target(a.resource_path), "branch": a.branch,
-    }))
+    _print(
+        _request(
+            "POST",
+            a.url,
+            "/api/claims/release",
+            {
+                "agent_id": a.agent_id,
+                "repo": a.repo,
+                "resource_path": normalize_target(a.resource_path),
+                "branch": a.branch,
+            },
+        )
+    )
 
 
 def cmd_agents(a: argparse.Namespace) -> None:
@@ -173,10 +233,19 @@ def cmd_claims(a: argparse.Namespace) -> None:
 
 def cmd_search(a: argparse.Namespace) -> None:
     params = {
-        "q": a.text, "message_type": a.type, "agent_id": a.agent, "author": a.author,
-        "recipient": a.recipient, "mention": a.mention, "repo": a.repo,
-        "branch": a.branch, "resource_path": a.resource, "issue_ref": a.issue,
-        "conversation_id": a.conversation, "since": a.since, "until": a.until,
+        "q": a.text,
+        "message_type": a.type,
+        "agent_id": a.agent,
+        "author": a.author,
+        "recipient": a.recipient,
+        "mention": a.mention,
+        "repo": a.repo,
+        "branch": a.branch,
+        "resource_path": a.resource,
+        "issue_ref": a.issue,
+        "conversation_id": a.conversation,
+        "since": a.since,
+        "until": a.until,
         "limit": a.limit,
     }
     qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
@@ -192,7 +261,9 @@ def cmd_watch(a: argparse.Namespace) -> None:
     """Stream live messages. With --exit-on-mention, exit 0 as soon as a message
     addressed to that agent (recipient or mention) arrives — this turns the stream
     into a wake-up trigger: run it as a background task and react when it exits.
-    Exits 2 on --timeout expiry or stream disconnect (no match).
+    Exits 2 on --timeout expiry or stream disconnect (no match). With --heartbeat N,
+    a keep-alive line goes to stderr every N seconds (wake mode only) so monitors
+    with idle timeouts don't reap the silent watcher mid-window.
 
     The read uses a socket timeout so a silently-dead connection never hangs: on read
     timeout / disconnect the loop reconnects (bounded by the overall --timeout) instead
@@ -203,6 +274,7 @@ def cmd_watch(a: argparse.Namespace) -> None:
 
     url = a.url.rstrip("/") + "/api/stream"
     deadline = time.monotonic() + a.timeout if a.timeout else None
+    last_beat = time.monotonic()
     if not a.exit_on_mention:
         print(f"watching {url} (Ctrl-C to stop)")
 
@@ -219,8 +291,21 @@ def cmd_watch(a: argparse.Namespace) -> None:
             try:
                 with urllib.request.urlopen(req, timeout=_WATCH_READ_TIMEOUT) as resp:
                     for raw in resp:
-                        if deadline and time.monotonic() > deadline:
+                        now = time.monotonic()
+                        if deadline and now > deadline:
                             break
+                        # Heartbeat for harness monitors with idle timeouts (Qwen Code's
+                        # monitor reaps a silent watcher at <=10 min): a beat line every
+                        # --heartbeat seconds resets the idle timer. It goes to STDOUT,
+                        # not stderr — measured on Windows: the monitor's idle timer and
+                        # event counter ignore stderr entirely. The match contract keeps:
+                        # the addressed message's JSON is still the FINAL stdout line
+                        # before exit 0; beats are the recognizably-prefixed noise before
+                        # it. Server keep-alives (~15s) keep this loop turning, so the
+                        # beat fires on schedule.
+                        if a.heartbeat and a.exit_on_mention and now - last_beat >= a.heartbeat:
+                            print("partyline-watch: alive", flush=True)
+                            last_beat = now
                         line = raw.decode(errors="replace").rstrip()
                         if not line.startswith("data:"):
                             continue  # keep-alives arrive ~every 15s
@@ -341,9 +426,7 @@ def resolve_url(cli_arg: str | None = None, cfg: dict | None = None) -> str:
     return url.rstrip("/")
 
 
-def resolve_profile(
-    cli_arg: str | None = None, *, url: str, cfg: dict | None = None
-) -> str | None:
+def resolve_profile(cli_arg: str | None = None, *, url: str, cfg: dict | None = None) -> str | None:
     """None for a local url; else flag → PARTYLINE_PROFILE → config
     databricksProfile/profile → DATABRICKS_CONFIG_PROFILE → dev-eastus2.
 
@@ -374,7 +457,10 @@ def _mint_token(profile: str) -> str | None:
     try:
         out = subprocess.run(
             ["databricks", "auth", "token", "-p", profile],
-            capture_output=True, text=True, timeout=30, check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
         ).stdout
         return json.loads(out).get("access_token")
     except (OSError, subprocess.SubprocessError, ValueError, KeyError):
@@ -412,13 +498,18 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--url", default=None,
-                   help="App base URL (default: PARTYLINE_URL, else .partyline/config.json, "
-                        f"else {DEFAULT_URL})")
-    p.add_argument("--profile", default=None,
-                   help="Databricks CLI profile for auto-minting the auth token when "
-                        "PARTYLINE_TOKEN is unset (default: .partyline/config.json, else "
-                        "DATABRICKS_CONFIG_PROFILE, else dev-eastus2)")
+    p.add_argument(
+        "--url",
+        default=None,
+        help=f"App base URL (default: PARTYLINE_URL, else .partyline/config.json, else {DEFAULT_URL})",
+    )
+    p.add_argument(
+        "--profile",
+        default=None,
+        help="Databricks CLI profile for auto-minting the auth token when "
+        "PARTYLINE_TOKEN is unset (default: .partyline/config.json, else "
+        "DATABRICKS_CONFIG_PROFILE, else dev-eastus2)",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("register", help="Register/refresh an agent")
@@ -427,16 +518,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--repo", required=True)
     sp.add_argument("--branch")
     sp.add_argument("--display-name", dest="display_name")
-    sp.add_argument("--workdir", action="append",
-                    help="Directory this session owns (repeatable; '.' = here). Claimed "
-                         "on register; an overlap reports the holder but still registers.")
+    sp.add_argument(
+        "--workdir",
+        action="append",
+        help="Directory this session owns (repeatable; '.' = here). Claimed "
+        "on register; an overlap reports the holder but still registers.",
+    )
     sp.set_defaults(func=cmd_register)
 
     sp = sub.add_parser("post", help="Post a message")
     sp.add_argument("agent_id")
-    sp.add_argument("--type", default="status", choices=[
-        "status", "question", "claim", "release", "blocked", "done", "ack",
-        "escalation", "summary"])
+    sp.add_argument(
+        "--type",
+        default="status",
+        choices=["status", "question", "claim", "release", "blocked", "done", "ack", "escalation", "summary"],
+    )
     sp.add_argument("--recipient", help="Primary addressee agent id ('To:')")
     sp.add_argument("--repo")
     sp.add_argument("--branch")
@@ -447,17 +543,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--metadata", help="JSON string")
     sp.add_argument("--mention", action="append", help="Mentioned agent id (repeatable)")
     sp.add_argument("--reply-to", type=int, dest="reply_to")
-    sp.add_argument("--allow-unregistered-recipient", action="store_true",
-                    dest="allow_unregistered_recipient",
-                    help="Permit a --recipient that has never registered. Off by default: "
-                         "an unknown id is a typo, and a typo'd handoff is undeliverable "
-                         "forever. Use only for a session that hasn't started yet.")
+    sp.add_argument(
+        "--allow-unregistered-recipient",
+        action="store_true",
+        dest="allow_unregistered_recipient",
+        help="Permit a --recipient that has never registered. Off by default: "
+        "an unknown id is a typo, and a typo'd handoff is undeliverable "
+        "forever. Use only for a session that hasn't started yet.",
+    )
     sp.set_defaults(func=cmd_post)
 
     sp = sub.add_parser("unread", help="Get messages since an agent's checkpoint")
     sp.add_argument("agent_id")
-    sp.add_argument("--mine", action="store_true",
-                    help="Only messages addressed to me (recipient or mention)")
+    sp.add_argument("--mine", action="store_true", help="Only messages addressed to me (recipient or mention)")
     sp.set_defaults(func=cmd_unread)
 
     sp = sub.add_parser("ack", help="Advance an agent's checkpoint")
@@ -465,16 +563,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("message_id", type=int)
     sp.set_defaults(func=cmd_ack)
 
-    sp = sub.add_parser("claim-issue",
-                        help="Claim a GH issue/PR and the directories it touches")
+    sp = sub.add_parser("claim-issue", help="Claim a GH issue/PR and the directories it touches")
     sp.add_argument("agent_id")
     sp.add_argument("repo")
     sp.add_argument("work_item", help="issue:owner/repo#123 or pr:owner/repo#123")
-    sp.add_argument("--path", action="append",
-                    help="Directory this work touches (repeatable; '.' = here)")
+    sp.add_argument("--path", action="append", help="Directory this work touches (repeatable; '.' = here)")
     sp.add_argument("--branch")
-    sp.add_argument("--scope", default="exclusive",
-                    choices=["exclusive", "shared_read", "intent"])
+    sp.add_argument("--scope", default="exclusive", choices=["exclusive", "shared_read", "intent"])
     sp.add_argument("--reason")
     sp.add_argument("--ttl", type=int, help="Lease seconds")
     sp.set_defaults(func=cmd_claim_issue)
@@ -482,15 +577,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("claim", help="Claim one target (dir, work item, or source)")
     sp.add_argument("agent_id")
     sp.add_argument("repo")
-    sp.add_argument("resource_path",
-                    help="Absolute directory ('.' = here), issue:owner/repo#N, or "
-                         "src:owner/repo/path — the last claims the source in EVERY "
-                         "clone, which a path claim cannot do")
+    sp.add_argument(
+        "resource_path",
+        help="Absolute directory ('.' = here), issue:owner/repo#N, or "
+        "src:owner/repo/path — the last claims the source in EVERY "
+        "clone, which a path claim cannot do",
+    )
     sp.add_argument("--branch")
-    sp.add_argument("--resource-type", dest="resource_type",
-                    choices=["issue", "pr", "source", "directory", "workdir", "file"])
-    sp.add_argument("--scope", default="exclusive",
-                    choices=["exclusive", "shared_read", "intent"])
+    sp.add_argument(
+        "--resource-type", dest="resource_type", choices=["issue", "pr", "source", "directory", "workdir", "file"]
+    )
+    sp.add_argument("--scope", default="exclusive", choices=["exclusive", "shared_read", "intent"])
     sp.add_argument("--reason")
     sp.add_argument("--ttl", type=int, help="Lease seconds")
     sp.set_defaults(func=cmd_claim)
@@ -503,9 +600,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_release)
 
     sp = sub.add_parser("agents", help="List agents with presence (live/idle/stale)")
-    sp.add_argument("--all", action="store_true",
-                    help="Include stale agents. Nothing is ever deleted, so this answers "
-                         "'does this id exist at all' — which the trimmed list cannot.")
+    sp.add_argument(
+        "--all",
+        action="store_true",
+        help="Include stale agents. Nothing is ever deleted, so this answers "
+        "'does this id exist at all' — which the trimmed list cannot.",
+    )
     sp.set_defaults(func=cmd_agents)
     sub.add_parser("claims", help="List active claims").set_defaults(func=cmd_claims)
 
@@ -532,11 +632,25 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_conversation)
 
     sp = sub.add_parser("watch", help="Stream live messages (SSE)")
-    sp.add_argument("--exit-on-mention", metavar="AGENT_ID",
-                    help="Exit 0 when a message addressed to AGENT_ID arrives "
-                         "(recipient or mention) — use as a background wake-up trigger")
-    sp.add_argument("--timeout", type=float, metavar="SECONDS",
-                    help="With --exit-on-mention: give up (exit 2) after this long")
+    sp.add_argument(
+        "--exit-on-mention",
+        metavar="AGENT_ID",
+        help="Exit 0 when a message addressed to AGENT_ID arrives "
+        "(recipient or mention) — use as a background wake-up trigger",
+    )
+    sp.add_argument(
+        "--timeout", type=float, metavar="SECONDS", help="With --exit-on-mention: give up (exit 2) after this long"
+    )
+    sp.add_argument(
+        "--heartbeat",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="With --exit-on-mention: print a keep-alive line to stderr every N seconds "
+        "so harness monitors with idle timeouts (e.g. Qwen Code's, max 10 min) don't "
+        "reap the silent watcher — lets one arm last the full --timeout instead of "
+        "being re-armed every few minutes",
+    )
     sp.set_defaults(func=cmd_watch)
     return p
 
@@ -555,9 +669,11 @@ def main(argv: list[str] | None = None) -> None:
     # Resolve the profile for remote apps even when PARTYLINE_TOKEN is already set: it's
     # what lets the long-lived `watch` stream re-mint a fresh token on each reconnect
     # (resolve_stream_token) instead of dying when the initial token expires (~1h).
-    args.profile = None if is_local else (
-        args.profile or cfg.get("databricksProfile")
-        or os.getenv("DATABRICKS_CONFIG_PROFILE") or "dev-eastus2")
+    args.profile = (
+        None
+        if is_local
+        else (args.profile or cfg.get("databricksProfile") or os.getenv("DATABRICKS_CONFIG_PROFILE") or "dev-eastus2")
+    )
     if not os.getenv("PARTYLINE_TOKEN") and args.profile:
         token = _mint_token(args.profile)
         if token:
