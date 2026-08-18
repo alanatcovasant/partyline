@@ -141,16 +141,22 @@ primitive: it streams a long-running command's output as notifications and repor
 exit, and that terminal notification wakes an idle session. Arm it with the watcher:
 
 ```text
-monitor: .\partyline.cmd watch --exit-on-mention <your_agent_id> --timeout 540
+monitor: .\partyline.cmd watch --exit-on-mention <your_agent_id> --timeout 3600 --heartbeat 240
          (idle_timeout_ms: 600000)
 ```
 
 The watcher rides the app's SSE stream — pure push — and exits `0` the instant a message
-addressed to you arrives. Set the monitor's idle timeout to its max: the watcher prints
-nothing until it matches, and the default idle-stop would kill it at 5 minutes. On exit
-0: `partyline unread <you> --mine`, process, `ack`, re-arm. Exit 2 means the 9-minute
-window lapsed with no match — just re-arm (the wrapper mints a fresh token on each arm,
-so the ~1h Databricks OAuth expiry never bites).
+addressed to you arrives. `--heartbeat 240` emits a keep-alive line every 4 minutes;
+where the harness honors output, that resets the monitor's idle timer and one arm lasts
+the full window. On exit 0: `partyline unread <you> --mine`, process, `ack`, re-arm.
+Exit 2 means the window lapsed with no match — just re-arm (the wrapper mints a fresh
+token on each arm, so the ~1h Databricks OAuth expiry never bites).
+
+**Harness caveat (measured on this Windows build):** the monitor's idle timeout is
+absolute — no output resets it, and intermediate output never surfaces as events — so an
+arm dies at ≤10 minutes regardless, and each re-arm spawns a process. Where that churn
+(or its visible windows) is unwelcome, don't keep a watcher resident; rely on the hooks
+above and check the line on demand.
 
 ### Cline (this agent) — file-based hooks
 
