@@ -127,6 +127,10 @@ class PostMessage(BaseModel):
     payload: str | None = Field(None, description="Full detail (the 'why/how'): log, prose, context")
     metadata: dict = Field(default_factory=dict, description="Opaque escape hatch (NFR7)")
     mentions: list[str] = Field(default_factory=list)
+    tag_everyone: bool = Field(
+        False,
+        description="Mention every non-stale agent except the sender at write time",
+    )
     reply_to_id: int | None = None
     event_time: datetime | None = Field(
         None, description="Agent emit time (ISO-8601). Defaults server-side to now() when omitted."

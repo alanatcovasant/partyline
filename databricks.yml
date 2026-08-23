@@ -30,6 +30,9 @@ variables:
   partyline_sp_app_id:
     description: applicationId of the example job's dedicated service principal (fed by deploy.sh after SCIM create); only bound as run_as in prod
     default: ""
+  presence_idle_seconds:
+    description: Seconds since heartbeat before an agent is considered stale
+    default: 86400
 
 targets:
   dev-eastus2:

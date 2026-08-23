@@ -44,7 +44,7 @@ async def test_every_row_carries_presence_labels(client):
 
 async def test_a_quiet_agent_is_labelled_not_deleted(client):
     await _register(client, "pres_quiet")
-    _age("pres_quiet", 68400)  # 19h
+    _age("pres_quiet", 90000)  # 25h, beyond the one-day default
 
     rows = (await client.get("/api/agents?include_stale=true")).json()
     row = _find(rows, "pres_quiet")
@@ -57,7 +57,7 @@ async def test_a_quiet_agent_is_labelled_not_deleted(client):
 async def test_the_default_window_still_trims_the_roster(client):
     """The SessionStart banner is a token budget; callers who want the truth ask for it."""
     await _register(client, "pres_quiet2")
-    _age("pres_quiet2", 68400)
+    _age("pres_quiet2", 90000)
     assert _find((await client.get("/api/agents")).json(), "pres_quiet2") is None
     assert _find((await client.get("/api/agents?include_stale=true")).json(), "pres_quiet2")
 
@@ -85,7 +85,7 @@ async def test_idle_sits_between_live_and_stale(client):
 async def test_diagnostics_shares_one_definition_of_presence(client):
     """Two endpoints disagreeing about who is live is how the original confusion started."""
     await _register(client, "pres_diag")
-    _age("pres_diag", 68400)
+    _age("pres_diag", 90000)
 
     roster = _find((await client.get("/api/agents?include_stale=true")).json(), "pres_diag")
     diag = (await client.get("/api/diagnostics/agents?sample_size=500")).json()

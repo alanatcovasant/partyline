@@ -85,7 +85,7 @@ async def register_agent(body: RegisterAgent) -> dict:
 
 
 @router.get("/agents", response_model=list[Agent])
-async def list_agents(active_within_seconds: int = 3600, include_stale: bool = False) -> list[dict]:
+async def list_agents(active_within_seconds: int | None = None, include_stale: bool = False) -> list[dict]:
     """Registered agents with presence labels.
 
     `include_stale=true` returns everyone ever registered — use it to answer "does this
@@ -119,7 +119,7 @@ async def list_agents(active_within_seconds: int = 3600, include_stale: bool = F
 
 @router.get("/diagnostics/agents")
 async def agent_presence_diagnostics(
-    active_within_seconds: int = 3600,
+    active_within_seconds: int | None = None,
     sample_size: int = 50,
 ) -> dict:
     diag = await run_in_threadpool(db.get_agent_presence_diagnostics, active_within_seconds, sample_size)
@@ -162,6 +162,7 @@ async def post_message(body: PostMessage, request: Request) -> dict:
             body.summary,
             body.event_time,
             allow_unregistered_recipient=body.allow_unregistered_recipient,
+            tag_everyone=body.tag_everyone,
         )
     except db.UnknownRecipient as exc:
         log.warning("post_message REFUSED agent_id=%s recipient=%s", body.agent_id, exc.recipient)

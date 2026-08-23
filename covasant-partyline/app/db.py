@@ -537,7 +537,7 @@ def _classify_row(row: dict) -> dict:
     return row
 
 
-def list_agents(active_within_seconds: int = 3600, include_stale: bool = False) -> list[dict]:
+def list_agents(active_within_seconds: int | None = None, include_stale: bool = False) -> list[dict]:
     """Registered agents, each labelled with its presence (never filtered into oblivion).
 
     Every row carries `status` (live|idle|stale), `reading`, and both clock ages, so a
@@ -549,6 +549,7 @@ def list_agents(active_within_seconds: int = 3600, include_stale: bool = False) 
     the window, because the SessionStart banner is a token budget, not an audit: callers
     that need the truth ask for it, and nothing is ever deleted either way.
     """
+    active_within_seconds = active_within_seconds or settings.presence_idle_seconds
     where = "" if include_stale else "WHERE a.last_heartbeat > now() - make_interval(secs => %(win)s)"
     with get_pool().connection() as conn:
         rows = conn.execute(
@@ -621,11 +622,12 @@ def _suggest_agents(conn, unknown: str, limit: int = 3) -> list[str]:
     return [r["agent_id"] for r in live]
 
 
-def get_agent_presence_diagnostics(active_within_seconds: int = 3600, sample_size: int = 50) -> dict:
+def get_agent_presence_diagnostics(active_within_seconds: int | None = None, sample_size: int = 50) -> dict:
     """Return a snapshot explaining why agents are considered active/stale.
 
     Useful when clients report "0 connected" while operators believe agents are alive.
     """
+    active_within_seconds = active_within_seconds or settings.presence_idle_seconds
     with get_pool().connection() as conn:
         summary = conn.execute(
             """SELECT
@@ -860,6 +862,7 @@ def post_message(
     # arg (locked by tests/test_event_time.py), so anything added after it must never
     # claim a positional slot.
     allow_unregistered_recipient: bool = False,
+    tag_everyone: bool = False,
 ) -> dict:
     """Insert a message, refresh presence, and emit a NOTIFY for push delivery (FR1/FR2).
 
@@ -872,10 +875,32 @@ def post_message(
     ``delivery_warnings``, and an unknown recipient raises instead of succeeding quietly.
     """
     log.info("post_message agent_id=%s type=%s recipient=%s repo=%s", agent_id, message_type, recipient, repo)
+    active_ids: list[str] = []
     with get_pool().connection() as conn:
+        if tag_everyone:
+            active_ids = [
+                row["agent_id"]
+                for row in conn.execute(
+                    """SELECT agent_id
+                       FROM agents
+                       WHERE agent_id <> %s
+                         AND last_heartbeat > now() - make_interval(secs => %s)
+                       ORDER BY agent_id""",
+                    (agent_id, settings.presence_idle_seconds),
+                ).fetchall()
+            ]
+            # Explicit mentions remain authoritative (including a deliberate self-mention),
+            # while the expanded output is deterministic and duplicate-free.
+            mentions = sorted({x for x in [*mentions, *active_ids] if x})
+        tag_warning = (
+            ["tag_everyone matched no other non-stale agents"]
+            if tag_everyone and not active_ids
+            else []
+        ) if tag_everyone else []
         recipient_presence, warnings = _check_delivery(
             conn, recipient, mentions, allow_unregistered_recipient
         )
+        warnings = tag_warning + warnings
         row = conn.execute(
             f"""INSERT INTO messages
                  (agent_id, author, message_type, recipient, repo, branch,

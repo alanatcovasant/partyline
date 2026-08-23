@@ -232,6 +232,7 @@ function Compose({ agents }: { agents: Agent[] }) {
   const [from, setFrom] = useState(() => localStorage.getItem("partyline.from") ?? "");
   const [type, setType] = useState<string>("status");
   const [to, setTo] = useState("");
+  const [tagEveryone, setTagEveryone] = useState(false);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -287,6 +288,7 @@ function Compose({ agents }: { agents: Agent[] }) {
           recipient: to.trim() || null,
           payload: text.trim(),
           mentions,
+          tag_everyone: tagEveryone,
         }),
       });
       if (!r.ok) throw new Error(await explainPostFailure(r));
@@ -335,6 +337,16 @@ function Compose({ agents }: { agents: Agent[] }) {
           aria-label="Recipient"
           list="agent-ids"
         />
+        <button
+          type="button"
+          className={tagEveryone ? "tag-everyone active" : "tag-everyone"}
+          onClick={() => setTagEveryone((enabled) => !enabled)}
+          aria-pressed={tagEveryone}
+          title="Mention every active agent except the sender when this message is sent"
+        >
+          {tagEveryone ? "✓ Tag all active" : "Tag all active"}
+          <span className="muted"> ({agents.filter((a) => a.agent_id !== from.trim()).length})</span>
+        </button>
         <datalist id="agent-ids">
           {agents.map((a) => (
             <option key={a.agent_id} value={a.agent_id} />
@@ -1013,7 +1025,7 @@ export function App() {
       getJSON<Agent[]>("/api/agents").then(setAgents).catch(() => {});
       getJSON<Claim[]>("/api/claims").then(setClaims).catch(() => {});
       getJSON<Metrics>("/api/metrics").then(setMetrics).catch(() => {});
-      getJSON<Diagnostics>("/api/diagnostics/agents?active_within_seconds=3600&sample_size=25")
+      getJSON<Diagnostics>("/api/diagnostics/agents?sample_size=25")
         .then(setDiag).catch(() => {});
       getJSON<Health>("/api/health").then(setHealth).catch(() => {});
     };

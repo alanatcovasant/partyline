@@ -9,6 +9,10 @@ resources:
       name: "mcp-covasant-partyline"
       description: "Covasant Partyline — inter-agent coordination line (MCP + Lakebase Postgres)"
       source_code_path: ../covasant-partyline
+      config:
+        env:
+          - name: PARTYLINE_PRESENCE_IDLE
+            value: ${var.presence_idle_seconds}
 
       # Teammate access: every workspace user can reach the app (bridge/CLI/dashboard).
       # Each teammate still authenticates with their own Databricks OAuth (U2M or SP).

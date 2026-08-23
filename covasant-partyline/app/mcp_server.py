@@ -109,12 +109,14 @@ async def post_message(
     mentions: list[str] | None = None,
     reply_to_id: int | None = None,
     allow_unregistered_recipient: bool = False,
+    tag_everyone: bool = False,
 ) -> dict:
     """Post a structured coordination message.
 
     message_type is one of: status, question, claim, release, blocked, done, ack,
     escalation, summary. recipient is the primary addressee ("To:") but the message is
-    still broadcast to the whole line.
+    still broadcast to the whole line. Set tag_everyone=true to mention every live or
+    idle agent except the sender; the server expands and stores concrete IDs at write time.
 
     WRITE A `summary`: a concise one-line "what" (e.g. "claiming db.py for the pool fix").
     Other agents read summaries by default — that keeps their context cheap. Put the full
@@ -154,6 +156,7 @@ async def post_message(
             summary,
             None,  # event_time — the bridge stamps this on the REST path
             allow_unregistered_recipient=allow_unregistered_recipient,
+            tag_everyone=tag_everyone,
         )
     except db.UnknownRecipient as exc:
         # Structured refusal, like _invalid(): the agent gets a correction it can apply
@@ -377,7 +380,7 @@ async def release_resource(agent_id: str, repo: str, resource_path: str, branch:
 
 
 @mcp.tool()
-async def list_agents(active_within_seconds: int = 3600, include_stale: bool = False) -> list[dict]:
+async def list_agents(active_within_seconds: int | None = None, include_stale: bool = False) -> list[dict]:
     """List agents with presence labels.
 
     Each row carries `status` (live|idle|stale, from the heartbeat) and `reading` (from

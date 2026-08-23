@@ -139,6 +139,7 @@ def cmd_post(a: argparse.Namespace) -> None:
             "mentions": a.mention or [],
             "reply_to_id": a.reply_to,
             "allow_unregistered_recipient": a.allow_unregistered_recipient,
+            "tag_everyone": a.tag_everyone,
         },
     )
     _print(result)
@@ -542,6 +543,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--payload", help="Full detail (fetched on demand)")
     sp.add_argument("--metadata", help="JSON string")
     sp.add_argument("--mention", action="append", help="Mentioned agent id (repeatable)")
+    sp.add_argument(
+        "--everyone", action="store_true", dest="tag_everyone",
+        help="Mention every non-stale agent except the sender",
+    )
     sp.add_argument("--reply-to", type=int, dest="reply_to")
     sp.add_argument(
         "--allow-unregistered-recipient",

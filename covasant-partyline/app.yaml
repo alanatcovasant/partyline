@@ -15,3 +15,5 @@ command: ["python", "-m", "app"]
 env:
   - name: ENDPOINT_NAME
     value: "projects/partyline/branches/production/endpoints/primary"
+  - name: PARTYLINE_PRESENCE_IDLE
+    value: "86400"

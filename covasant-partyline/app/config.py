@@ -50,7 +50,10 @@ class Settings:
     # 'stale'. Identity and read cursors survive all three: a returning agent must never
     # re-read its whole backlog.
     presence_live_seconds: int = int(os.getenv("PARTYLINE_PRESENCE_LIVE", "300"))
-    presence_idle_seconds: int = int(os.getenv("PARTYLINE_PRESENCE_IDLE", "3600"))
+    # Agents remain active for a day by default so a workday's roster is useful even
+    # when an agent has not made a call recently. The DAB variable
+    # `presence_idle_seconds` can override this per deployment.
+    presence_idle_seconds: int = int(os.getenv("PARTYLINE_PRESENCE_IDLE", "86400"))
     # Refuse a post addressed to an agent_id that has never registered. On by default: an
     # unknown recipient is a typo, and a typo'd handoff is silently undeliverable forever.
     # Callers with a genuine pre-registration handoff pass allow_unregistered_recipient.
