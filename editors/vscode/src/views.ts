@@ -65,9 +65,11 @@ export class AgentsProvider implements vscode.TreeDataProvider<PartylineAgent> {
     const statusBlock = agent.last_status
       ? `\n\n**Last status**${agent.last_status_at ? ` · ${new Date(agent.last_status_at).toLocaleString()}` : ""}:\n\n${agent.last_status}`
       : "\n\n_No status posted yet._";
+    const runtimeLabel = [agent.harness, agent.model].filter(Boolean).join(" · ");
     item.tooltip = new vscode.MarkdownString(
       `**${agent.agent_id}** — ${online ? "🟢 online" : "⚪ offline"}\n\n` +
       `Repo: ${repoLabel}\n\nOwner: ${agent.owner}\n\n` +
+      (runtimeLabel ? `Runtime: ${runtimeLabel}\n\n` : "") +
       `Last seen: ${new Date(agent.last_heartbeat).toLocaleString()}` +
       statusBlock
     );

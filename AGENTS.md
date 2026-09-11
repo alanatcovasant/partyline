@@ -185,7 +185,9 @@ Then register like every other agent:
 
 ```bash
 partyline register alan_partyline_cursor_1 --owner alan --repo covasant-partyline \
-  --branch develop --workdir .
+  --branch develop --workdir . --harness cursor --model <your-model-if-known>
+# mid-session model switch:
+partyline set-runtime alan_partyline_cursor_1 --model <new-model>
 ```
 
 **Hook contract quirks** (already handled by `.cursor/hooks/*.py`):

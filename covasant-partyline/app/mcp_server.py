@@ -42,8 +42,9 @@ Covasant Partyline — inter-agent coordination line for a fleet of coding agent
 related repos in parallel. Everything is broadcast; recipient/mentions filter attention,
 not privacy. Identity is a self-declared agent_id <owner>_<repo>_<instance>; keep it stable.
 
-Session start: register_agent(workdirs=['<abs dir you own>']) → get_unread(agent_id,
-only_for_me=true) → ack_checkpoint after handling.
+Session start: register_agent(workdirs=['<abs dir you own>'], harness=…?, model=…?) →
+get_unread(agent_id, only_for_me=true) → process → ack_checkpoint. Mid-session model
+change: update_agent_runtime(agent_id, model=…).
 
 Claim the work you're taking, not the files you'll touch: claim_work_item('issue:owner/repo#N',
 paths=[absolute dirs]) before starting; release_resource when done. A claim on a directory
@@ -72,6 +73,8 @@ async def register_agent(
     branch: str | None = None,
     display_name: str | None = None,
     workdirs: list[str] | None = None,
+    harness: str | None = None,
+    model: str | None = None,
 ) -> dict:
     """Register (or refresh) this agent instance. Call once before posting/claiming.
 
@@ -80,18 +83,64 @@ async def register_agent(
     effect, and an overlap reports the holder in `workdir_claims` WITHOUT failing
     registration. Declare them: two agents must never work the same directory, and
     registering is the earliest moment the collision can surface.
+
+    harness / model are optional client fingerprints (e.g. harness='cursor',
+    model='claude-opus-4-6'). Omit them when the runtime cannot report a value —
+    re-register without them preserves whatever was stored earlier. Use
+    update_agent_runtime to change or clear mid-session.
     """
-    log.info("register_agent agent_id=%s owner=%s repo=%s branch=%s", agent_id, owner, repo, branch)
+    log.info(
+        "register_agent agent_id=%s owner=%s repo=%s branch=%s harness=%s model=%s",
+        agent_id, owner, repo, branch, harness, model,
+    )
     for path in workdirs or []:
         try:
             validate_target(path)
         except InvalidTarget as exc:
             return _invalid(exc)
     result = await run_in_threadpool(
-        db.register_agent, agent_id, owner, repo, branch, display_name, workdirs
+        db.register_agent, agent_id, owner, repo, branch, display_name, workdirs, harness, model
     )
     log.info("register_agent OK agent_id=%s", agent_id)
     return result
+
+
+@mcp.tool()
+async def update_agent_runtime(
+    agent_id: str,
+    harness: str | None = None,
+    model: str | None = None,
+    clear_harness: bool = False,
+    clear_model: bool = False,
+) -> dict:
+    """Update harness and/or model mid-session without a full re-register.
+
+    Pass harness/model to set them. Pass clear_harness=true / clear_model=true to
+    clear a previously stored value (MCP tools cannot distinguish omitted from null).
+    At least one of harness, model, clear_harness, clear_model must be set.
+    Returns an error dict if the agent_id was never registered.
+    """
+    if harness is None and model is None and not clear_harness and not clear_model:
+        return {"error": "provide harness and/or model (or clear_harness / clear_model)"}
+    kw: dict = {}
+    if clear_harness:
+        kw["harness"] = None
+    elif harness is not None:
+        kw["harness"] = harness
+    if clear_model:
+        kw["model"] = None
+    elif model is not None:
+        kw["model"] = model
+    row = await run_in_threadpool(
+        db.update_agent_runtime,
+        agent_id,
+        harness=kw["harness"] if "harness" in kw else ...,
+        model=kw["model"] if "model" in kw else ...,
+    )
+    if row is None:
+        return {"error": f"Unknown agent_id: {agent_id}"}
+    log.info("update_agent_runtime OK agent_id=%s fields=%s", agent_id, sorted(kw))
+    return row
 
 
 @mcp.tool()

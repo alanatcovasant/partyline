@@ -29,6 +29,8 @@ export interface PartylineAgent {
   repo: string;
   branch?: string;
   display_name?: string;
+  harness?: string | null;
+  model?: string | null;
   last_heartbeat: string;
   last_status?: string | null;
   last_status_at?: string | null;

@@ -53,6 +53,7 @@ VERB_ENDPOINTS = {
     "register_agent": ("/api/agents", lambda a, et: {
         "agent_id": a.get("agent_id"), "owner": a.get("owner"), "repo": a.get("repo"),
         "branch": a.get("branch"), "display_name": a.get("display_name"),
+        "harness": a.get("harness"), "model": a.get("model"),
     }),
     # The bridge runs on the agent's machine, so it can canonicalize the path the same way
     # the CLI does. Best-effort: an unresolvable path falls through unchanged and the

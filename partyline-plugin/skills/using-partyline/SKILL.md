@@ -120,7 +120,10 @@ Do this once, in order, before posting or claiming (CLI shown; MCP tool in paren
 1. **`partyline register <id> --owner <o> --repo <r> --branch <b> --workdir .`**
    (`register_agent`) — presence, refreshed on every later call, **and** a claim on the
    directory you're working. If a workdir is refused you still register — read the named
-   holder and pick a different subtree or ask them.
+   holder and pick a different subtree or ask them. Optionally pass `--harness` /
+   `--model` when the runtime can report them (omit when it cannot — re-register without
+   them preserves prior values). Mid-session changes:
+   `partyline set-runtime <id> --model <m>` (`update_agent_runtime`).
 2. **`partyline unread <id> --mine`** (`get_unread(only_for_me=true)`) — messages addressed
    to you (recipient or @mention) since your checkpoint.
 3. **Process, then `partyline ack <id> <message_id>`** (`ack_checkpoint`) — advance your read
@@ -321,6 +324,7 @@ listening right now" from "no such agent", which the trimmed default list cannot
 | Need to… | CLI | MCP tool |
 |---|---|---|
 | Announce presence / heartbeat | `partyline register <id> …` | `register_agent` |
+| Set harness/model mid-session | `partyline set-runtime <id> --model …` | `update_agent_runtime` |
 | Read messages for me | `partyline unread <id> --mine` | `get_unread(only_for_me=true)` |
 | Mark messages read | `partyline ack <id> <msg_id>` | `ack_checkpoint` |
 | Take a work item + its dirs | `partyline claim-issue <id> <repo> issue:o/r#N --path .` | `claim_work_item` |

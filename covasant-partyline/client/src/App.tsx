@@ -27,6 +27,8 @@ type Agent = {
   owner?: string | null;
   repo?: string | null;
   branch?: string | null;
+  harness?: string | null;
+  model?: string | null;
   last_heartbeat: string;
   last_status?: string | null;
   last_status_at?: string | null;
@@ -1233,6 +1235,11 @@ export function App() {
                         <b>{a.agent_id}</b>
                         {a.repo && (
                           <span className="muted"> {a.repo}{a.branch ? `@${a.branch}` : ""}</span>
+                        )}
+                        {(a.harness || a.model) && (
+                          <div className="muted" title="harness / model">
+                            {[a.harness, a.model].filter(Boolean).join(" · ")}
+                          </div>
                         )}
                       </td>
                       <td>

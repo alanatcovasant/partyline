@@ -220,6 +220,10 @@ CREATE TABLE IF NOT EXISTS agents (
     repo           TEXT NOT NULL,
     branch         TEXT,
     display_name   TEXT,
+    -- Optional client fingerprint (harness + model). Nullable: not every runtime can
+    -- report them. Keep this comment semicolon-free: _SCHEMA is split on the semicolon.
+    harness        TEXT,
+    model          TEXT,
     registered_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_heartbeat TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -382,6 +386,10 @@ _MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_archive_recipient  ON messages_archive (recipient)",
     # issue_ref: live already indexed (idx_messages_issue_ref in _SCHEMA); add archive side.
     "CREATE INDEX IF NOT EXISTS idx_archive_issue_ref  ON messages_archive (issue_ref)",
+    # Optional agent runtime fingerprint (harness + model). Nullable; re-register omit
+    # preserves via COALESCE in register_agent — mid-session updates use update_agent_runtime.
+    "ALTER TABLE agents ADD COLUMN IF NOT EXISTS harness TEXT",
+    "ALTER TABLE agents ADD COLUMN IF NOT EXISTS model TEXT",
 ]
 
 
@@ -437,6 +445,8 @@ def register_agent(
     branch: str | None,
     display_name: str | None,
     workdirs: list[str] | None = None,
+    harness: str | None = None,
+    model: str | None = None,
 ) -> dict:
     """Register (or refresh) an agent, optionally taking territory.
 
@@ -445,18 +455,25 @@ def register_agent(
     is strictly worse than one that registers while overlapping. Surfacing the holder at
     session start is the whole point — it is the earliest moment an agent can act on the
     collision, and it rides on the one call every agent already makes.
+
+    `harness` / `model` are optional — not every runtime can report them. On re-register,
+    a null/omitted value PRESERVES the stored one (COALESCE); pass a new non-null value to
+    overwrite, or call update_agent_runtime to change/clear mid-session without a full
+    re-register.
     """
     with get_pool().connection() as conn:
         row = conn.execute(
-            """INSERT INTO agents (agent_id, owner, repo, branch, display_name)
-               VALUES (%s, %s, %s, %s, %s)
+            """INSERT INTO agents (agent_id, owner, repo, branch, display_name, harness, model)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (agent_id) DO UPDATE
                  SET owner = EXCLUDED.owner, repo = EXCLUDED.repo,
                      branch = EXCLUDED.branch, display_name = EXCLUDED.display_name,
+                     harness = COALESCE(EXCLUDED.harness, agents.harness),
+                     model = COALESCE(EXCLUDED.model, agents.model),
                      last_heartbeat = now()
-               RETURNING agent_id, owner, repo, branch, display_name,
+               RETURNING agent_id, owner, repo, branch, display_name, harness, model,
                          registered_at, last_heartbeat""",
-            (agent_id, owner, repo, branch, display_name),
+            (agent_id, owner, repo, branch, display_name, harness, model),
         ).fetchone()
         _extend_workdir_claims(conn, agent_id)
         conn.commit()
@@ -487,11 +504,57 @@ def register_agent(
             )
     row["workdir_claims"] = results
     log.info(
-        "Agent registered/refreshed: agent_id=%s repo=%s branch=%s workdirs=%s",
+        "Agent registered/refreshed: agent_id=%s repo=%s branch=%s harness=%s model=%s workdirs=%s",
         agent_id,
         repo,
         branch,
+        harness,
+        model,
         len(results),
+    )
+    return row
+
+
+def update_agent_runtime(
+    agent_id: str,
+    *,
+    harness: str | None | object = ...,
+    model: str | None | object = ...,
+) -> dict | None:
+    """Patch harness and/or model mid-session. Returns the agent row, or None if missing.
+
+    Use the ellipsis sentinel for "leave unchanged". Explicit None clears the column.
+    Also refreshes last_heartbeat (any call = alive).
+    """
+    sets: list[str] = ["last_heartbeat = now()"]
+    params: list = []
+    if harness is not ...:
+        sets.append("harness = %s")
+        params.append(harness)
+    if model is not ...:
+        sets.append("model = %s")
+        params.append(model)
+    if len(sets) == 1:
+        raise ValueError("update_agent_runtime requires at least one of harness, model")
+    params.append(agent_id)
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            f"""UPDATE agents SET {', '.join(sets)}
+                WHERE agent_id = %s
+                RETURNING agent_id, owner, repo, branch, display_name, harness, model,
+                          registered_at, last_heartbeat""",
+            params,
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        _extend_workdir_claims(conn, agent_id)
+        conn.commit()
+    log.info(
+        "Agent runtime updated: agent_id=%s harness=%s model=%s",
+        agent_id,
+        row.get("harness"),
+        row.get("model"),
     )
     return row
 
@@ -554,6 +617,7 @@ def list_agents(active_within_seconds: int | None = None, include_stale: bool = 
     with get_pool().connection() as conn:
         rows = conn.execute(
             f"""SELECT a.agent_id, a.owner, a.repo, a.branch, a.display_name,
+                      a.harness, a.model,
                       a.registered_at, a.last_heartbeat,
                       EXTRACT(EPOCH FROM (now() - a.last_heartbeat))::BIGINT
                           AS heartbeat_age_seconds,
@@ -648,6 +712,8 @@ def get_agent_presence_diagnostics(active_within_seconds: int | None = None, sam
                      a.repo,
                      a.branch,
                      a.display_name,
+                     a.harness,
+                     a.model,
                      a.registered_at,
                      a.last_heartbeat,
                      EXTRACT(EPOCH FROM (now() - a.last_heartbeat))::BIGINT

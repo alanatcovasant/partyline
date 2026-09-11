@@ -57,6 +57,14 @@ class ClaimScope(str, Enum):
 # --------------------------------------------------------------------------- #
 
 
+def _blank_to_none(value: str | None) -> str | None:
+    """Optional freeform fields: whitespace-only → null (unknown / not reported)."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 class RegisterAgent(BaseModel):
     """Register (or refresh) an agent instance (§6, §10)."""
 
@@ -65,6 +73,17 @@ class RegisterAgent(BaseModel):
     repo: str = Field(..., description="Repository the agent works against")
     branch: str | None = None
     display_name: str | None = None
+    # Optional client fingerprint. Not every harness can report these — omit when unknown.
+    # Re-register with omit/null preserves previously stored values (COALESCE); use
+    # PATCH /api/agents/{id}/runtime to change or clear mid-session.
+    harness: str | None = Field(
+        None,
+        description="Agent harness/runtime, e.g. 'cursor', 'claude-code', 'codex' (optional)",
+    )
+    model: str | None = Field(
+        None,
+        description="LLM / model id the session is running, freeform (optional)",
+    )
     workdirs: list[str] = Field(
         default_factory=list,
         description="Absolute directories this session owns; claimed as a side effect of "
@@ -75,6 +94,33 @@ class RegisterAgent(BaseModel):
     @classmethod
     def _check_workdirs(cls, v: list[str]) -> list[str]:
         return [_canonical(p) for p in v]
+
+    @field_validator("harness", "model", "display_name")
+    @classmethod
+    def _optional_text(cls, v: str | None) -> str | None:
+        return _blank_to_none(v)
+
+
+class UpdateAgentRuntime(BaseModel):
+    """Mid-session update of optional harness/model (PATCH /api/agents/{id}/runtime).
+
+    Only fields present in the request body are written — omit to leave unchanged,
+    send null to clear. Empty body is rejected (422).
+    """
+
+    harness: str | None = Field(
+        None,
+        description="Agent harness/runtime (optional; send null to clear)",
+    )
+    model: str | None = Field(
+        None,
+        description="LLM / model id (optional; send null to clear)",
+    )
+
+    @field_validator("harness", "model")
+    @classmethod
+    def _optional_text(cls, v: str | None) -> str | None:
+        return _blank_to_none(v)
 
 
 class Agent(RegisterAgent):

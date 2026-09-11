@@ -27,6 +27,7 @@ from .models import (
     PostMessage,
     RegisterAgent,
     ReleaseRequest,
+    UpdateAgentRuntime,
 )
 from .targets import infer_resource_type
 from .notify import hub
@@ -73,13 +74,46 @@ async def register_agent(body: RegisterAgent) -> dict:
         body.branch,
         body.display_name,
         body.workdirs,
+        body.harness,
+        body.model,
     )
     log.info(
-        "register_agent ok agent_id=%s owner=%s repo=%s branch=%s",
+        "register_agent ok agent_id=%s owner=%s repo=%s branch=%s harness=%s model=%s",
         body.agent_id,
         body.owner,
         body.repo,
         body.branch,
+        body.harness,
+        body.model,
+    )
+    return row
+
+
+@router.patch("/agents/{agent_id}/runtime", response_model=Agent)
+async def update_agent_runtime(agent_id: str, body: UpdateAgentRuntime) -> dict:
+    """Update harness and/or model mid-session without a full re-register.
+
+    Only fields present in the JSON body are written. Omit a field to leave it;
+    send null to clear. Empty body → 422. Unknown agent_id → 404.
+    """
+    updates = body.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=422, detail="Provide harness and/or model")
+    try:
+        row = await run_in_threadpool(
+            db.update_agent_runtime,
+            agent_id,
+            harness=updates["harness"] if "harness" in updates else ...,
+            model=updates["model"] if "model" in updates else ...,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Unknown agent_id: {agent_id}")
+    log.info(
+        "update_agent_runtime ok agent_id=%s fields=%s",
+        agent_id,
+        sorted(updates),
     )
     return row
 

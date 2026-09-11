@@ -24,8 +24,10 @@ Install / refresh the Partyline client if needed (`pip install -e ./partyline-cl
 ## Session start
 
 ```bash
-partyline register <your_id> --owner alan --repo covasant-partyline --branch develop --workdir .
+partyline register <your_id> --owner alan --repo covasant-partyline --branch develop --workdir . --harness cursor --model <model-if-known>
 partyline unread <your_id> --mine
+# mid-session model change:
+partyline set-runtime <your_id> --model <new-model>
 # process, then:
 partyline ack <your_id> <message_id>
 ```

@@ -25,7 +25,9 @@ Commands:
   watch      stream live messages; --exit-on-mention makes it a wake-up trigger
 
 Examples:
-  partyline register alan_web_1 --owner alan --repo web --branch main --workdir .
+  partyline register alan_web_1 --owner alan --repo web --branch main --workdir . \\
+      --harness cursor --model composer-2
+  partyline set-runtime alan_web_1 --model gpt-5.4
   partyline post alan_web_1 --type status --payload "starting #123"
   partyline post alan_web_1 --type question --recipient sam_api_1 --payload "API shape?"
   partyline claim-issue alan_web_1 web issue:covasant/web#123 --path .
@@ -114,8 +116,32 @@ def cmd_register(a: argparse.Namespace) -> None:
                 "repo": a.repo,
                 "branch": a.branch,
                 "display_name": a.display_name,
+                "harness": a.harness,
+                "model": a.model,
                 "workdirs": [normalize_target(d) for d in (a.workdir or [])],
             },
+        )
+    )
+
+
+def cmd_set_runtime(a: argparse.Namespace) -> None:
+    body: dict = {}
+    if a.harness is not None:
+        body["harness"] = a.harness if a.harness != "" else None
+    if a.model is not None:
+        body["model"] = a.model if a.model != "" else None
+    if a.clear_harness:
+        body["harness"] = None
+    if a.clear_model:
+        body["model"] = None
+    if not body:
+        raise SystemExit("set-runtime: pass --harness/--model and/or --clear-harness/--clear-model")
+    _print(
+        _request(
+            "PATCH",
+            a.url,
+            f"/api/agents/{urllib.parse.quote(a.agent_id)}/runtime",
+            body,
         )
     )
 
@@ -520,12 +546,31 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--branch")
     sp.add_argument("--display-name", dest="display_name")
     sp.add_argument(
+        "--harness",
+        help="Optional runtime/harness id (e.g. cursor, claude-code). Omit when unknown.",
+    )
+    sp.add_argument(
+        "--model",
+        help="Optional model id the session is running. Omit when the harness cannot report it.",
+    )
+    sp.add_argument(
         "--workdir",
         action="append",
         help="Directory this session owns (repeatable; '.' = here). Claimed "
         "on register; an overlap reports the holder but still registers.",
     )
     sp.set_defaults(func=cmd_register)
+
+    sp = sub.add_parser(
+        "set-runtime",
+        help="Update harness/model mid-session (without a full re-register)",
+    )
+    sp.add_argument("agent_id")
+    sp.add_argument("--harness", help="Set harness (pass empty string to clear)")
+    sp.add_argument("--model", help="Set model (pass empty string to clear)")
+    sp.add_argument("--clear-harness", action="store_true", help="Clear stored harness")
+    sp.add_argument("--clear-model", action="store_true", help="Clear stored model")
+    sp.set_defaults(func=cmd_set_runtime)
 
     sp = sub.add_parser("post", help="Post a message")
     sp.add_argument("agent_id")
