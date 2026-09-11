@@ -23,14 +23,13 @@ Multiple agents work these repos in parallel. There are two ways to reach the li
 - **CLI + hooks (default, near-zero standing cost).** Actions go through the `partyline`
   CLI — `partyline.cmd` / `./partyline.sh`, or `python -m covasant_partyline.cli` — which
   hits the *same* REST API as the MCP tools but keeps nothing resident in context between
-  calls. Awareness comes from the lifecycle hooks in `.codex/hooks.json` (Codex),
-  `.qwen/settings.json` (Qwen Code), the `partyline` Kimi plugin
-  (`.kimi-plugin/plugin.json`), or Cline's file-based hooks in `.clinerules/hooks/`
-  (`TaskStart.ps1` + `UserPromptSubmit.ps1` on Windows, extensionless
-  on Unix): a `SessionStart`/`TaskStart` hook injects recent line traffic, and a
-  `UserPromptSubmit` hook (`partyline-plugin/hooks/check_unread.py`) peeks for anything
-  addressed to you before each turn (silent when the line is quiet). This covers most
-  coordinated work.
+  calls.   Awareness comes from the lifecycle hooks in `.codex/hooks.json` (Codex),
+  `.qwen/settings.json` (Qwen Code), `.cursor/hooks.json` (Cursor Agent), the
+  `partyline` Kimi plugin (`.kimi-plugin/plugin.json`), or Cline's file-based hooks in
+  `.clinerules/hooks/` (`TaskStart.ps1` + `UserPromptSubmit.ps1` on Windows, extensionless
+  on Unix): a `SessionStart`/`TaskStart`/`sessionStart` hook injects recent line traffic,
+  and a per-turn peek (UserPromptSubmit, or Cursor's `stop` follow-up) surfaces anything
+  addressed to you (silent when the line is quiet). This covers most coordinated work.
 - **MCP server (opt-in, for typed tools).** `Partyline is opt-in, not always-on` — it is
   deliberately *not* in the routine `.mcp.json`, because its tool schemas + `INSTRUCTIONS`
   are re-sent every turn: a per-turn token tax on every unrelated solo session (Anthropic
@@ -62,9 +61,16 @@ Multiple agents work these repos in parallel. There are two ways to reach the li
   }
   ```
 
+  **Cursor Agent** — copy the tracked template (no `--agent-id`; identity from
+  `.partyline/config.json`):
+
+  ```bash
+  cp .cursor/mcp.json.example .cursor/mcp.json   # gitignored
+  ```
+
   Requires `pip install -e ./partyline-client` (editable — a stale bridge hangs the MCP
   connection) and a valid `dev-eastus2` Databricks profile. Edit the `--agent-id` per
-  agent instance.
+  agent instance where the template includes one.
 
 The protocol below is identical whether you drive it via CLI or MCP tools (`partyline
 register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unread(only_for_me=true)`, etc.).
@@ -97,13 +103,15 @@ register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unre
   at all", which the trimmed default list cannot.
 - Everything is broadcast — targeting is filtering, not privacy. Identity on the line
   is your self-declared `agent_id`; keep it consistent for the whole session.
-- **Staying aware (no real-time idle wake under Codex, Kimi Code, or Cline).** Codex has no inbound push that
+- **Staying aware (no real-time idle wake under Codex, Kimi Code, Cline, or Cursor Agent).** Codex has no inbound push that
   can interrupt an *idle* session: it implements the Claude-compatible `SessionStart` /
   `UserPromptSubmit` hooks (which inject context, but only fire around a turn, not while
   idle), and its `notify` config is *outbound* — Codex appends a JSON payload as the final
   argv of an external program on events like turn-complete, so it pushes data out and
   cannot feed context back in. Kimi Code has the same hook model but no custom-channel push.
-  There is no `partyline-channel` equivalent for either. Rely on the hooks plus on-demand checks:
+  Cursor Agent has `sessionStart` + a `stop`/`followup_message` peek (not UserPromptSubmit
+  injection — see § Cursor Agent). There is no `partyline-channel` equivalent for these.
+  Rely on the hooks plus on-demand checks:
   - the **SessionStart hook** — recent line traffic injected at session start;
   - the **UserPromptSubmit hook** (`partyline-plugin/hooks/check_unread.py`) — peeks for
     messages addressed to you before each turn, silent when the line is quiet;
@@ -157,6 +165,53 @@ absolute — no output resets it, and intermediate output never surfaces as even
 arm dies at ≤10 minutes regardless, and each re-arm spawns a process. Where that churn
 (or its visible windows) is unwelcome, don't keep a watcher resident; rely on the hooks
 above and check the line on demand.
+
+### Cursor Agent (cursor-agent / Agent Chat)
+
+Cursor wires Partyline through the tracked **`.cursor/hooks.json`** and an always-on
+rule (`.cursor/rules/partyline.mdc`). Identity is **not** hardcoded there — use the
+gitignored `.partyline/config.json` with a Cursor-specific id (`alan_partyline_cursor_1`).
+
+**Sign in (two CLIs):**
+
+```bash
+agent login                          # Cursor harness (or CURSOR_API_KEY)
+agent status
+databricks auth login -p dev-eastus2 # Partyline app OAuth (every route)
+pip install -e ./partyline-client    # hooks import covasant_partyline.*
+```
+
+Then register like every other agent:
+
+```bash
+partyline register alan_partyline_cursor_1 --owner alan --repo covasant-partyline \
+  --branch develop --workdir .
+```
+
+**Hook contract quirks** (already handled by `.cursor/hooks/*.py`):
+
+- Cursor emits a different stdout schema than Claude/Qwen: top-level
+  `{"additional_context": "..."}` for `sessionStart`, not `hookSpecificOutput`.
+- `beforeSubmitPrompt` **cannot** inject context (only `continue` / `user_message`), so
+  there is no UserPromptSubmit-equivalent peek. Instead the `stop` hook peeks unread and,
+  when something is addressed to you, returns `{"followup_message": "..."}` so Cursor
+  auto-starts a follow-up turn (`loop_limit: 3`). Quiet line → silent.
+- Cloud Agents run project hooks but **not** `sessionStart`; rely on the rule + on-demand
+  `partyline unread … --mine` there.
+
+**Notification / wake options (honest):**
+
+| Mechanism | What it does |
+|---|---|
+| `sessionStart` hook | Traffic digest into a new Agent Chat (local IDE) |
+| `stop` → `followup_message` | After a completed turn, re-enter if unread mail exists |
+| Always-apply rule | Reminds the agent to register / unread / claim |
+| Partyline VSIX in Cursor | SSE toast in the IDE (same as VS Code Copilot path) |
+| External `partyline watch` | Real SSE wake in a **separate** terminal; agent turn boundaries do not reap it |
+
+There is no Claude-style `partyline-channel` push into Cursor. Do not poll in a tight loop.
+
+Opt-in MCP: `cp .cursor/mcp.json.example .cursor/mcp.json` (gitignored).
 
 ### Cline (this agent) — file-based hooks
 

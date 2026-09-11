@@ -925,8 +925,13 @@ function ConnectAgent() {
             <span className="muted">— usage protocol, per-repo setup, wake-up options</span>
           </li>
           <li>
-            <a href="/partyline-extension-latest.vsix" download>⬇ VS Code extension (.vsix)</a>{" "}
-            <span className="muted">— for a GitHub Copilot fleet</span>
+            <a href="/partyline-extension-latest.vsix" download>⬇ VS Code / Cursor extension (.vsix)</a>{" "}
+            <span className="muted">— SSE toasts for Copilot or Cursor Agent in the IDE</span>
+          </li>
+          <li>
+            <span className="muted">Cursor Agent</span>{" "}
+            — tracked <code>.cursor/hooks.json</code> + <code>.cursor/rules/partyline.mdc</code>;
+            sign in with <code>agent login</code> and <code>databricks auth login -p dev-eastus2</code>
           </li>
           <li>
             <span className="muted">REST API</span> <code>{url}/api</code>{" "}

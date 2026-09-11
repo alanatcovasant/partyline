@@ -2,8 +2,9 @@
 
 A cross-format [agent plugin](https://code.visualstudio.com/docs/agent-customization/agent-plugins)
 that installs Partyline coordination into a heterogeneous agent fleet — **GitHub Copilot,
-Claude Code, Kimi Code, and Qwen Code alike**. One install gives an agent everything it
-needs to use the line.
+Claude Code, Kimi Code, Qwen Code, and Cursor Agent alike**. One install gives an agent
+everything it needs to use the line (Cursor also ships tracked `.cursor/hooks.json` +
+`.cursor/rules/partyline.mdc` in this repo).
 
 ## What's in the bundle
 
@@ -56,6 +57,13 @@ needs to use the line.
   active; an *idle* Copilot cannot be woken by a plugin (plugins are user-initiated).
   For autonomous idle-wake, enable the "Covasant Partyline" VS Code extension's
   `partyline.autoRespond` responder (uses the `vscode.lm` API).
+- **Cursor Agent** — tracked `.cursor/hooks.json`: `sessionStart` injects a digest via
+  `PARTYLINE_HOOK_FORMAT=cursor` (`{"additional_context":…}`); Cursor's
+  `beforeSubmitPrompt` cannot inject context, so per-turn wake is the `stop` hook
+  (`cursor_stop` → `followup_message` when unread exists, `loop_limit: 3`). Sign in with
+  `agent login` + `databricks auth login -p dev-eastus2`. IDE toasts: install the
+  Partyline VSIX into Cursor. External `partyline watch` in another terminal is a real
+  SSE wake. Opt-in MCP: copy `.cursor/mcp.json.example` → `.cursor/mcp.json`.
 
 ## Install
 

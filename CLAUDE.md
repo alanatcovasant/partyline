@@ -23,12 +23,13 @@ Multiple agents work these repos in parallel. There are two ways to reach the li
 - **CLI + hooks (default, near-zero standing cost).** Actions go through the `partyline`
   CLI — `partyline.cmd` / `./partyline.sh`, or `python -m covasant_partyline.cli` — which
   hits the *same* REST API as the MCP tools but keeps nothing resident in context between
-  calls. Awareness comes from the lifecycle hooks in `.claude/settings.json` (Claude Code),
-  the `partyline` Kimi plugin (Kimi Code), or Cline's file-based hooks in `.clinerules/hooks/`
-  (`TaskStart.ps1` + `UserPromptSubmit.ps1` on Windows, extensionless on Unix): a
-  `SessionStart`/`TaskStart` hook injects recent line traffic, and a `UserPromptSubmit` hook
-  (`partyline-plugin/hooks/check_unread.py`) peeks for anything addressed to you before each
-  turn (silent when the line is quiet). This covers most coordinated work.
+  calls.   Awareness comes from the lifecycle hooks in `.claude/settings.json` (Claude Code),
+  the `partyline` Kimi plugin (Kimi Code), Cline's file-based hooks in `.clinerules/hooks/`
+  (`TaskStart.ps1` + `UserPromptSubmit.ps1` on Windows, extensionless on Unix), or Cursor's
+  `.cursor/hooks.json` (see `AGENTS.md` § Cursor Agent): a `SessionStart`/`TaskStart`/
+  `sessionStart` hook injects recent line traffic, and a per-turn peek (UserPromptSubmit
+  or Cursor's `stop` follow-up) surfaces anything addressed to you (silent when the line
+  is quiet). This covers most coordinated work.
 - **MCP server (opt-in, for typed tools).** `Partyline is opt-in, not always-on` — it is
   deliberately *not* in the routine `.mcp.json`, because its tool schemas + `INSTRUCTIONS`
   are re-sent every turn: a per-turn token tax on every unrelated solo session (Anthropic

@@ -3,8 +3,8 @@
 Stdlib-only, fail-silent: a broken hook must never block a session, so every error
 path exits 0 with no output. Prints nothing when the line is quiet.
 
-Wire it in .claude/settings.json (Claude Code), .codex/hooks.json (Codex), or
-.qwen/settings.json (Qwen Code):
+Wire it in .claude/settings.json (Claude Code), .codex/hooks.json (Codex),
+.qwen/settings.json (Qwen Code), or `.cursor/hooks.json` (Cursor Agent):
 
     "hooks": {
       "SessionStart": [{"hooks": [{"type": "command", "command":
@@ -14,6 +14,11 @@ Wire it in .claude/settings.json (Claude Code), .codex/hooks.json (Codex), or
 For Qwen Code, set `PARTYLINE_HOOK_FORMAT=qwen` in the hook entry's `env` — Qwen injects
 context only from the JSON `{"hookSpecificOutput": {"hookEventName": "SessionStart",
 "additionalContext": "..."}}` envelope, not from plain stdout.
+
+For Cursor Agent, set `PARTYLINE_HOOK_FORMAT=cursor` (the `.cursor/hooks/` shims do) so
+this module emits Cursor's top-level `{"additional_context": "..."}` envelope. Cursor's
+`beforeSubmitPrompt` cannot inject context — per-turn wake uses the `stop` hook +
+`cursor_stop` format instead (see check_unread).
 
 For Cline, wire it as `.clinerules/hooks/TaskStart.ps1` (Cline has no SessionStart event;
 TaskStart is the analog). Set `PARTYLINE_HOOK_FORMAT=cline` so this module emits Cline's
@@ -178,6 +183,10 @@ def _emit(context: str) -> None:
     # plain stdout is not added to the session. hookEventName is required.
     if fmt == "qwen":
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}))
+        return
+    # Cursor Agent sessionStart: top-level additional_context (not Claude's envelope).
+    if fmt == "cursor":
+        print(json.dumps({"additional_context": context}))
         return
     # Claude Code / Codex SessionStart hooks read plain markdown from stdout.
     print(context)

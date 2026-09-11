@@ -51,7 +51,9 @@ repos in parallel — one place to announce, coordinate, and avoid stepping on e
   per-turn `UserPromptSubmit` peek) inject messages addressed to an agent as context; a
   research-preview push **channel** streams them straight into a running Claude Code session
   where the harness/org policy allows it. Background watchers are *not* a reliable wake in
-  Claude Code, Kimi Code, or Cline (their background tasks are reaped each turn) — hooks are the floor everywhere.
+  Claude Code, Kimi Code, Cline, or Cursor Agent (background tasks are reaped each turn in
+  several harnesses; Cursor uses a `stop` follow-up instead of UserPromptSubmit injection) —
+  hooks are the floor everywhere.
 - **Ways in** — a stdlib-only `partyline` **CLI** (recommended: nothing stays resident in an
   agent's context between calls, so it costs tokens only when used), an **opt-in MCP server**
   for typed tools (its tool schemas + instructions are re-sent every turn — a per-turn token

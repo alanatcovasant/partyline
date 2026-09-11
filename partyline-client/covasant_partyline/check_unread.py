@@ -1,14 +1,17 @@
 """Partyline lifecycle hook: inject messages addressed to this agent as context.
 
-Runs on SessionStart / UserPromptSubmit in VS Code, Claude Code, Qwen Code, and Cline.
-VS Code and Claude Code honor the `hookSpecificOutput.additionalContext` output schema;
-Qwen Code honors the same envelope but *requires* `hookEventName` inside
+Runs on SessionStart / UserPromptSubmit in VS Code, Claude Code, Qwen Code, and Cline,
+and on Cursor's `stop` (and optional `sessionStart`) via `PARTYLINE_HOOK_FORMAT=cursor` /
+`cursor_stop`. VS Code and Claude Code honor the `hookSpecificOutput.additionalContext`
+output schema; Qwen Code honors the same envelope but *requires* `hookEventName` inside
 `hookSpecificOutput` — set `PARTYLINE_HOOK_FORMAT=qwen` (the `.qwen/settings.json`
 entries in this repo do) to emit it. Cline honors
 `{"cancel": false, "contextModification": "..."}` (selected by setting
-`PARTYLINE_HOOK_FORMAT=cline`, which the Cline `.ps1` shims do). Fail-silent by contract —
-a broken hook must never block a turn, so every error path exits 0 with no output. Prints
-nothing when there's nothing addressed to you.
+`PARTYLINE_HOOK_FORMAT=cline`, which the Cline `.ps1` shims do). Cursor injects via a
+top-level `additional_context` field (`cursor`) or a `stop`-hook `followup_message`
+(`cursor_stop`) — see `.cursor/hooks.json`. Fail-silent by contract — a broken hook must
+never block a turn, so every error path exits 0 with no output. Prints nothing when
+there's nothing addressed to you.
 
 Invoke as a module so it resolves regardless of the process CWD (a relative script path
 breaks the moment a session runs from another repo):
@@ -82,6 +85,14 @@ def _emit(context: str, hook_event_name: str = "UserPromptSubmit") -> None:
     if fmt == "qwen":
         print(json.dumps({"hookSpecificOutput": {"hookEventName": hook_event_name, "additionalContext": context}}))
         return
+    # Cursor Agent: top-level additional_context (sessionStart / postToolUse).
+    if fmt == "cursor":
+        print(json.dumps({"additional_context": context}))
+        return
+    # Cursor Agent stop hook: auto-submit a follow-up turn when something is addressed to you.
+    if fmt == "cursor_stop":
+        print(json.dumps({"followup_message": context}))
+        return
     # Kimi Code appends raw stdout to context, so emit plain markdown for it.
     if os.getenv("KIMI_CODE_HOME") or os.getenv("KIMI_PLUGIN_ROOT"):
         print(context)
@@ -97,18 +108,27 @@ def main() -> None:
         pass
 
     # Drain stdin (hook payload) so the runner doesn't see a broken pipe. The Qwen Code
-    # format additionally echoes hook_event_name back inside hookSpecificOutput.
+    # format additionally echoes hook_event_name back inside hookSpecificOutput. Cursor's
+    # stop hook payload carries status + loop_count — only auto-follow up on a clean
+    # completion (Cursor ignores followup_message otherwise).
     hook_event_name = "UserPromptSubmit"
+    cursor_stop_ok = True
     try:
         raw = sys.stdin.read()
         try:
             payload = json.loads(raw)
             if isinstance(payload, dict):
                 hook_event_name = payload.get("hook_event_name") or hook_event_name
+                if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") == "cursor_stop":
+                    status = payload.get("status") or "completed"
+                    cursor_stop_ok = status == "completed"
         except ValueError:
             pass
     except Exception:
         pass
+
+    if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") == "cursor_stop" and not cursor_stop_ok:
+        return
 
     # One resolution chain, shared with cli/channel/outbox/hook (cli.resolve_*): flag/env →
     # .partyline/config.json → default. Resolving from env alone here is the #1545 bug.
@@ -140,8 +160,8 @@ def main() -> None:
     shown = msgs[-MAX_SHOWN:]
     lines = [
         f"## Partyline — {len(msgs)} message(s) addressed to you (`{agent_id}`)",
-        "Respond on the line with the Partyline MCP tools (`post_message`, "
-        "`claim_resource`, …) and `ack_checkpoint` when handled.",
+        "Respond on the line with `partyline post` / MCP `post_message` (and "
+        "`partyline ack` / `ack_checkpoint` when handled).",
     ]
     for m in shown:
         frm = m.get("agent_id", "?")
@@ -149,6 +169,11 @@ def main() -> None:
         # Prefer the concise summary; fall back to payload when a message has no summary.
         text = (m.get("summary") or m.get("payload") or "").replace("\n", " ")[:200]
         lines.append(f"- #{m.get('id')} [{typ}] from {frm}: {text}")
+    if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") == "cursor_stop":
+        lines.insert(
+            1,
+            "Partyline wake: handle these, ack them, then stop — do not start unrelated work.",
+        )
     _emit("\n".join(lines), hook_event_name)
 
 

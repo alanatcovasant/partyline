@@ -33,6 +33,10 @@ scratch/**
 # Recreate from the template in AGENTS.md / the using-partyline skill.
 .clinerules/hooks/
 
+# Per-clone Cursor MCP (opt-in; copy from .cursor/mcp.json.example). Agent id must
+# resolve from .partyline/config.json — never commit a clone-specific --agent-id here.
+.cursor/mcp.json
+
 # Captured Databricks Apps runtime/deploy log (artifact, not source)
 log.txt
 deploy.stdout.txt

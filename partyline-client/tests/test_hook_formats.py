@@ -2,8 +2,9 @@
 
 Locks in the per-runtime stdout contracts of check_unread (UserPromptSubmit peek) and
 hook (SessionStart digest): Qwen Code requires hookEventName inside the JSON envelope,
-VS Code / Claude Code keep the envelope without it, Cline reads its own envelope, and
-Kimi Code reads plain markdown. Sync tests, matching the rest of this suite.
+VS Code / Claude Code keep the envelope without it, Cline reads its own envelope,
+Cursor uses top-level additional_context / followup_message, and Kimi Code reads plain
+markdown. Sync tests, matching the rest of this suite.
 """
 
 import io
@@ -50,6 +51,20 @@ def test_check_unread_cline_format(monkeypatch, capsys):
     assert out == {"cancel": False, "contextModification": "ctx"}
 
 
+def test_check_unread_cursor_format(monkeypatch, capsys):
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "cursor")
+    check_unread._emit("ctx")
+    out = _json.loads(capsys.readouterr().out)
+    assert out == {"additional_context": "ctx"}
+
+
+def test_check_unread_cursor_stop_format(monkeypatch, capsys):
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "cursor_stop")
+    check_unread._emit("ctx")
+    out = _json.loads(capsys.readouterr().out)
+    assert out == {"followup_message": "ctx"}
+
+
 def test_check_unread_kimi_emits_plain_markdown(monkeypatch, capsys):
     monkeypatch.delenv("PARTYLINE_HOOK_FORMAT", raising=False)
     monkeypatch.setenv("KIMI_CODE_HOME", "/home/x/.kimi-code")
@@ -82,6 +97,13 @@ def test_hook_cline_format(monkeypatch, capsys):
     hook._emit("digest")
     out = _json.loads(capsys.readouterr().out)
     assert out == {"cancel": False, "contextModification": "digest"}
+
+
+def test_hook_cursor_format(monkeypatch, capsys):
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "cursor")
+    hook._emit("## Partyline digest")
+    out = _json.loads(capsys.readouterr().out)
+    assert out == {"additional_context": "## Partyline digest"}
 
 
 # --------------------------------------------------------------------------- #
@@ -138,6 +160,66 @@ def test_check_unread_main_qwen_end_to_end(monkeypatch, capsys):
     assert "#42 [question] from alan_web_1: can you review the PR?" in ctx
     assert "/api/agents/alan_partyline_qwen_1/unread" in captured["url"]
     assert "only_for_me=true" in captured["url"]
+
+
+def test_check_unread_main_cursor_stop_followup(monkeypatch, capsys):
+    """Cursor stop → followup_message when status=completed and the inbox is non-empty."""
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "cursor_stop")
+    monkeypatch.delenv("PARTYLINE_TOKEN", raising=False)
+    monkeypatch.delenv("KIMI_CODE_HOME", raising=False)
+    monkeypatch.delenv("KIMI_PLUGIN_ROOT", raising=False)
+    monkeypatch.setattr(check_unread.sys, "stdin", io.StringIO('{"status": "completed", "loop_count": 0}'))
+    monkeypatch.setattr(check_unread.cli, "_load_config", lambda: {})
+    monkeypatch.setattr(check_unread.cli, "resolve_url", lambda cli_arg=None, cfg=None: "http://localhost:8000")
+    monkeypatch.setattr(check_unread.cli, "resolve_agent_id", lambda cli_arg=None, cfg=None: "alan_partyline_cursor_1")
+    monkeypatch.setattr(check_unread.cli, "resolve_profile", lambda cli_arg=None, url=None, cfg=None: None)
+
+    msgs = [
+        {
+            "id": 7,
+            "agent_id": "alan_web_1",
+            "message_type": "question",
+            "summary": "can you take the hooks PR?",
+            "payload": "long body",
+        }
+    ]
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return _json.dumps(msgs).encode()
+
+    monkeypatch.setattr(check_unread.urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+
+    check_unread.main()
+    out = _json.loads(capsys.readouterr().out)
+    assert "followup_message" in out
+    assert "alan_partyline_cursor_1" in out["followup_message"]
+    assert "#7 [question]" in out["followup_message"]
+    assert "Partyline wake" in out["followup_message"]
+
+
+def test_check_unread_main_cursor_stop_silent_when_aborted(monkeypatch, capsys):
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "cursor_stop")
+    monkeypatch.setattr(check_unread.sys, "stdin", io.StringIO('{"status": "aborted", "loop_count": 0}'))
+    monkeypatch.setattr(check_unread.cli, "_load_config", lambda: {})
+    monkeypatch.setattr(check_unread.cli, "resolve_url", lambda cli_arg=None, cfg=None: "http://localhost:8000")
+    monkeypatch.setattr(check_unread.cli, "resolve_agent_id", lambda cli_arg=None, cfg=None: "alan_partyline_cursor_1")
+    called = {"n": 0}
+
+    def boom(*a, **k):
+        called["n"] += 1
+        raise AssertionError("should not fetch when aborted")
+
+    monkeypatch.setattr(check_unread.urllib.request, "urlopen", boom)
+    check_unread.main()
+    assert capsys.readouterr().out == ""
+    assert called["n"] == 0
 
 
 # --------------------------------------------------------------------------- #

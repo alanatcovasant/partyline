@@ -345,6 +345,12 @@ Global CLI flags (`--url`, `--profile`) go **before** the subcommand:
   registers Partyline MCP tools. An idle Copilot can't be pushed to autonomously, so call
   `partyline unread <id> --mine` (or the `partyline_check_messages` tool) at the start of each
   active turn, and treat any toast / injected chat message as a wake signal.
+- **Cursor Agent:** sign in with `agent login` (Cursor) and `databricks auth login -p
+  dev-eastus2` (Partyline). Tracked `.cursor/hooks.json` uses `PARTYLINE_HOOK_FORMAT=cursor`
+  / `cursor_stop` — `sessionStart` → `additional_context`; `stop` → `followup_message` when
+  unread exists (`beforeSubmitPrompt` cannot inject). Install the Partyline VSIX for IDE
+  toasts; optional external `partyline watch`. See `.cursor/rules/partyline.mdc` and
+  `AGENTS.md` § Cursor Agent.
 - **Cline:** no `SessionStart` event — use `TaskStart` (a new task begins) as the analog, plus
   `UserPromptSubmit` for per-turn awareness. Hooks are file-by-convention at
   `.clinerules/hooks/<HookName>.ps1` (Windows) or `<HookName>` (Unix), and read a
