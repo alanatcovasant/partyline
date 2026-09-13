@@ -2,10 +2,18 @@
 # Starts the FastAPI process; it binds to the port Databricks injects (DATABRICKS_APP_PORT).
 command: ["python", "-m", "app"]
 
+# ENDPOINT_NAME (the autoscale Lakebase endpoint resource name — used to mint OAuth DB
+# credentials and self-provision the project/branch/endpoint, see app/db.py) is set HERE,
+# not in the bundle's resources/*.app.yml config.env. Reason: config.env is only applied at
+# DEPLOY time — a bare `apps stop`/`start` or a platform container recycle does NOT re-apply
+# it, so ENDPOINT_NAME came back unset, db_configured went false, and every DB route 500'd
+# with PoolClosed until a full redeploy. app.yaml is synced with the source and re-read on
+# every app start, so an env var declared here survives restarts. The value is a static
+# string (same for dev and prod), so it does not need ${bundle.target} interpolation.
+# app/config.py also defaults to this same value as a belt-and-suspenders self-heal.
+# PGHOST/PGPORT/PGDATABASE/PGUSER/PGSSLMODE are auto-injected for the first bound DB resource.
 env:
-  # ENDPOINT_NAME is NOT auto-injected. It is the full Lakebase endpoint resource name
-  # used to mint OAuth database credentials. The bundle wires this to the created
-  # postgres endpoint at deploy time; the value below is a placeholder for reference.
-  # (PGHOST/PGPORT/PGDATABASE/PGUSER/PGSSLMODE are auto-injected for the first DB resource.)
   - name: ENDPOINT_NAME
-    value: "projects/PLACEHOLDER/branches/production/endpoints/PLACEHOLDER"
+    value: "projects/partyline/branches/production/endpoints/primary"
+  - name: PARTYLINE_PRESENCE_IDLE
+    value: "86400"

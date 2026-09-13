@@ -4,12 +4,16 @@ Databricks Apps forward the calling user's access token in the
 ``X-Forwarded-Access-Token`` header when user authorization is enabled on the app
 (requires a workspace admin to enable it, plus declared ``user_api_scopes`` in the
 bundle). We use it to resolve the authenticated identity for the audit trail
-(``messages.author``) — it does NOT distinguish agent *instances*, since e.g. aura_1..6
+(``messages.author``) — it does NOT distinguish agent *instances*, since e.g. web_1..6
 may all run as the same human. Instance identity comes from the caller-supplied
 ``agent_id``; OBO answers "which principal authorized this call".
 
-The database connection itself uses the app service principal (see db.py). Minting
-per-user Lakebase credentials from this token is a deliberate future step.
+NOTE: OBO is currently NOT configured — ``user_api_scopes`` was removed from the app
+bundle (resources/covasant_partyline_app.app.yml), so the header is never forwarded and
+``resolve_author`` always returns None. Messages are recorded with a null ``author`` until
+OBO is re-enabled (restore ``user_api_scopes`` AND have a workspace admin turn on user
+authorization for the app). This is unrelated to the database connection, which uses the
+app service principal (see db.py). Minting per-user Lakebase credentials is a future step.
 """
 
 from __future__ import annotations

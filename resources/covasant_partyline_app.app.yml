@@ -3,22 +3,35 @@
 resources:
   apps:
     covasant_partyline:
-      name: "covasant-partyline"
+      # Name starts with "mcp" so MCP-server discovery (e.g. Genie Code's custom MCP
+      # server list) surfaces the app. Renaming an app REPLACES it: new URL, new
+      # service principal (schema ownership must be migrated — see scripts/).
+      name: "mcp-covasant-partyline"
       description: "Covasant Partyline — inter-agent coordination line (MCP + Lakebase Postgres)"
       source_code_path: ../covasant-partyline
+      config:
+        env:
+          - name: PARTYLINE_PRESENCE_IDLE
+            value: ${var.presence_idle_seconds}
 
-      # On-behalf-of (OBO) user authorization: forwards the caller's token so the app can
-      # resolve the authenticated identity for the audit trail (app/auth.py). Requires a
-      # workspace admin to enable user authorization on the app.
-      user_api_scopes:
-        - iam.current-user:read
+      # Teammate access: every workspace user can reach the app (bridge/CLI/dashboard).
+      # Each teammate still authenticates with their own Databricks OAuth (U2M or SP).
+      permissions:
+        - group_name: users
+          level: CAN_USE
 
-      # Bind the app to the Lakebase branch created above. This provisions the app's
-      # Postgres role and auto-injects PGHOST/PGPORT/PGDATABASE/PGUSER/PGSSLMODE.
-      # ENDPOINT_NAME (needed to mint OAuth credentials) is set in app.yaml.
+      # Runtime config (command + env) lives in app.yaml, NOT here. config.env set via the
+      # bundle is only applied at DEPLOY time: a bare `apps stop`/`start` or a platform
+      # container recycle does not re-apply it, which dropped ENDPOINT_NAME and 500'd every
+      # DB route with PoolClosed until a full redeploy. app.yaml is re-read on every app
+      # start, so env declared there survives restarts. See covasant-partyline/app.yaml.
+
+      # Bind the app to the autoscale Lakebase branch. This provisions the app service
+      # principal's Postgres role and auto-injects PGHOST/PGPORT/PGDATABASE/PGUSER/PGSSLMODE.
       resources:
         - name: partyline_db
           postgres:
-            branch: ${resources.postgres_branches.partyline_branch.name}
-            database: databricks_postgres
+            branch: projects/partyline/branches/production
+            # database_id is hyphenated; the underlying PG dbname (PGDATABASE) is databricks_postgres.
+            database: projects/partyline/branches/production/databases/databricks-postgres
             permission: CAN_CONNECT_AND_CREATE

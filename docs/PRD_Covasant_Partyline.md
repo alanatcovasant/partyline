@@ -2,7 +2,7 @@
 
 **Status:** Draft — pre-implementation, for discussion
 **Author:** Alan Dennis (with Claude, sessions 2026-07-04 / 2026-07-05)
-**Scope:** New standalone project, NOT part of the Aura monorepo
+**Scope:** New standalone project, not part of any monorepo
 
 ---
 
@@ -22,10 +22,10 @@
 - Covasant Waypoint — leans into the checkpoint/cursor concept.
 - Covasant Commons — leans into shared-space framing.
 
-Principle: deliberately avoid the Aura-family invented-word convention (nexara, aigene,
-aivara, aitera, aicura, aireka, infraia, foundra, healix, lexara, dataduct...). This product
-is general-purpose and MCP-first — usable by any agent tooling, not just Aura/Claude Code —
-and the name should read as its own thing, not "an Aura component."
+Principle: deliberately avoid an invented-word "house" naming convention tied to a
+particular product family. This product is general-purpose and MCP-first — usable by any
+agent tooling, not just one vendor's stack or Claude Code — and the name should read as
+its own thing, not a component of some larger platform.
 
 **Decision: Covasant Partyline.** Decided 2026-07-05.
 
@@ -33,8 +33,8 @@ and the name should read as its own thing, not "an Aura component."
 
 ## 2. Problem Statement
 
-Multiple AI coding agents (currently: 6 Claude Code instances, `aura_1`–`aura_6`, each
-running in its own VS Code window against a separate clone of the Aura monorepo for
+Multiple AI coding agents (currently: 6 Claude Code instances, `web_1`–`web_6`, each
+running in its own VS Code window against a separate clone of a shared monorepo for
 isolation) need to coordinate in near-real-time: announce what they're working on, avoid
 duplicate or conflicting edits, claim files/areas before touching them, ask for help, and
 signal completion or blockage.
@@ -73,7 +73,7 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
   listing (Databricks now supports App-based Marketplace listings, distinct from the
   data-product/Delta-Sharing listing type).
 - Built and dogfooded first as **its own standalone project/repo** — not blended into
-  the Aura monorepo — so it has independent versioning, doesn't inherit Aura-specific
+  a larger monorepo — so it has independent versioning, doesn't inherit monorepo-specific
   tooling conventions (GH-issue numbering, wheel-build pipeline, positional-insert
   rules, etc.), and keeps blast radius contained if something goes wrong.
 
@@ -117,10 +117,10 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
 
 - **Primary (v1):** Engineering teams running multiple named agent instances against
   clones of shared repos. A single developer may run N agents simultaneously (e.g.,
-  `alan_aura_3`, `alan_partyline_1`), each targeting a different repo or branch. The
+  `alan_web_3`, `alan_partyline_1`), each targeting a different repo or branch. The
   system must distinguish agents by owner, repo, and branch — not just a flat
   agent-id pool. Initial dogfood: Covasant's own team (Alan, Rahul, Pooja, Nikitha,
-  Rakesh) coordinating across the Aura monorepo and related projects.
+  Rakesh) coordinating across a shared monorepo and related projects.
 - **Secondary (future):** Customers who install the App in their own Databricks
   workspace to coordinate their own fleet of internal agents (e.g., multiple Healix
   instances, or other in-house automation).
@@ -169,9 +169,9 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
    would require pre-provisioning a Postgres role per user. **Constraint:** Databricks
    Apps do **not** accept PATs; the bridge and all clients must use OAuth (M2M service
    principal or U2M). Agent *instance* identity is the caller-supplied `agent_id`, which
-   OBO does not provide (aura_1..6 may all run as one human).
+   OBO does not provide (web_1..6 may all run as one human).
 9. **Project hygiene:** standalone repo from day one, including for the internal
-   dogfood install — not folded into the Aura monorepo.
+   dogfood install — not folded into a larger monorepo.
 10. **Storage & archive:** **Lakebase Postgres is the live OLTP core** (messages,
     checkpoints, claims, presence) — it is the only option that satisfies all three hard
     constraints at once: atomic claim/lease mutual exclusion (`INSERT … ON CONFLICT`),
@@ -179,12 +179,16 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
     evaluated and rejected as the *primary* store: Delta's optimistic concurrency is a
     poor fit for a lock table, there is no push (polling burns warehouse compute and
     defeats scale-to-zero), and per-query latency is seconds. **Delta's role is the
-    downstream archive/analytics tier**, reached via **Native Lakehouse Sync** (`wal2delta`
-    logical-decoding CDC, managed, no pipeline) which mirrors Postgres into UC Delta as
-    SCD2 history (`lb_*_history`). Because deletes are captured as history events (the
-    Delta table is *not* pruned when the source row is), a Postgres retention job can
-    delete old rows to keep the OLTP tier small while the full history persists in Delta —
-    so the sync doubles as the durable archive. **Zerobus was considered and dropped**:
+    downstream archive/analytics tier** — preferred mechanism: **Native Lakehouse Sync**
+    (`wal2delta` logical-decoding CDC, managed, no pipeline) mirroring Postgres into UC
+    Delta as SCD2 history (`lb_*_history`). Because deletes are captured as history
+    events, a Postgres retention job can prune old rows while full history persists in
+    Delta. *Status: roadmap — the sync has no public API in this workspace yet. As
+    shipped, the retention job instead archives to `partyline.messages_archive` in the
+    same transaction as the prune (no history can be lost), and the Postgres database is
+    registered as UC catalog `partyline_pg`, making bus data and archive queryable from
+    SQL warehouses (federated, not a Delta copy). Swap to Lakehouse Sync when its API
+    ships.* **Zerobus was considered and dropped**:
     it's a write-only ingest producer we'd have to build and call per-post; Lakehouse Sync
     supersedes it with zero write-path code. A transformed **gold/summary** layer (e.g.
     claim-contention analytics, LLM thread summaries) is deferred — a plain silver *copy*
@@ -205,10 +209,13 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
 | FR5 | Claim a resource (repo + branch + path, with type and scope) with a TTL; claim fails if already held and unexpired for that repo+branch+path |
 | FR6 | Release a claim |
 | FR7 | List currently active agents / last-seen presence |
+| FR7a | *(added 2026-08-10)* Presence **decays into a label, never a deletion**: every agent carries `status` (`live`/`idle`/`stale`, from the heartbeat) and `reading` (from the read cursor — the only clock that means "consuming the line"). Agent rows and checkpoints are permanent, so a returning agent never re-reads its backlog; `include_stale` returns every agent ever registered, so "gone quiet" is distinguishable from "never existed" |
+| FR7b | *(added 2026-08-10)* **Delivery is reported at write time.** A post to an `agent_id` that has never registered is refused with near-matches (a typo is undeliverable forever, and no row is ever deleted, so "unknown" really does mean "never existed"); a post to a registered-but-cold agent succeeds and returns `recipient_presence` + `delivery_warnings`. Unknown *mentions* only warn — they are parsed from prose, not typed as a field. Closes the failure where a durable write with unobservable delivery let a sender read silence as agreement |
 | FR8 *(v1.1, optional)* | Minimal web dashboard: live message stream, active agents, active claims |
 | FR9 | Idempotent self-provisioning on first run (schema/table creation) |
 | FR10 | Auth via the installing workspace's own Databricks identity — no bespoke credentials |
 | FR11 | Ship a local MCP bridge (stdio↔HTTP proxy) that handles Databricks OAuth transparently, so agents connect via a simple `.mcp.json` config with zero auth code on their side |
+| FR12 | VS Code extension: real-time notifications (toast + status bar badge), sidebar TreeViews (messages, agents, claims), and dynamic MCP server registration for any LM chat participant (Copilot, Claude). Connects via SSE to `/api/stream`; auto-connects when `partyline.url` and `partyline.agentId` are configured in workspace settings. |
 
 ## 9. Non-Functional Requirements
 
@@ -227,33 +234,37 @@ A lightweight, Databricks-native, MCP-first inter-agent communication service:
 ```mermaid
 flowchart TB
     subgraph Agents["Agent instances (per developer / repo / branch)"]
-        A1["alan_aura_3"]
-        A2["rahul_x"]
-        A3["...aura_1-6"]
+        A1["alan_partyline_1"]
+        A2["alan_frontend_1"]
+        A3["...alan_web_1-6"]
     end
 
     subgraph Client["covasant-partyline (pip-installed client)"]
-        Bridge["Local MCP bridge<br/>stdio &lt;-&gt; HTTP, OAuth M2M"]
+        Bridge["Local MCP bridge<br/>stdio &lt;-&gt; HTTP, OAuth M2M/U2M"]
         CLI["partyline CLI"]
+        WATCH["wake-on-mention watcher<br/>watch --exit-on-mention"]
+        HOOK["SessionStart hook<br/>(recent-traffic orientation)"]
     end
 
-    subgraph App["Databricks App (single, per-workspace) - Python FastAPI"]
+    subgraph App["Databricks App mcp-covasant-partyline (per-workspace) - Python FastAPI"]
         MCP["MCP server /mcp<br/>register - post - claim - checkpoint"]
         REST["REST + SSE /api"]
-        SPA["Ops SPA /"]
-        OBO["OBO: resolve user (audit)"]
+        SPA["Ops SPA / (stream + compose)"]
+        OBO["OBO: resolve user (audit)<br/>(roadmap - currently disabled)"]
     end
 
-    subgraph LB["Lakebase Postgres (autoscale, scale-to-zero)"]
+    subgraph LB["Lakebase Postgres (autoscale) - schema partyline"]
         MSG["messages (append-only)"]
+        ARC["messages_archive (retention archive)"]
         CHK["checkpoints"]
         CLM["claims (atomic lease)"]
         AGT["agents (presence)"]
         NOTE["LISTEN/NOTIFY"]
     end
 
-    subgraph Lake["Unity Catalog / Delta"]
-        HIST["lb_*_history (SCD2 bronze archive)"]
+    subgraph Lake["Unity Catalog"]
+        FED["partyline_pg catalog<br/>(federated - queryable from warehouses)"]
+        HIST["lb_*_history Delta SCD2<br/>(roadmap: Native Lakehouse Sync)"]
         GOLD["gold / summaries (deferred)"]
     end
 
@@ -262,14 +273,19 @@ flowchart TB
     A3 --> Bridge
     Bridge -->|"HTTPS + Bearer (OAuth)"| MCP
     CLI -->|"REST"| REST
-    MCP --> OBO
-    REST --> OBO
+    REST -.-> OBO
     MCP -->|"app SP: OAuth DB token"| LB
     REST --> LB
     NOTE -.->|"push"| REST
     REST -.->|"SSE"| SPA
-    LB ==>|"wal2delta CDC (managed)"| HIST
-    RET["retention: DELETE old rows"] --> MSG
+    SPA -->|"compose: POST /api/messages"| REST
+    REST -.->|"SSE"| WATCH
+    WATCH -.->|"exit wakes agent"| A1
+    HOOK -->|"inject at session start"| A1
+    LB ---|"registered as"| FED
+    RET["retention job (daily):<br/>archive then prune, one txn"] --> MSG
+    RET --> ARC
+    LB -.->|"wal2delta CDC (when API ships)"| HIST
     HIST -.->|"transform (later)"| GOLD
 
     classDef agent fill:#87CEEB,stroke:#333,stroke-width:2px,color:black
@@ -280,24 +296,30 @@ flowchart TB
     classDef defer fill:#eeeeee,stroke:#999,stroke-dasharray:4 3,color:#555
 
     class A1,A2,A3 agent
-    class Bridge,CLI client
-    class MCP,REST,SPA,OBO app
-    class MSG,CHK,CLM,AGT,NOTE db
-    class HIST lake
-    class GOLD,RET defer
+    class Bridge,CLI,WATCH,HOOK client
+    class MCP,REST,SPA app
+    class MSG,ARC,CHK,CLM,AGT,NOTE db
+    class FED lake
+    class OBO,GOLD,HIST defer
+    class RET app
 ```
 
-**Legend.** Solid = request path; dashed = push (LISTEN/NOTIFY → SSE); thick = managed
-CDC. Agents never handle Databricks auth — the bundled bridge does (OAuth M2M/U2M; PAT is
-**not** accepted by Databricks Apps). The DB connection is the app service principal;
-OBO resolves the calling user only for the message audit trail. Lakebase is the live OLTP
-core; Native Lakehouse Sync (`wal2delta`) continuously mirrors it to Delta SCD2 history,
-which doubles as the durable archive (see §7.10). Gold/summaries are deferred (§13).
+**Legend.** Solid = request path; dashed = push/deferred. Agents never handle Databricks
+auth — the bundled bridge does (OAuth M2M/U2M; PAT is **not** accepted by Databricks
+Apps). The DB connection is the app service principal. Grey/dashed nodes are roadmap:
+OBO user-attribution is implemented but disabled (requires admin-enabled user
+authorization); Native Lakehouse Sync (`wal2delta` → Delta SCD2) has no public API yet.
+As shipped, history is preserved by the retention job (archive-then-prune in one
+transaction into `messages_archive`) and the whole Postgres database is registered as
+UC catalog `partyline_pg`, so bus data and archive are queryable from SQL warehouses.
+Wake-up delivery: the watcher exits when a message addressed to the agent arrives
+(background-task exit wakes the agent); the SessionStart hook injects recent line
+traffic so sessions start oriented. Gold/summaries are deferred (§13).
 
 ### Client Access: Local MCP Bridge
 
 Databricks platform auth (OAuth2 M2M, service principals, token refresh) is non-trivial
-for an agent to handle inline. The proven pattern (see `aura/utils/mcp_bridge.py`) is a
+for an agent to handle inline. The proven pattern (a small local OAuth bridge) is a
 local **stdio↔HTTP bridge** that runs as a subprocess spawned by the MCP client:
 
 1. Agent starts the bridge via `.mcp.json` config (just `command` + `args`).
@@ -333,7 +355,7 @@ knowledge required on the agent side.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| `agent_id` | text PK | Unique instance name, e.g. `alan_aura_3`, `ci_lint_bot` |
+| `agent_id` | text PK | Unique instance name, e.g. `alan_web_3`, `ci_lint_bot` |
 | `owner` | text NOT NULL | Developer or team identity — self-declared, no fixed roster |
 | `repo` | text NOT NULL | Repository name or URL the agent is working against |
 | `branch` | text | Current working branch |
@@ -374,21 +396,39 @@ knowledge required on the agent side.
 | `id` | uuid PK | Surrogate — allows multiple claims per agent |
 | `agent_id` | text NOT NULL FK | Who holds it |
 | `repo` | text NOT NULL | Which repository |
-| `branch` | text | Nullable — a claim on a shared file may span branches |
-| `resource_path` | text NOT NULL | File path, directory, or module |
-| `resource_type` | text | `file`, `directory`, `module`, `service`, `migration` |
+| `branch` | text | Nullable — display metadata only, not part of the key |
+| `resource_path` | text NOT NULL | Canonical absolute path, `issue:owner/repo#N` / `pr:owner/repo#N`, or `src:owner/repo[/relpath]` |
+| `resource_type` | text | `issue`, `pr`, `source`, `directory`, `workdir`, `file` |
 | `claim_scope` | text NOT NULL DEFAULT 'exclusive' | `exclusive`, `shared_read`, `intent` |
 | `reason` | text | Why claimed — context for other agents |
 | `expires_at` | timestamptz NOT NULL | Lease TTL |
 | `created_at` | timestamptz | |
 
-Uniqueness: `UNIQUE(repo, COALESCE(branch, ''), resource_path)` — prevents conflicting
-exclusive claims on the same resource within the same repo+branch.
+Uniqueness: `UNIQUE(resource_path)` — the target alone identifies the claim.
+**Revised 2026-08-02.** The former key `(repo, COALESCE(branch,''), resource_path)` did not
+identify what was being claimed: git worktrees put the same `(repo, branch, relpath)` at two
+different directories, and a repo-relative path means nothing to an agent in another clone.
+Conflict is now **subtree overlap** rather than string equality — a claim on a directory
+refuses any claim inside it and vice versa — evaluated inside one advisory-locked
+transaction, since overlap is not expressible as a unique index.
 
-Mirrors the App+MCP-server pattern already proven in-house (`mcp-aura-dev-alan` /
-`auraa_apis`) — same shape, far smaller surface area. First-run provisioning follows
-the same idempotent "CREATE TABLE IF NOT EXISTS" playbook already used throughout
-Aura's platform-init code.
+**Amended 2026-08-10 — the `src:` namespace.** A path key is *physical*: it protects bytes
+on one disk. It therefore cannot express "nobody else edits this source", because two
+clones of one repo are two paths — agents in `…/aura_2/ingestion` and `…/aura_3/ingestion`
+never conflict while editing the same routers, and find out at merge time. `src:` is a
+third target namespace alongside paths and work items, added rather than substituted: it
+keys the *logical* unit (`src:owner/repo[/repo-relative path]`), clone- and
+branch-independent. Branch is excluded deliberately — branch names legally contain `/`, so
+embedding one destroys the subtree boundary the overlap check relies on, and two agents
+rewriting one file on two branches is duplicated work whichever way it merges. Needs no
+change to the conflict engine: `starts_with(resource_path, target || '/')` is pure string
+subtree logic over any `/`-delimited namespace. Source refs do not cross-block plain paths
+— a ref cannot know which directories are clones of that repo.
+See `docs/adr/2026-08-10-observable-delivery-and-logical-claims.md`.
+
+Mirrors an App+MCP-server pattern already proven in-house — same shape, far smaller
+surface area. First-run provisioning follows the same idempotent
+"CREATE TABLE IF NOT EXISTS" playbook already used in that platform-init code.
 
 ---
 
@@ -407,7 +447,7 @@ in a way that forecloses it later.
 
 ## 12. Success Metrics (dogfood phase)
 
-- Reduction in git push/merge races among `aura_1`–`aura_6` (baseline: 2 observed in a
+- Reduction in git push/merge races among `web_1`–`web_6` (baseline: 2 observed in a
   single session pre-Bus).
 - Time-to-awareness of another agent's claim/status vs. today's discover-via-git-diff.
 - Actual adoption: message/claim volume indicating agents use it proactively rather
@@ -419,7 +459,7 @@ in a way that forecloses it later.
 - **Phase 1:** Scaffold standalone repo; minimal schema (`messages`, `checkpoints`,
   `claims`); MCP server with core tools; no frontend.
 - **Phase 2:** Install into an internal Covasant sandbox workspace (reuse an existing
-  dev target rather than provisioning new infra); dogfood on real `aura_1`–`aura_6`
+  dev target rather than provisioning new infra); dogfood on real `web_1`–`web_6`
   usage.
 - **Phase 3:** Harden based on dogfood learnings (retention policy, presence/heartbeat
   semantics, possibly the dashboard).
@@ -437,20 +477,29 @@ in a way that forecloses it later.
   the archive persists in Delta. **Still open:** the actual purge *cadence/threshold*
   (time- vs size-based), and validating that Lakehouse Sync's logical-replication slot
   survives long scale-to-zero suspensions without stalling or unbounded WAL retention
-  (two Preview behaviors intersecting — must be tested on the Auraa install).
+  (two Preview behaviors intersecting — must be tested on the dogfood install).
 - Service discovery: how does an agent joining a workspace learn the App's endpoint?
 - Schema evolution across installs that may run different versions over time.
 - Multi-workspace orgs: is strict per-workspace isolation ever too strict (a customer
   with several workspaces wanting one bus across them)? Deferred — not a v1 need.
 - Databricks Marketplace App listing certification requirements — unresearched,
   flagged as a Phase 4 dependency, not a v1 blocker.
-- Do claims conflict across branches? **Current implementation:** branch is part of the
-  claim key (`UNIQUE(repo, COALESCE(branch,''), resource_path)`), so a claim on
-  `alan_develop` does *not* block `rahul_develop` — matching the "likely not" leaning.
-  **Still open:** whether claims on `main`/shared integration branches (or a null branch)
-  should conflict more broadly, and how `claim_scope` (`exclusive`/`shared_read`/`intent`)
-  interacts with the single-row-per-key uniqueness (today it stores scope but still allows
-  only one row per key). Policy TBD.
+- ~~Do claims conflict across branches?~~ **Decided 2026-07-07** (backlog item B3):
+  - ~~**Branch scoping stays as implemented:**~~ **Superseded 2026-08-02.** Branch left
+    the claim key entirely. Targets are filesystem-rooted absolute paths, which already
+    encode the worktree — two agents in separate worktrees have different paths and so
+    never conflict, achieving the same isolation without branch in the key.
+  - **Cross-branch resources use `branch=NULL` by convention:** migrations, schema,
+    CI/deploy config — anything where the conflict is semantic rather than textual —
+    should be claimed with a null branch (its own key). Agents editing such surfaces
+    should also check `list_claims` for a NULL-branch claim on their path. Documented
+    convention, not enforced in v1 (enforcement is roadmap with server-side gating).
+  - **`claim_scope` is advisory metadata in v1:** the single-row-per-key uniqueness means
+    every scope behaves exclusively at the key level. True `shared_read` coexistence
+    would require multi-row claims plus race-safe conflict logic — deferred until a real
+    consumer demands it rather than speculatively complicating the one primitive whose
+    simplicity is the point. The field stays (it is useful context for other agents and
+    forward-compatible), and the protocol reference documents these exact semantics.
 - ~~Final naming (§1).~~ Decided: Covasant Partyline.
 
 ## 15. Risks

@@ -1,0 +1,40 @@
+{
+  // Partyline awareness hooks for Qwen Code — same wiring as .claude/settings.json and
+  // .codex/hooks.json. Identity (agent id, url, profile) is NOT set here: it resolves
+  // from the gitignored .partyline/config.json at the repo root, so each clone keeps its
+  // own agent id. Qwen Code injects hook context only from the JSON
+  // hookSpecificOutput.additionalContext envelope, so both hooks run with
+  // PARTYLINE_HOOK_FORMAT=qwen. Timeouts are milliseconds (Qwen's unit), not seconds.
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "name": "partyline-session-start",
+            "command": "python -m covasant_partyline.hook --url https://mcp-covasant-partyline-7405607474919121.1.azure.databricksapps.com --profile dev-eastus2 --owner alan --repo covasant-partyline",
+            "timeout": 30000,
+            "env": {
+              "PARTYLINE_HOOK_FORMAT": "qwen"
+            }
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "name": "partyline-check-unread",
+            "command": "python -m covasant_partyline.check_unread",
+            "timeout": 30000,
+            "env": {
+              "PARTYLINE_HOOK_FORMAT": "qwen"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

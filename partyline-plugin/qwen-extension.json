@@ -1,0 +1,15 @@
+{
+  "name": "partyline",
+  "version": "0.1.0",
+  "skills": "skills",
+  "agents": "agents",
+  "mcpServers": {
+    "partyline": {
+      "command": "python",
+      "args": ["-m", "covasant_partyline.bridge"],
+      "env": {
+        "DATABRICKS_CONFIG_PROFILE": "dev-eastus2"
+      }
+    }
+  }
+}

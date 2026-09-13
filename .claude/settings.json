@@ -1,34 +1,73 @@
 {
   "permissions": {
     "allow": [
-      "Bash(rm \"c:/Users/alana/Code/Repos/covasant-agent-bus/covasant-agent-bus/databricks.yml\" && echo \"deleted nested databricks.yml\")",
-      "Bash(python - C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-agent-bus/f07007e9-1c3b-4d82-a434-a1c9230004a2/scratchpad/schema.json)",
-      "Bash(python -m py_compile app/*.py)",
-      "Bash(python -m py_compile cli/partyline.py)",
-      "Bash(python cli/partyline.py --help)",
-      "Bash(mkdir -p partyline-client)",
-      "Bash(mv covasant_partyline partyline-client/covasant_partyline)",
-      "Bash(mv partyline-client/covasant_partyline/pyproject.toml partyline-client/pyproject.toml)",
-      "Bash(rm -rf cli)",
-      "Bash(python -m py_compile covasant-agent-bus/app/*.py partyline-client/covasant_partyline/*.py)",
-      "Bash(python partyline-client/covasant_partyline/cli.py --help)",
-      "Bash(python partyline-client/covasant_partyline/cli.py claim --help)",
-      "Bash(python partyline-client/covasant_partyline/cli.py post --help)",
-      "Bash(python partyline-client/covasant_partyline/cli.py unread --help)",
       "WebFetch(domain:docs.databricks.com)",
       "Bash(command -v mmdc)",
       "Bash(npx --no-install @mermaid-js/mermaid-cli --version)",
-      "Bash(mmdc -i C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-agent-bus/f07007e9-1c3b-4d82-a434-a1c9230004a2/scratchpad/arch.mmd -o C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-agent-bus/f07007e9-1c3b-4d82-a434-a1c9230004a2/scratchpad/arch.png -b transparent)",
       "Bash(python partyline-client/covasant_partyline/bridge.py --help)",
-      "Bash(mmdc -i C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-agent-bus/f07007e9-1c3b-4d82-a434-a1c9230004a2/scratchpad/prd_arch.mmd -o C:/Users/alana/AppData/Local/Temp/claude/c--Users-alana-Code-Repos-covasant-agent-bus/f07007e9-1c3b-4d82-a434-a1c9230004a2/scratchpad/prd_arch.png -b transparent)",
-      "Bash(mv covasant-agent-bus *)",
-      "Bash(mv src/covasant_agent_bus src/covasant_partyline_jobs)",
-      "Bash(mv resources/covasant_agent_bus_app.app.yml resources/covasant_partyline_app.app.yml)",
-      "Bash(rm -rf .databricks/bundle)",
-      "Bash(python -m py_compile covasant-partyline/app/*.py partyline-client/covasant_partyline/*.py src/covasant_partyline_jobs/*.py)"
+      "Bash(python -m py_compile covasant-partyline/app/*.py partyline-client/covasant_partyline/*.py src/covasant_partyline_jobs/*.py)",
+      "Bash(databricks bundle *)",
+      "Bash(python -c ' *)",
+      "Bash(cd \"c:/Users/alana/Code/Repos/covasant-partyline\" *)",
+      "Bash(git symbolic-ref *)",
+      "Bash(git rm *)",
+      "Bash(DATABRICKS_CONFIG_PROFILE=dev-eastus2 python -c ' *)",
+      "Bash(pip install *)",
+      "Bash(python -m py_compile scripts/provision_lakebase.py src/covasant_partyline_jobs/main.py covasant-partyline/app/db.py)",
+      "Bash(ENDPOINT_NAME=\"projects/partyline/branches/production/endpoints/primary\" DATABRICKS_CONFIG_PROFILE=dev-eastus2 python scripts/provision_lakebase.py)",
+      "mcp__plugin_playwright_playwright__browser_take_screenshot",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\([m['id'] for m in d]\\)\")",
+      "Bash(rm -rf .playwright-mcp covasant-partyline/.playwright-mcp)",
+      "Bash(python -c \"import sys,json; print\\('jobs:', list\\(json.load\\(sys.stdin\\)['resources']['jobs'].keys\\(\\)\\)\\)\")",
+      "Bash(docker compose *)",
+      "Bash(docker ps *)",
+      "Bash(docker --version)",
+      "Bash(docker context *)",
+      "Bash(wsl --status)",
+      "Bash(docker info *)",
+      "Bash(docker version *)",
+      "mcp__plugin_playwright_playwright__browser_fill_form",
+      "mcp__plugin_playwright_playwright__browser_click",
+      "Bash(rm -f nul)",
+      "Bash(cmd //c \"del \\\\\\\\\\\\\\\\.\\\\\\\\%CD:/=\\\\\\\\%\\\\\\\\nul\")",
+      "Bash(databricks auth token *)",
+      "Bash(./partyline.sh *)",
+      "Bash(partyline.cmd *)",
+      "Bash(python -c \"import sys,json;d=json.load\\(sys.stdin\\);print\\('OK \u2014 self-resolved; agents:',len\\(d\\)\\)\")"
     ],
     "additionalDirectories": [
-      "c:\\Users\\alana\\Code\\Repos\\covasant-agent-bus\\covasant-agent-bus"
+      "c:\\Users\\alana\\.claude\\projects\\c--Users-alana-Code-Repos-covasant-partyline\\memory"
     ]
+  },
+  "env": {
+    "PARTYLINE_URL": "https://mcp-covasant-partyline-7405607474919121.1.azure.databricksapps.com",
+    "PARTYLINE_AGENT_ID": "alan_partyline_1",
+    "PARTYLINE_PROFILE": "dev-eastus2"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -m covasant_partyline.hook --url https://mcp-covasant-partyline-7405607474919121.1.azure.databricksapps.com --profile dev-eastus2 --owner alan --repo covasant-partyline"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python partyline-plugin/hooks/check_unread.py"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "code-simplifier@claude-plugins-official": true,
+    "claude-code-setup@claude-plugins-official": true
   }
 }

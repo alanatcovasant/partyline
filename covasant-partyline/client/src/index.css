@@ -27,12 +27,65 @@ body {
 .wrap { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
 header { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1rem; }
 header h1 { font-size: 1.25rem; margin: 0; flex: 0 0 auto; }
+header .ext-dl {
+  margin-left: auto; font-size: 0.8em; white-space: nowrap;
+  padding: 0.25rem 0.6rem; border: 1px solid var(--line); border-radius: 6px;
+  color: var(--fg); text-decoration: none;
+}
+header .ext-dl:hover { border-color: var(--muted); background: rgba(127, 127, 127, 0.08); }
+/* Refresh-interval selector: pushed to the right with the extension link. */
+header .poll-select { margin-left: auto; display: inline-flex; align-items: center; gap: 0.3rem; }
+header .poll-select + .ext-dl { margin-left: 0; }
+header .poll-select select {
+  font-size: 0.85em; padding: 0.1rem 0.3rem; border: 1px solid var(--line);
+  border-radius: 6px; background: transparent; color: var(--fg);
+}
+/* Collapsible full-detail payload under a concise summary. */
+.msg-details { margin-top: 0.2rem; }
+.msg-details > summary { cursor: pointer; font-size: 0.8em; list-style: revert; }
+.msg-details[open] > summary { margin-bottom: 0.2rem; }
+/* Full persisted-record disclosure: collapsed by default, spans its own row. */
+.msg-fields { flex-basis: 100%; margin: 0.1rem 0 0.2rem; }
+.msg-fields > summary { cursor: pointer; font-size: 0.8em; list-style: revert; }
+.msg-fields[open] > summary { margin-bottom: 0.3rem; }
+.msg-fields-grid { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 0.1rem 0.6rem; }
+.msg-field { display: contents; }
+.msg-field dt { font-size: 0.78em; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.msg-field dd { margin: 0; font-size: 0.82em; word-break: break-word; }
+.msg-field dd.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* Message + conversation ids on each row. */
+.msg-ids { display: inline-flex; gap: 0.5rem; align-items: center; margin-left: 0.4rem; font-size: 0.8em; }
+.conv-id {
+  font: inherit; color: var(--muted); background: transparent; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 5px; padding: 0 0.35rem; line-height: 1.5;
+}
+.conv-id:hover { border-color: var(--muted); background: rgba(127, 127, 127, 0.08); }
+/* Archive-all: right-aligned in the filter row; muted until hovered (destructive). */
+.archive-all { margin-left: auto; white-space: nowrap; }
+.archive-all:hover:not(:disabled) { border-color: #dc2626; color: #dc2626; }
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .dot.on { background: #16a34a; }
 .dot.off { background: #9ca3af; }
 .muted { color: var(--muted); font-size: 0.85em; }
-.grid { display: grid; grid-template-columns: 1fr 320px; gap: 1rem; }
-@media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+/* Status panels stacked (agents, claims, metrics, diagnostics), ordered via `order`;
+   the message stream renders full-width below them. */
+.panels { display: flex; flex-direction: column; gap: 1rem; }
+@media (min-width: 900px) {
+  .panels { flex-direction: row; flex-wrap: wrap; align-items: flex-start; }
+  .panels > section { flex: 1 1 360px; }
+}
+.stream-filter { display: flex; gap: 0.4rem; align-items: center; margin: 0.25rem 0 0.5rem; }
+.stream-filter select, .stream-filter input {
+  background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.3rem 0.5rem; font: inherit; min-width: 0;
+}
+.stream-filter input { flex: 1; }
+.pager { display: flex; gap: 0.6rem; align-items: center; justify-content: center; padding-top: 0.6rem; }
+.pager button {
+  background: transparent; color: var(--fg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.25rem 0.7rem; font: inherit; cursor: pointer;
+}
+.pager button:disabled { opacity: 0.4; cursor: default; }
 section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
 h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 0.75rem; }
 ul { list-style: none; margin: 0; padding: 0; }
@@ -44,3 +97,157 @@ ul { list-style: none; margin: 0; padding: 0; }
 .t-done { background: #16a34a; }
 .t-claim, .t-release { background: #d97706; }
 .pills li { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid var(--line); }
+/* Territory map: one block per holder, so "whose is this?" is answered by position. */
+.claim-holder { margin-bottom: 0.6rem; }
+.claim-holder:last-child { margin-bottom: 0; }
+.claim-holder > b { font-size: 0.85em; }
+.claim-holder .pills code { color: var(--muted); font-size: 0.85em; overflow-wrap: anywhere; }
+.compose { display: flex; flex-direction: column; gap: 0.4rem; padding-bottom: 0.75rem; margin-bottom: 0.5rem; border-bottom: 1px solid var(--line); }
+.compose-row { display: flex; gap: 0.4rem; }
+.compose input, .compose select {
+  background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.35rem 0.5rem; font: inherit; min-width: 0;
+}
+.compose-row input[aria-label="From"] { flex: 1 1 30%; }
+.compose-row input[aria-label="Recipient"] { flex: 1 1 30%; }
+.compose-text { flex: 1; }
+.compose button {
+  background: var(--accent); color: white; border: none; border-radius: 6px;
+  padding: 0.35rem 0.9rem; font: inherit; cursor: pointer;
+}
+.compose button:disabled { opacity: 0.5; cursor: default; }
+/* Secondary "use my name" button: ghost style so it defers to the accent Send button. */
+.compose button.use-me {
+  flex: 0 0 auto; background: transparent; color: var(--muted);
+  border: 1px solid var(--line); padding: 0.35rem 0.6rem;
+}
+.compose button.use-me:hover { color: var(--fg); }
+.compose button.tag-everyone {
+  flex: 0 0 auto; background: transparent; color: var(--muted);
+  border: 1px solid var(--line); padding: 0.35rem 0.6rem;
+}
+.compose button.tag-everyone:hover, .compose button.tag-everyone.active {
+  color: var(--fg); border-color: var(--accent); background: rgba(127, 127, 127, 0.08);
+}
+.compose-error { color: #dc2626; font-size: 0.85em; }
+
+/* Search history */
+.search { padding-bottom: 0.75rem; margin-bottom: 0.5rem; border-bottom: 1px solid var(--line); }
+.search-row { display: flex; gap: 0.4rem; }
+.search-row input {
+  flex: 1; background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.35rem 0.5rem; font: inherit; min-width: 0;
+}
+.search-row button {
+  background: var(--accent); color: white; border: none; border-radius: 6px;
+  padding: 0.35rem 0.9rem; font: inherit; cursor: pointer;
+}
+.search-row button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.search-row button:disabled { opacity: 0.5; cursor: default; }
+.search-results, .search-thread ul { list-style: none; margin: 0.5rem 0 0; padding: 0; }
+.search-results li, .search-thread li { padding: 0.25rem 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem; }
+.search button.link {
+  background: none; border: none; color: var(--accent); cursor: pointer;
+  font: inherit; padding: 0; text-decoration: underline;
+}
+.search-thread .ghost {
+  background: transparent; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.2rem 0.6rem; font: inherit; cursor: pointer; margin-top: 0.5rem;
+}
+
+/* Metrics panel */
+.metrics-panel h2 { margin-bottom: 0.5rem; }
+.metrics {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+}
+.metrics dt { color: var(--muted); font-size: 0.85em; }
+.metrics dd { margin: 0; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+.metrics dd.warn { color: #dc2626; }
+
+/* Diagnostics panel */
+.diag-panel h2 { margin-bottom: 0.5rem; }
+.diag-panel .dot { margin-right: 0.15rem; vertical-align: middle; }
+.diag-stale { margin-top: 0.5rem; font-size: 0.85em; }
+.diag-stale summary { color: #b45309; cursor: pointer; }
+
+/* Agent status grid (last status per registered client + online indicator) */
+.agent-grid { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+.agent-grid th {
+  text-align: left; color: var(--muted); font-weight: 500; font-size: 0.9em;
+  padding: 0.2rem 0.4rem 0.2rem 0; border-bottom: 1px solid var(--line);
+}
+.agent-grid td {
+  padding: 0.3rem 0.4rem 0.3rem 0; border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.agent-grid td:first-child, .agent-grid th:first-child { width: 12px; padding-right: 0.5rem; }
+.agent-grid .dot { vertical-align: middle; }
+.agent-grid code {
+  color: var(--muted); font-size: 0.95em; display: inline-block;
+  max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: bottom;
+}
+.agent-grid time { color: var(--muted); font-size: 0.9em; white-space: nowrap; }
+
+/* View tabs (Dashboard | Connect an agent) + right-aligned header cluster */
+.view-tabs { display: inline-flex; gap: 0.25rem; }
+.view-tabs button {
+  background: transparent; color: var(--muted); border: 1px solid transparent;
+  border-radius: 6px; padding: 0.25rem 0.6rem; font: inherit; cursor: pointer;
+}
+.view-tabs button:hover { color: var(--fg); background: rgba(127, 127, 127, 0.08); }
+.view-tabs button.active { color: var(--fg); border-color: var(--line); background: var(--card); font-weight: 600; }
+.header-right { margin-left: auto; display: inline-flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; justify-content: flex-end; }
+.header-right .poll-select, .header-right .ext-dl { margin-left: 0; }
+
+/* Connect-an-agent (getting started) view */
+.connect { max-width: 760px; }
+.connect > h2 { font-size: 1.15rem; text-transform: none; letter-spacing: 0; color: var(--fg); margin: 0 0 0.4rem; }
+.connect-lead { margin: 0 0 0.75rem; }
+.connect-lead a, .connect-links a, .connect-url a { color: var(--accent); text-decoration: none; }
+.connect-lead a:hover, .connect-links a:hover { text-decoration: underline; }
+.connect-url { margin: 0 0 1rem; }
+.connect-step h3 { font-size: 0.95rem; margin: 0 0 0.5rem; }
+.connect-step p { margin: 0.4rem 0; }
+.connect-step .tag { margin-left: 0.35rem; vertical-align: middle; }
+.tag.opt { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.connect-links { display: flex; flex-direction: column; gap: 0.45rem; }
+/* Label above each install snippet on the Connect page (bash vs PowerShell). */
+.shell-label { margin: 0.75rem 0 0.1rem; font-weight: 600; font-size: 0.88rem; }
+.shell-label .muted { font-weight: 400; }
+/* Overview page: concept definition list + coordination-loop steps. */
+.overview-concepts { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 0.9rem; }
+.overview-concept { display: contents; }
+.overview-concept dt { font-weight: 600; }
+.overview-concept dd { margin: 0; }
+.overview-concept code, .overview-loop code, .connect-links code, .connect-url code { font-size: 0.9em; }
+.overview-loop { margin: 0.4rem 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.overview-loop li { list-style: decimal; }
+/* Link-styled buttons on the Overview page (no router — these switch the in-app view). */
+.overview button.link, .connect-links button.link {
+  background: none; border: none; color: var(--accent); cursor: pointer;
+  font: inherit; padding: 0; text-decoration: none; text-align: left;
+}
+.overview button.link:hover, .connect-links button.link:hover { text-decoration: underline; }
+@media (max-width: 560px) {
+  .overview-concepts { grid-template-columns: 1fr; gap: 0.1rem 0; }
+  .overview-concept dd { margin: 0 0 0.5rem; }
+}
+
+/* Copy-enabled code snippet */
+.snippet { position: relative; margin: 0.5rem 0; }
+.snippet pre {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 1.5rem 0.8rem 0.7rem; margin: 0; overflow-x: auto; font-size: 0.82em; line-height: 1.5;
+}
+.snippet code { color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; }
+.snippet-lang { position: absolute; top: 0.4rem; left: 0.7rem; font-size: 0.7em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; pointer-events: none; }
+.copy-btn {
+  position: absolute; top: 0.35rem; right: 0.4rem; z-index: 1;
+  background: var(--card); color: var(--muted); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.1rem 0.5rem; font-size: 0.75em; cursor: pointer;
+}
+.copy-btn:hover { color: var(--fg); border-color: var(--muted); }

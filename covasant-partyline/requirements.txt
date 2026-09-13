@@ -2,7 +2,21 @@
 # crashes on startup (the #1 Lakebase app failure mode).
 fastapi>=0.115
 uvicorn[standard]>=0.34
-mcp>=1.9
+# Upper bound is load-bearing: mcp 2.0 removed `mcp.server.fastmcp` (our import
+# path), and Apps' cached-venv rebuild silently resolved the unbounded range to
+# 2.0 → boot crash. Keep <2 until the app migrates off mcp.server.fastmcp.
+mcp>=1.9,<2
 psycopg[binary,pool]>=3.2
 databricks-sdk>=0.81.0
 pydantic>=2.7
+
+# OpenTelemetry — measure latency, trace blocking operations
+opentelemetry-api>=1.27
+opentelemetry-sdk>=1.27
+opentelemetry-instrumentation-fastapi>=0.48b0
+opentelemetry-instrumentation-psycopg2>=0.48b0
+opentelemetry-instrumentation-httpx>=0.48b0
+opentelemetry-exporter-otlp-proto-http>=0.48b0
+# gRPC exporter: the protocol Databricks Apps telemetry injects when enabled.
+opentelemetry-exporter-otlp-proto-grpc>=0.48b0
+

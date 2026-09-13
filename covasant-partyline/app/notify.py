@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import psycopg
 
@@ -19,29 +20,61 @@ from .db import NOTIFY_CHANNEL, _mint_token
 
 log = logging.getLogger("partyline.notify")
 
+# How long to wait for a notification before returning to the loop to run a liveness
+# check. Bounds how long a silently-dead socket can go undetected.
+_LISTEN_HEARTBEAT_SECS = 30.0
+# Proactively recycle the LISTEN connection well within the Lakebase token/idle window,
+# so it never lingers stale (the minted OAuth credential is only used at login, but the
+# connection can still be reaped server-side after long idle).
+_LISTEN_MAX_LIFETIME_SECS = 1800.0
+
+
+class _Subscriber:
+    """One SSE client: a bounded queue plus a `closed` flag the hub sets to reap it."""
+
+    __slots__ = ("queue", "closed")
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1000)
+        self.closed = asyncio.Event()
+
 
 class NotifyHub:
     def __init__(self) -> None:
-        self._subscribers: set[asyncio.Queue[str]] = set()
+        self._subscribers: set[_Subscriber] = set()
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
 
     # --- subscriber management (SSE endpoints) ---
-    def subscribe(self) -> asyncio.Queue[str]:
-        q: asyncio.Queue[str] = asyncio.Queue(maxsize=1000)
-        self._subscribers.add(q)
-        return q
+    def subscribe(self) -> _Subscriber:
+        sub = _Subscriber()
+        self._subscribers.add(sub)
+        log.info("SSE subscriber added count=%s", len(self._subscribers))
+        return sub
 
-    def unsubscribe(self, q: asyncio.Queue[str]) -> None:
-        self._subscribers.discard(q)
+    def unsubscribe(self, sub: _Subscriber) -> None:
+        self._subscribers.discard(sub)
+        sub.closed.set()
+        log.info("SSE subscriber removed count=%s", len(self._subscribers))
+
+    def subscriber_count(self) -> int:
+        return len(self._subscribers)
 
     def _broadcast(self, payload: str) -> None:
-        for q in list(self._subscribers):
+        dropped = 0
+        for sub in list(self._subscribers):
             try:
-                q.put_nowait(payload)
+                sub.queue.put_nowait(payload)
             except asyncio.QueueFull:
-                # Slow consumer: drop it rather than block the listener.
-                self._subscribers.discard(q)
+                # Slow consumer: drop it rather than block the listener, and signal its SSE
+                # generator to end so the socket is actually reaped. Without the signal the
+                # generator would emit keep-alives forever against a queue that no longer
+                # receives broadcasts — a silent zombie that never sees another message.
+                self._subscribers.discard(sub)
+                sub.closed.set()
+                dropped += 1
+        if dropped:
+            log.warning("Dropped %s slow SSE subscribers; remaining=%s", dropped, len(self._subscribers))
 
     # --- lifecycle ---
     def start(self) -> None:
@@ -61,19 +94,43 @@ class NotifyHub:
         backoff = 1.0
         conninfo = (
             f"dbname={settings.pg_database} user={settings.pg_user} "
-            f"host={settings.pg_host} port={settings.pg_port} sslmode={settings.pg_sslmode}"
+            f"host={settings.pg_host} port={settings.pg_port} sslmode={settings.pg_sslmode} "
+            # connect_timeout bounds the handshake; TCP keepalives make the kernel surface
+            # a silently-dropped socket as an error so we reconnect instead of hanging in
+            # notifies() forever (which would stop all push delivery with no signal).
+            "connect_timeout=10 "
+            "keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_count=3"
         )
         while not self._stop.is_set():
             try:
-                async with await psycopg.AsyncConnection.connect(
-                    conninfo, password=_mint_token(), autocommit=True
-                ) as conn:
+                # Local dev uses PGPASSWORD (like the pool in db.py); deployed mints a
+                # fresh Lakebase OAuth credential per (re)connect.
+                if settings.local:
+                    import os
+
+                    password = os.environ.get("PGPASSWORD", "")
+                else:
+                    password = _mint_token()
+                async with await psycopg.AsyncConnection.connect(conninfo, password=password, autocommit=True) as conn:
                     await conn.execute(f"LISTEN {NOTIFY_CHANNEL}")
                     log.info("LISTEN %s established", NOTIFY_CHANNEL)
                     backoff = 1.0
-                    async for notify in conn.notifies():
-                        self._broadcast(notify.payload)
+                    started = time.monotonic()
+                    # Bounded-wait loop: notifies(timeout=...) returns after the heartbeat
+                    # interval even when idle, giving us a chance to actively probe the
+                    # socket (SELECT 1) and to recycle before the connection goes stale.
+                    while not self._stop.is_set():
+                        async for notify in conn.notifies(timeout=_LISTEN_HEARTBEAT_SECS):
+                            self._broadcast(notify.payload)
+                            if self._stop.is_set():
+                                break
                         if self._stop.is_set():
+                            break
+                        # Liveness probe: raises on a dead socket (→ reconnect below)
+                        # rather than silently delivering nothing.
+                        await conn.execute("SELECT 1")
+                        if time.monotonic() - started > _LISTEN_MAX_LIFETIME_SECS:
+                            log.info("Recycling LISTEN connection (max lifetime reached)")
                             break
             except asyncio.CancelledError:
                 raise

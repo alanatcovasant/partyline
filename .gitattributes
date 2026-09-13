@@ -1,0 +1,5 @@
+# Windows shell wrappers must keep CRLF: cmd.exe mis-parses LF-only batch files
+# (stray "'M' is not recognized" noise on every partyline.cmd invocation).
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf

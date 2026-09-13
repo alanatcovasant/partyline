@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Partyline Clone Config",
+  "description": "Per-clone partyline configuration. Lives at .partyline/config.json (untracked). See https://github.com/alanatcovasant/covasant-partyline/issues/1",
+  "type": "object",
+  "properties": {
+    "url": {
+      "type": "string",
+      "description": "Partyline server URL (e.g. https://mcp-covasant-partyline-<id>.azure.databricksapps.com)"
+    },
+    "agentId": {
+      "type": "string",
+      "description": "Default agent ID for this clone. Overridden per-process by PARTYLINE_AGENT_ID env var."
+    },
+    "databricksProfile": {
+      "type": "string",
+      "default": "dev-eastus2",
+      "description": "Databricks CLI profile for token acquisition"
+    }
+  },
+  "additionalProperties": false
+}

@@ -7,11 +7,14 @@ bundle:
 include:
   - resources/*.yml
 
-# node_modules/.venv are already skipped via .gitignore. The built ops SPA is
-# gitignored too (build artifact) but IS needed at runtime, so force-sync it.
+# node_modules/.venv are already skipped via .gitignore. The built ops SPA and the
+# deploy-stamped build metadata are gitignored (build artifacts) but ARE needed at
+# runtime, so force-sync them — otherwise the app falls back to 0.1.0.dev0 defaults.
 sync:
   include:
     - "covasant-partyline/client/dist/**"
+    - "covasant-partyline/app/__version__.py"
+    - "covasant-partyline/app/using-partyline.md"
 
 artifacts:
   python_artifact:
@@ -24,17 +27,26 @@ variables:
     description: The catalog to use
   schema:
     description: The schema to use
+  partyline_sp_app_id:
+    description: applicationId of the example job's dedicated service principal (fed by deploy.sh after SCIM create); only bound as run_as in prod
+    default: ""
+  presence_idle_seconds:
+    description: Seconds since heartbeat before an agent is considered stale
+    default: 86400
 
 targets:
-  dev:
-    # The default target uses 'mode: development' to create a development copy.
+  dev-eastus2:
+    # The default target: 'mode: development' creates a per-user development copy.
     # - Deployed resources get prefixed with '[dev my_user_name]'
     # - Any job schedules and triggers are paused by default.
     # See also https://docs.databricks.com/dev-tools/bundles/deployment-modes.html.
+    # Host is eastus2; deploy with the matching profile: ./deploy.sh dev-eastus2 dev-eastus2
+    # (target renamed from `dev` so the name matches its host/profile and can't be deployed
+    # with the mismatched default `dev` profile, which points at the prod host.)
     mode: development
     default: true
     workspace:
-      host: https://adb-7405613581513114.14.azuredatabricks.net
+      host: https://adb-7405607474919121.1.azuredatabricks.net
     variables:
       catalog: covasant
       schema: dev
@@ -50,3 +62,8 @@ targets:
     permissions:
       - user_name: alan.dennis@covasant.com
         level: CAN_MANAGE
+    resources:
+      jobs:
+        example_progress_job:
+          run_as:
+            service_principal_name: ${var.partyline_sp_app_id}

@@ -1,10 +1,12 @@
 # Local development only — starts a Postgres instance matching the Lakebase schema.
 # Usage: docker compose up -d
-#        Then: set env vars per .env.local and run the app.
+#        Then: set env vars per covasant-partyline/.env.example (PARTYLINE_LOCAL=true,
+#        PGHOST=localhost, PGDATABASE/PGUSER/PGPASSWORD=partyline, PGSSLMODE=prefer)
+#        and run the app.
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:17-alpine  # match Lakebase pg_version
     environment:
       POSTGRES_DB: partyline
       POSTGRES_USER: partyline

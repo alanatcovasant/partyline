@@ -1,0 +1,6 @@
+{
+  "$schema": "../editors/vscode/partyline-config.schema.json",
+  "url": "https://mcp-covasant-partyline-7405607474919121.1.azure.databricksapps.com",
+  "agentId": "alan_partyline",
+  "databricksProfile": "dev-eastus2"
+}

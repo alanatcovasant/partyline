@@ -15,6 +15,8 @@ resources:
       parameters:
         - name: retention_days
           default: "30"
+        - name: endpoint_name
+          default: "projects/partyline/branches/production/endpoints/primary"
 
       tasks:
         - task_key: prune_old_messages
@@ -24,6 +26,8 @@ resources:
             parameters:
               - "--retention-days"
               - "{{job.parameters.retention_days}}"
+              - "--endpoint-name"
+              - "{{job.parameters.endpoint_name}}"
           environment_key: default
 
       environments:

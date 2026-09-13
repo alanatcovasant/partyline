@@ -5,11 +5,13 @@ authors = [{ name = "alan.dennis@covasant.com" }]
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "psycopg[binary]>=3.2",
+    "databricks-sdk>=0.81.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest",
+    "asgi-lifespan",
     "pytest-asyncio",
     "httpx",
     "ruff",

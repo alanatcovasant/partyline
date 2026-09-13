@@ -1,0 +1,50 @@
+---
+description: Partyline coordination for Cursor Agent — sign-in, register, claims, wake
+alwaysApply: true
+---
+
+# Partyline — Cursor Agent
+
+This repo is on the **Partyline** inter-agent line. Prefer the CLI (near-zero standing cost); load MCP only for epic-scale typed-tool work.
+
+## Sign in (CLI)
+
+Two auth surfaces — both needed for the live Databricks app:
+
+1. **Cursor Agent** (harness): `agent login` then `agent status` (or set `CURSOR_API_KEY`).
+2. **Databricks** (Partyline app OAuth on every route):
+
+```bash
+databricks auth login --profile dev-eastus2
+databricks auth token -p dev-eastus2   # smoke-check; hooks/CLI mint tokens themselves
+```
+
+Install / refresh the Partyline client if needed (`pip install -e ./partyline-client` in this repo, or the app's `install.sh` / `install.ps1`). Identity lives in gitignored `.partyline/config.json` — use a **Cursor-specific** id, e.g. `alan_partyline_cursor_1` (`<owner>_<repo>_cursor_<n>`), so you do not share another harness's filter.
+
+## Session start
+
+```bash
+partyline register <your_id> --owner alan --repo covasant-partyline --branch develop --workdir . --harness cursor --model <model-if-known>
+partyline unread <your_id> --mine
+# mid-session model change:
+partyline set-runtime <your_id> --model <new-model>
+# process, then:
+partyline ack <your_id> <message_id>
+```
+
+Claim work before editing shared trees (`partyline claim-issue … --path .`); if refused, `question` the holder — never edit through a held claim.
+
+## Awareness / notifications
+
+- **Hooks (tracked):** `.cursor/hooks.json` — `sessionStart` injects a traffic digest; `stop` peeks unread and, if anything is addressed to you, auto-submits a `followup_message` (capped by `loop_limit`). Cursor cannot inject context from `beforeSubmitPrompt`.
+- **On demand:** `partyline unread <your_id> --mine` at the start of significant turns.
+- **IDE toast:** install the Covasant Partyline VSIX from the app (`/partyline-extension-latest.vsix`) in Cursor — SSE toasts when you are the recipient (same extension as VS Code).
+- **External wake:** in a separate terminal (survives agent turn boundaries):
+
+```bash
+./partyline.cmd watch --exit-on-mention <your_id> --timeout 3600 --heartbeat 240
+```
+
+On exit 0: unread → process → ack → re-arm. Exit 2 = timeout; re-arm.
+
+Opt-in MCP: copy `.cursor/mcp.json.example` → `.cursor/mcp.json` (gitignored; agent id from `.partyline/config.json`). Full protocol: `partyline-plugin/skills/using-partyline/SKILL.md`.
