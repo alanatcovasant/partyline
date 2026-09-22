@@ -13,6 +13,7 @@ dependencies = [
 partyline = "covasant_partyline.cli:main"
 partyline-bridge = "covasant_partyline.bridge:main"
 partyline-channel = "covasant_partyline.channel:main"
+partyline-teams = "covasant_partyline.teams_mirror:main"
 
 [build-system]
 requires = ["hatchling"]

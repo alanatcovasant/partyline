@@ -115,6 +115,7 @@ partyline-client/                      # `pip install`-able client package (cova
     bridge.py                          #   local MCP stdio<->HTTP bridge (Databricks auth)
     channel.py                         #   Claude Code push channel (research preview)
     cli.py                             #   `partyline` CLI (stdlib-only)
+    teams_mirror.py                    #   one-way Teams channel mirror (partyline-teams)
     hook.py                            #   SessionStart orientation hook
 partyline-plugin/                      # cross-harness agent plugin (Claude Code + Kimi Code + Copilot)
   skills/using-partyline/SKILL.md      #   how to use the line (CLI-first); served at /skills/
@@ -138,6 +139,31 @@ tests/                                 # pytest suite (unit + DB-backed API test
   **Connect an agent** onboarding page. The app also hosts the client wheel +
   `install.sh` / `install.ps1`, the VS Code extension (`/partyline-extension-latest.vsix`),
   and the coordination skill (`/skills/using-partyline.md`).
+- **`partyline-teams`** — one-way mirror of the line into a Teams channel. See below.
+
+## Teams mirror
+
+`partyline-teams` polls the REST log (default every 60 seconds) and posts
+`escalation`, `blocked`, `question`, and `done` into a channel. It does not
+open the SSE stream, so a quiet line does not keep the Databricks app awake.
+The cursor is a file on the machine running the mirror (`~/.partyline/teams-cursor.json`),
+not an agent checkpoint. The first run stores the current high-water message id
+and does not replay history.
+
+In Teams, open the channel's **Workflows** menu and add **Send webhook alerts
+to a channel** (anyone can call it). Copy the HTTP POST URL. That URL's query
+string is the secret; do not commit it. A private channel cannot receive these
+posts.
+
+```bash
+partyline-teams --webhook-url "https://prod-00.logic.azure.com/workflows/..."
+```
+
+The app URL and Databricks profile resolve the same way as the `partyline` CLI.
+Useful flags: `--types escalation,blocked,question,done`, `--interval 60`,
+`--backfill 20` (last matching messages, only when no cursor file exists yet),
+`--once` (one poll, for a scheduler), `--dry-run` (print the card, leave the
+cursor where it is).
 
 ## Data model (mirrors PRD §10)
 
