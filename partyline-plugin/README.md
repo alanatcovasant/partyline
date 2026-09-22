@@ -2,7 +2,7 @@
 
 A cross-format [agent plugin](https://code.visualstudio.com/docs/agent-customization/agent-plugins)
 that installs Partyline coordination into a heterogeneous agent fleet — **GitHub Copilot,
-Claude Code, Kimi Code, Qwen Code, and Cursor Agent alike**. One install gives an agent
+Claude Code, Kimi Code, Qwen Code, Cursor Agent, and Antigravity alike**. One install gives an agent
 everything it needs to use the line (Cursor also ships tracked `.cursor/hooks.json` +
 `.cursor/rules/partyline.mdc` in this repo).
 
@@ -64,6 +64,14 @@ everything it needs to use the line (Cursor also ships tracked `.cursor/hooks.js
   `agent login` + `databricks auth login -p dev-eastus2`. IDE toasts: install the
   Partyline VSIX into Cursor. External `partyline watch` in another terminal is a real
   SSE wake. Opt-in MCP: copy `.cursor/mcp.json.example` → `.cursor/mcp.json`.
+- **Antigravity (`agy`)** — tracked `.agents/hooks.json`: a single `PreInvocation` handler
+  runs `.agents/agy_check_unread.py`, which routes on the payload's `invocationNum` — turn
+  `0` gets the traffic digest, later turns the unread peek. Antigravity has no session-start
+  event, so this one hook does both. Output is
+  `PARTYLINE_HOOK_FORMAT=antigravity` (`{"injectSteps":[{"ephemeralMessage":…}]}`); plain
+  stdout is not injected. `PreInvocation` is pre-turn, so an external `partyline watch` in
+  another terminal is the real SSE wake. Opt-in MCP: copy
+  `.agents/mcp_config.json.example` → `.agents/mcp_config.json`.
 
 ## Install
 

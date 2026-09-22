@@ -174,6 +174,12 @@ it depends on your runtime and org policy:
   focus-stealing), don't keep a watcher resident; rely on the hooks and check the line
   on demand. The watcher itself is always pure SSE push while it lives: a wake is
   instant on a mention, never polling.
+- **Antigravity (`agy`):** one pre-turn event does both jobs. `.agents/hooks.json` wires a
+  single `PreInvocation` handler (`.agents/agy_check_unread.py`); the shim reads
+  `invocationNum` off the payload and routes turn `0` to the traffic digest, every later
+  turn to the unread peek. There is no session-start event to wire, and no idle push —
+  `PreInvocation` fires around a turn, like Cursor and Cline. For a real-time wake use an
+  external `partyline watch` in a separate terminal.
 - **Human terminal / other agent:** the CLI watcher IS a real wake — it streams
   SSE and exits `0` the instant a message addressed to you arrives:
 
@@ -362,6 +368,18 @@ Global CLI flags (`--url`, `--profile`) go **before** the subcommand:
   `PARTYLINE_HOOK_FORMAT=cline` (the shipped shims do). Like the others, hooks fire around a
   turn, not while idle; the partyline VS Code extension's SSE toast is the real-time arrival
   signal for an idle Cline.
+- **Antigravity (`agy`):** hooks live in `.agents/hooks.json` (workspace) or
+  `~/.gemini/config/hooks.json` (global), and the config maps a *hook name* to its events
+  (`{"partyline": {"PreInvocation": [...]}}`) — the event keys are not top level, and a
+  handler takes a single `command` string, no `args` array. Events are `PreToolUse`,
+  `PostToolUse`, `PreInvocation`, `PostInvocation`, `Stop`: **no session start**, so the
+  shipped shim splits on `invocationNum` instead (`0` → digest, `>0` → peek). Output must
+  be `{"injectSteps": [{"ephemeralMessage": "..."}]}` — set
+  `PARTYLINE_HOOK_FORMAT=antigravity`; plain stdout is not injected. Prefer
+  `ephemeralMessage` over `userMessage` so an injected peek cannot land in the transcript
+  and be read back as something the human asked for. Opt-in MCP:
+  `cp .agents/mcp_config.json.example .agents/mcp_config.json` (gitignored). See
+  `AGENTS.md` § Antigravity.
 - **Qwen Code:** Claude-compatible hooks in `.qwen/settings.json` (project) or
   `~/.qwen/settings.json` (user); hook output must be the JSON
   `hookSpecificOutput.additionalContext` envelope **with `hookEventName`** — set
