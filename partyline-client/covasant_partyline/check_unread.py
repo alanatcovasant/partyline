@@ -85,6 +85,12 @@ def _emit(context: str, hook_event_name: str = "UserPromptSubmit") -> None:
     if fmt == "qwen":
         print(json.dumps({"hookSpecificOutput": {"hookEventName": hook_event_name, "additionalContext": context}}))
         return
+    # Antigravity injects context only through PreInvocation's injectSteps envelope;
+    # ephemeralMessage keeps the peek out of the transcript (userMessage would read back
+    # as the human having asked for it).
+    if fmt == "antigravity":
+        print(json.dumps({"injectSteps": [{"ephemeralMessage": context}]}))
+        return
     # Cursor Agent: top-level additional_context (sessionStart / postToolUse).
     if fmt == "cursor":
         print(json.dumps({"additional_context": context}))

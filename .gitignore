@@ -37,6 +37,11 @@ scratch/**
 # resolve from .partyline/config.json — never commit a clone-specific --agent-id here.
 .cursor/mcp.json
 
+# Per-clone Antigravity MCP (opt-in; copy from .agents/mcp_config.json.example). Agent id
+# must resolve from .partyline/config.json — never commit a clone-specific --agent-id here.
+# .agents/hooks.json + agy_check_unread.py stay tracked (shared, no identity).
+.agents/mcp_config.json
+
 # Captured Databricks Apps runtime/deploy log (artifact, not source)
 log.txt
 deploy.stdout.txt

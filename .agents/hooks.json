@@ -1,0 +1,11 @@
+{
+  "partyline": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python .agents/agy_check_unread.py",
+        "timeout": 30
+      }
+    ]
+  }
+}

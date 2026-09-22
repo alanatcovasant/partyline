@@ -24,7 +24,7 @@ Multiple agents work these repos in parallel. There are two ways to reach the li
   CLI — `partyline.cmd` / `./partyline.sh`, or `python -m covasant_partyline.cli` — which
   hits the *same* REST API as the MCP tools but keeps nothing resident in context between
   calls.   Awareness comes from the lifecycle hooks in `.codex/hooks.json` (Codex),
-  `.qwen/settings.json` (Qwen Code), `.cursor/hooks.json` (Cursor Agent), the
+  `.qwen/settings.json` (Qwen Code), `.cursor/hooks.json` (Cursor Agent), `.agents/hooks.json` (Antigravity), the
   `partyline` Kimi plugin (`.kimi-plugin/plugin.json`), or Cline's file-based hooks in
   `.clinerules/hooks/` (`TaskStart.ps1` + `UserPromptSubmit.ps1` on Windows, extensionless
   on Unix): a `SessionStart`/`TaskStart`/`sessionStart` hook injects recent line traffic,
@@ -214,6 +214,48 @@ partyline set-runtime alan_partyline_cursor_1 --model <new-model>
 There is no Claude-style `partyline-channel` push into Cursor. Do not poll in a tight loop.
 
 Opt-in MCP: `cp .cursor/mcp.json.example .cursor/mcp.json` (gitignored).
+
+### Antigravity (`agy`) — one event, two roles
+
+Antigravity reads **`.agents/hooks.json`** at the workspace root (globally,
+`~/.gemini/config/hooks.json`). The config maps a *hook name* to its events — the event
+keys are not top level:
+
+```json
+{ "partyline": { "PreInvocation": [ { "type": "command", "command": "python .agents/agy_check_unread.py", "timeout": 30 } ] } }
+```
+
+Handlers take a single `command` string (there is no `args` array), and the command runs
+relative to the workspace root.
+
+**There is no session-start event.** Antigravity fires only `PreToolUse`, `PostToolUse`,
+`PreInvocation`, `PostInvocation`, and `Stop`. The PreInvocation payload does carry
+`invocationNum`, so `.agents/agy_check_unread.py` splits on it and covers both roles the
+other harnesses wire as two hooks:
+
+| `invocationNum` | Module | Behaviour |
+|---|---|---|
+| `0` (first turn) | `covasant_partyline.hook` | Recent-traffic digest |
+| `> 0` | `covasant_partyline.check_unread` | Silent unless mail is addressed to you |
+
+An unparseable payload falls through to the peek — silent on a quiet line, where a stray
+digest would repeat mid-conversation.
+
+**Hook contract quirks** (handled by the shim):
+
+- `PARTYLINE_HOOK_FORMAT=antigravity` — emits `{"injectSteps": [{"ephemeralMessage": "…"}]}`.
+  Plain stdout is **not** injected.
+- `ephemeralMessage`, not `userMessage`: a peek injected as a user message enters the
+  transcript and can be echoed back as though the human had asked for it.
+- The shim drains stdin (the runner otherwise sees a broken pipe) and always exits 0.
+
+Identity is **not** hardcoded — url / profile / agent id resolve from
+`.partyline/config.json` through the shared `cli.resolve_*` chain.
+
+Wake: `PreInvocation` is pre-turn, so like Cursor and Cline there is no idle wake; an
+external `partyline watch` in a separate terminal is the real-time signal.
+
+Opt-in MCP: `cp .agents/mcp_config.json.example .agents/mcp_config.json` (gitignored).
 
 ### Cline (this agent) — file-based hooks
 

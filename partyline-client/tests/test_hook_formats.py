@@ -65,6 +65,23 @@ def test_check_unread_cursor_stop_format(monkeypatch, capsys):
     assert out == {"followup_message": "ctx"}
 
 
+def test_check_unread_antigravity_format(monkeypatch, capsys):
+    """Antigravity injects context only from injectSteps; an ephemeralMessage keeps the
+    peek out of the transcript, where a userMessage would read as the human asking."""
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "antigravity")
+    check_unread._emit("ctx")
+    out = _json.loads(capsys.readouterr().out)
+    assert out == {"injectSteps": [{"ephemeralMessage": "ctx"}]}
+
+
+def test_check_unread_antigravity_ignores_hook_event_name(monkeypatch, capsys):
+    """Antigravity has one pre-turn event, so the envelope carries no event name to echo."""
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "antigravity")
+    check_unread._emit("ctx", "SessionStart")
+    out = _json.loads(capsys.readouterr().out)
+    assert out == {"injectSteps": [{"ephemeralMessage": "ctx"}]}
+
+
 def test_check_unread_kimi_emits_plain_markdown(monkeypatch, capsys):
     monkeypatch.delenv("PARTYLINE_HOOK_FORMAT", raising=False)
     monkeypatch.setenv("KIMI_CODE_HOME", "/home/x/.kimi-code")
@@ -104,6 +121,13 @@ def test_hook_cursor_format(monkeypatch, capsys):
     hook._emit("## Partyline digest")
     out = _json.loads(capsys.readouterr().out)
     assert out == {"additional_context": "## Partyline digest"}
+
+
+def test_hook_antigravity_format(monkeypatch, capsys):
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "antigravity")
+    hook._emit("digest")
+    out = _json.loads(capsys.readouterr().out)
+    assert out == {"injectSteps": [{"ephemeralMessage": "digest"}]}
 
 
 # --------------------------------------------------------------------------- #

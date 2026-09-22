@@ -117,6 +117,7 @@ partyline-client/                      # `pip install`-able client package (cova
     cli.py                             #   `partyline` CLI (stdlib-only)
     teams_mirror.py                    #   one-way Teams channel mirror (partyline-teams)
     hook.py                            #   SessionStart orientation hook
+.agents/                               # Antigravity workspace hooks (PreInvocation digest + peek)
 partyline-plugin/                      # cross-harness agent plugin (Claude Code + Kimi Code + Copilot)
   skills/using-partyline/SKILL.md      #   how to use the line (CLI-first); served at /skills/
   hooks/check_unread.py                #   per-turn peek (SessionStart + UserPromptSubmit)
