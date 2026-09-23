@@ -474,6 +474,21 @@ def resolve_profile(cli_arg: str | None = None, *, url: str, cfg: dict | None = 
     )
 
 
+def resolve_teams_webhook(cli_arg: str | None = None, cfg: dict | None = None) -> str | None:
+    """flag → TEAMS_WEBHOOK_URL → config teamsWebhookUrl → None.
+
+    The URL's query string is the signature, so it lives only in the gitignored
+    per-clone config — never in a tracked file.
+    """
+    if cli_arg:
+        return cli_arg
+    env = os.getenv("TEAMS_WEBHOOK_URL")
+    if env:
+        return env
+    cfg = _load_config() if cfg is None else cfg
+    return cfg.get("teamsWebhookUrl")
+
+
 def _mint_token(profile: str) -> str | None:
     """Best-effort Databricks OAuth token via the `databricks` CLI (stdlib subprocess only).
 

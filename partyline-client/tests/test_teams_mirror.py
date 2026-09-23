@@ -376,3 +376,16 @@ def test_build_fetch_remints_a_token_per_request(monkeypatch):
     assert fetch("/api/messages/query?limit=1") == [{"id": 1}]
     assert fetch("/api/messages?after_id=1&limit=500") == []
     assert seen == ["t1", "t2"]
+
+
+def test_resolve_teams_webhook_precedence(monkeypatch):
+    from covasant_partyline import cli
+
+    monkeypatch.delenv("TEAMS_WEBHOOK_URL", raising=False)
+    cfg = {"teamsWebhookUrl": "https://cfg.test/hook?sig=cfg"}
+    assert cli.resolve_teams_webhook(None, cfg) == "https://cfg.test/hook?sig=cfg"
+    assert cli.resolve_teams_webhook("https://flag.test/hook?sig=flag", cfg) == "https://flag.test/hook?sig=flag"
+    monkeypatch.setenv("TEAMS_WEBHOOK_URL", "https://env.test/hook?sig=env")
+    assert cli.resolve_teams_webhook(None, cfg) == "https://env.test/hook?sig=env"
+    monkeypatch.delenv("TEAMS_WEBHOOK_URL")
+    assert cli.resolve_teams_webhook(None, {}) is None

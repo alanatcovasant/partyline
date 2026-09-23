@@ -409,7 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--webhook-url",
         default=None,
-        help="Teams Workflow webhook URL (default: TEAMS_WEBHOOK_URL). The query string is a secret.",
+        help="Teams Workflow webhook URL (default: TEAMS_WEBHOOK_URL, else teamsWebhookUrl in .partyline/config.json). The query string is a secret.",
     )
     parser.add_argument(
         "--types",
@@ -453,9 +453,9 @@ def main(argv: list[str] | None = None) -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         stream=sys.stderr,
     )
-    webhook = args.webhook_url or os.getenv("TEAMS_WEBHOOK_URL")
+    webhook = cli.resolve_teams_webhook(args.webhook_url)
     if not args.dry_run and not webhook:
-        raise SystemExit("TEAMS_WEBHOOK_URL or --webhook-url is required")
+        raise SystemExit("TEAMS_WEBHOOK_URL, --webhook-url, or teamsWebhookUrl in .partyline/config.json is required")
     if webhook and not webhook.lower().startswith("https://") and not args.allow_insecure:
         raise SystemExit("webhook URL must be https (pass --allow-insecure to override)")
     if args.interval <= 0:

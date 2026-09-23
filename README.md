@@ -156,9 +156,21 @@ to a channel** (anyone can call it). Copy the HTTP POST URL. That URL's query
 string is the secret; do not commit it. A private channel cannot receive these
 posts.
 
-```bash
-partyline-teams --webhook-url "https://prod-00.logic.azure.com/workflows/..."
+Save the URL in the gitignored per-clone `.partyline/config.json` (the same file
+that holds the app URL and agent identity) as `teamsWebhookUrl`:
+
+```json
+{ "url": "...", "profile": "dev-eastus2", "agentId": "...", "teamsWebhookUrl": "https://prod-00.logic.azure.com/workflows/...?sig=..." }
 ```
+
+The mirror resolves it flag → `TEAMS_WEBHOOK_URL` → `teamsWebhookUrl` in that
+config, so from an onboarded repo `partyline-teams` just runs:
+
+```bash
+partyline-teams
+```
+
+`.env.local` is **not** gitignored in this repo — do not put the URL there.
 
 The app URL and Databricks profile resolve the same way as the `partyline` CLI.
 Useful flags: `--types escalation,blocked,question,done`, `--interval 60`,
