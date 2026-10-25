@@ -58,6 +58,29 @@ def _load_user() -> dict:
         return {}
 
 
+def ensure_login(profile: str, host: str | None) -> None:
+    """Make sure `profile` can mint a Databricks token, logging in interactively if not.
+
+    The app requires OAuth on every route, so nothing else works until this does. The
+    login opens a browser — unavoidable for U2M OAuth, but it is a command, not a UI hunt.
+    """
+    if cli._mint_token(profile):
+        return
+    db = shutil.which("databricks")
+    if not db:
+        sys.exit("partyline: the `databricks` CLI is not installed or not on PATH")
+    if not host:
+        sys.exit(
+            f"partyline: profile '{profile}' has no valid login and no workspace host is known.\n"
+            f"  run: databricks auth login --host <workspace-url> --profile {profile}\n"
+            "  then re-run, or pass --workspace-host so setup can do it for you"
+        )
+    print(f"==> No valid Databricks login for profile '{profile}'; opening browser login ({host})")
+    subprocess.run([db, "auth", "login", "--host", host, "--profile", profile], check=False)
+    if not cli._mint_token(profile):
+        sys.exit(f"partyline: login for profile '{profile}' did not complete; re-run `partyline setup`")
+
+
 def _launchers(bin_dir: Path) -> list[Path]:
     cmd = bin_dir / "claude-pl.cmd"
     sh = bin_dir / "claude-pl"
@@ -72,12 +95,15 @@ def _launchers(bin_dir: Path) -> list[Path]:
 
 def cmd_setup(a: argparse.Namespace) -> None:
     user = _load_user()
-    user.update({k: v for k, v in (("owner", a.owner), ("url", a.url_), ("profile", a.profile_)) if v})
+    user.update(
+        {k: v for k, v in (("owner", a.owner), ("url", a.url_), ("profile", a.profile_), ("host", a.host_)) if v}
+    )
     if not user.get("owner"):
         sys.exit("partyline setup: pass --owner (your handle, e.g. alan) the first time")
     USER_FILE.parent.mkdir(parents=True, exist_ok=True)
     USER_FILE.write_text(json.dumps(user, indent=2), encoding="utf-8")
     print(f"remembered {USER_FILE}: {user}")
+    ensure_login(user.get("profile") or "dev-eastus2", user.get("host"))
 
     claude = shutil.which("claude")
     if not claude:
@@ -138,6 +164,7 @@ def cmd_init(a: argparse.Namespace) -> None:
     repo = a.repo or root.name
 
     if not os.getenv("PARTYLINE_TOKEN") and not cli.is_local_url(url):
+        ensure_login(profile, user.get("host"))
         token = cli._mint_token(profile)
         if token:
             os.environ["PARTYLINE_TOKEN"] = token

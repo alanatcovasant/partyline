@@ -44,3 +44,42 @@ def test_init_writes_config_and_is_idempotent(tmp_path, monkeypatch):
     n = len(calls)
     setup.cmd_init(args)  # already initialised: no network, no rewrite
     assert len(calls) == n
+
+
+def test_ensure_login_noop_when_token_mints(monkeypatch):
+    monkeypatch.setattr(cli, "_mint_token", lambda profile: "tok")
+    monkeypatch.setattr(setup.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran login")))
+    setup.ensure_login("dev-eastus2", "https://adb-1.azuredatabricks.net")
+
+
+def test_ensure_login_runs_browser_login_then_retries(monkeypatch):
+    tokens = iter([None, "tok"])
+    monkeypatch.setattr(cli, "_mint_token", lambda profile: next(tokens))
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "databricks")
+    ran = []
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: ran.append(cmd))
+    setup.ensure_login("dev-eastus2", "https://adb-1.azuredatabricks.net")
+    assert ran == [["databricks", "auth", "login", "--host", "https://adb-1.azuredatabricks.net", "--profile", "dev-eastus2"]]
+
+
+def test_ensure_login_without_host_gives_the_exact_command(monkeypatch):
+    monkeypatch.setattr(cli, "_mint_token", lambda profile: None)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "databricks")
+    try:
+        setup.ensure_login("dev-eastus2", None)
+    except SystemExit as e:
+        assert "databricks auth login --host <workspace-url> --profile dev-eastus2" in str(e)
+    else:
+        raise AssertionError("expected SystemExit")
+
+
+def test_ensure_login_exits_if_login_did_not_complete(monkeypatch):
+    monkeypatch.setattr(cli, "_mint_token", lambda profile: None)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "databricks")
+    monkeypatch.setattr(setup.subprocess, "run", lambda *a, **k: None)
+    try:
+        setup.ensure_login("p", "https://h")
+    except SystemExit as e:
+        assert "did not complete" in str(e)
+    else:
+        raise AssertionError("expected SystemExit")

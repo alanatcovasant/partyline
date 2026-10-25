@@ -728,6 +728,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--owner", help="Your handle (e.g. alan); remembered in ~/.partyline/user.json")
     sp.add_argument("--app-url", dest="url_", help="Partyline app URL to remember for `init`")
     sp.add_argument("--databricks-profile", dest="profile_", help="Databricks profile to remember")
+    sp.add_argument(
+        "--workspace-host",
+        dest="host_",
+        help="Databricks workspace URL; lets setup run `databricks auth login` when the profile has no valid login",
+    )
     sp.set_defaults(func=_setup.cmd_setup)
 
     sp = sub.add_parser(
