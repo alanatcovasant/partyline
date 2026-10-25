@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python partyline-plugin/hooks/check_unread.py"
+            "command": "python -m covasant_partyline.check_unread"
           }
         ]
       }
