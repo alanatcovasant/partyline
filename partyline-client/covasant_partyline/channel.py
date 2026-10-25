@@ -14,13 +14,15 @@ See docs/superpowers/specs/2026-07-11-partyline-claude-channel-design.md.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import anyio
 from mcp import types as _t
@@ -78,13 +80,40 @@ class Settings:
     url: str
     token: str | None
     profile: str | None = None  # CLI profile for re-minting the token on each reconnect
+    # (token, exp_epoch) of the last minted JWT; see current_token().
+    _cached: tuple[str, float] | None = field(default=None, repr=False)
+
+
+# Re-mint this long before a cached token's `exp`, so a request never races its expiry.
+_REFRESH_MARGIN_S = 300
+
+
+def _jwt_expiry(token: str) -> float | None:
+    """`exp` (epoch seconds) of a JWT, read without verifying the signature — we only need
+    to know when to re-mint, not to trust the token. None for anything unparseable."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return float(json.loads(base64.urlsafe_b64decode(payload))["exp"])
+    except (IndexError, ValueError, KeyError, TypeError):
+        return None
 
 
 def current_token(settings: "Settings") -> str | None:
-    """A fresh bearer token for the next (re)connect / reply — re-minted per call so the
-    stream survives Databricks OAuth expiry (~1h). Delegates to cli.resolve_stream_token;
-    settings.token is only the fallback when the profile mint is unavailable."""
-    return cli.resolve_stream_token(settings.url, settings.profile, settings.token)
+    """A valid bearer token for the next (re)connect / reply, surviving Databricks OAuth
+    expiry (~1h). Delegates to cli.resolve_stream_token (a `databricks auth token` mint).
+
+    The mint is a subprocess: with many agents on one machine each re-minting on every
+    reconnect, slow mints stack up and the stream flaps. So a JWT is reused until shortly
+    before its `exp`; a token whose expiry can't be read is re-minted on every call, as
+    before. settings.token is only the fallback when the profile mint is unavailable."""
+    now = time.time()
+    if settings._cached and now < settings._cached[1] - _REFRESH_MARGIN_S:
+        return settings._cached[0]
+    token = cli.resolve_stream_token(settings.url, settings.profile, settings.token)
+    exp = _jwt_expiry(token) if token else None
+    settings._cached = (token, exp) if token and exp else None
+    return token
 
 
 # --------------------------------------------------------------------------- #
@@ -237,14 +266,20 @@ async def _subscribe_and_push(settings: "Settings", write_stream) -> None:
     Databricks OAuth expiry (~1h) instead of 401'ing forever on a stale token."""
     stream_url = settings.url.rstrip("/") + "/api/stream"
 
+    backoff = {"s": 2.0, "ok": False}
+
     def _read_once():
-        # Fresh token every (re)connect — this is what keeps the stream alive past ~1h.
+        # A valid token every (re)connect — this is what keeps the stream alive past ~1h.
         headers = {"Accept": "text/event-stream"}
         token = current_token(settings)
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        elif not cli.is_local_url(settings.url):
+            log.warning("no token for %s (profile=%s): `databricks auth token` failed or timed out; "
+                        "expect 401", settings.url, settings.profile)
         req = urllib.request.Request(stream_url, headers=headers)
         with urllib.request.urlopen(req, timeout=90) as resp:
+            backoff["s"], backoff["ok"] = 2.0, True  # healthy again: reset the retry delay
             log.info("SSE connected url=%s agent=%s authenticated=%s",
                      stream_url, settings.agent_id, bool(token))
             for msg in iter_data_events(line.decode(errors="replace") for line in resp):
@@ -252,23 +287,34 @@ async def _subscribe_and_push(settings: "Settings", write_stream) -> None:
                     # Hop back to the event loop to send on the anyio stream.
                     anyio.from_thread.run(push_event, write_stream, channel_params(msg))
 
+    async def _wait() -> None:
+        # Exponential backoff (2s → 60s) so a persistent failure — expired login, bad
+        # token, server down — can't spin a mint + connect loop every 2 seconds.
+        delay = backoff["s"]
+        backoff["s"] = min(delay * 2, 60.0)
+        await anyio.sleep(delay)
+
     while True:
         try:
+            backoff["ok"] = False
             await anyio.to_thread.run_sync(_read_once)
             log.info("SSE stream ended cleanly (server side); reconnecting in 2s")
+            await anyio.sleep(2)
         except urllib.error.HTTPError as exc:
+            exc.close()  # release the error response's socket instead of leaking it (CLOSE_WAIT)
+            settings._cached = None  # a rejected token must be re-minted, not reused
             # Distinguish auth failure (expired/invalid token — the classic ~1h drop) from
             # other HTTP errors, so logs point straight at the cause. current_token()
             # re-mints on the next loop, so a genuine expiry self-heals from here.
             if exc.code in (401, 403):
                 log.warning("SSE auth rejected HTTP %s (token expired/invalid?); "
-                            "re-minting and reconnecting in 2s", exc.code)
+                            "re-minting and reconnecting in %.0fs", exc.code, backoff["s"])
             else:
-                log.warning("SSE HTTP error %s; reconnecting in 2s", exc.code)
-            await anyio.sleep(2)
+                log.warning("SSE HTTP error %s; reconnecting in %.0fs", exc.code, backoff["s"])
+            await _wait()
         except Exception as exc:  # transient network error / stream end — reconnect
-            log.warning("SSE stream error (%s); reconnecting in 2s", exc)
-            await anyio.sleep(2)
+            log.warning("SSE stream error (%s); reconnecting in %.0fs", exc, backoff["s"])
+            await _wait()
 
 
 async def serve(settings: "Settings") -> None:
