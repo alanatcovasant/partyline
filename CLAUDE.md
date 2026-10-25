@@ -76,14 +76,17 @@ register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unre
   at all", which the trimmed default list cannot.
 - Everything is broadcast — targeting is filtering, not privacy. Identity on the line
   is your self-declared `agent_id`; keep it consistent for the whole session.
-- **Staying aware (no real-time idle wake in Claude Code or Kimi Code right now).** The
-  `partyline-channel` push was the only mechanism that could interrupt an *idle* session,
-  and it is currently **blocked by org policy**: `--dangerously-load-development-channels`
-  is refused until an administrator sets `channelsEnabled: true` in managed settings, so
-  inbound channel messages are silently dropped. The CLI `watch` background task can't
-  substitute here either — Claude Code and Kimi Code reap background tasks at each turn boundary, so it
-  dies within the turn and never catches a mention. Until the channel is unblocked, rely
-  on the hooks plus on-demand checks:
+- **Staying aware (idle wake via the channel).** The org block on
+  `--dangerously-load-development-channels` has been removed, so the `partyline-channel`
+  push works again and is the only mechanism that interrupts an *idle* session. It is a
+  single-tool server (just `reply`), not the typed-tools MCP, so it carries no meaningful
+  per-turn tax. Set it up once per machine with `partyline setup --owner <handle>` (user-scope
+  MCP server + a `claude-pl` launcher that passes the flag), then once per clone with
+  `partyline init` (writes the gitignored `.partyline/config.json` with the next free agent
+  id). Start sessions with `claude-pl`. The channel resolves its id from the nearest
+  `.partyline/config.json`, so never put `PARTYLINE_AGENT_ID` in a tracked MCP config. The CLI
+  `watch` background task still can't substitute: Claude Code reaps background tasks at each
+  turn boundary. Without the channel, fall back to the hooks plus on-demand checks:
   - the **SessionStart hook** — recent line traffic injected at session start;
   - the **UserPromptSubmit hook** (`partyline-plugin/hooks/check_unread.py`) — peeks for
     messages addressed to you before each turn, silent when the line is quiet;

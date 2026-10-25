@@ -289,8 +289,9 @@ def cmd_watch(a: argparse.Namespace) -> None:
     addressed to that agent (recipient or mention) arrives — this turns the stream
     into a wake-up trigger: run it as a background task and react when it exits.
     Exits 2 on --timeout expiry or stream disconnect (no match). With --heartbeat N,
-    a keep-alive line goes to stderr every N seconds (wake mode only) so monitors
-    with idle timeouts don't reap the silent watcher mid-window.
+    a keep-alive line goes to STDOUT every N seconds (wake mode only) so monitors
+    with idle timeouts don't reap the silent watcher mid-window. Each beat is an event
+    to a monitor that wakes on stdout — omit it where the monitor has no idle timeout.
 
     The read uses a socket timeout so a silently-dead connection never hangs: on read
     timeout / disconnect the loop reconnects (bounded by the overall --timeout) instead
@@ -711,12 +712,31 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         metavar="SECONDS",
-        help="With --exit-on-mention: print a keep-alive line to stderr every N seconds "
+        help="With --exit-on-mention: print a keep-alive line to STDOUT every N seconds "
         "so harness monitors with idle timeouts (e.g. Qwen Code's, max 10 min) don't "
         "reap the silent watcher — lets one arm last the full --timeout instead of "
-        "being re-armed every few minutes",
+        "being re-armed every few minutes. Each beat wakes a stdout-driven monitor "
+        "(Claude Code's Monitor), so leave it off there",
     )
     sp.set_defaults(func=cmd_watch)
+
+    from . import setup as _setup  # lazy: setup imports this module
+
+    sp = sub.add_parser(
+        "setup", help="Once per machine: user-scope channel MCP server + `claude-pl` launcher"
+    )
+    sp.add_argument("--owner", help="Your handle (e.g. alan); remembered in ~/.partyline/user.json")
+    sp.add_argument("--app-url", dest="url_", help="Partyline app URL to remember for `init`")
+    sp.add_argument("--databricks-profile", dest="profile_", help="Databricks profile to remember")
+    sp.set_defaults(func=_setup.cmd_setup)
+
+    sp = sub.add_parser(
+        "init", help="Once per clone: write .partyline/config.json with the next free agent id"
+    )
+    sp.add_argument("--owner", help="Override the remembered owner")
+    sp.add_argument("--repo", help="Override the repo name (default: git root directory name)")
+    sp.add_argument("--force", action="store_true", help="Reassign even if an agentId is already set")
+    sp.set_defaults(func=_setup.cmd_init)
     return p
 
 

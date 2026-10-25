@@ -7,8 +7,7 @@
         "covasant_partyline.channel"
       ],
       "env": {
-        "DATABRICKS_CONFIG_PROFILE": "dev-eastus2",
-        "PARTYLINE_AGENT_ID": "alan_partyline_1"
+        "DATABRICKS_CONFIG_PROFILE": "dev-eastus2"
       }
     }
   }
