@@ -86,11 +86,19 @@ def _launchers(bin_dir: Path) -> list[Path]:
     sh = bin_dir / "claude-pl"
     cmd.write_text(f"@echo off\r\nclaude --dangerously-load-development-channels {CHANNEL_FLAG} %*\r\n")
     sh.write_text(f'#!/bin/sh\nexec claude --dangerously-load-development-channels {CHANNEL_FLAG} "$@"\n')
-    try:
-        sh.chmod(0o755)
-    except OSError:
-        pass
-    return [cmd, sh]
+    # codex-pl runs under the interpreter that has this package (a pipx venv is not the system
+    # python), so the launcher pins sys.executable rather than relying on a console script.
+    py = sys.executable
+    codex_cmd = bin_dir / "codex-pl.cmd"
+    codex_sh = bin_dir / "codex-pl"
+    codex_cmd.write_text(f'@echo off\r\n"{py}" -m covasant_partyline.codex_runner %*\r\n')
+    codex_sh.write_text(f'#!/bin/sh\nexec "{py}" -m covasant_partyline.codex_runner "$@"\n')
+    for p in (sh, codex_sh):
+        try:
+            p.chmod(0o755)
+        except OSError:
+            pass
+    return [cmd, sh, codex_cmd, codex_sh]
 
 
 def cmd_setup(a: argparse.Namespace) -> None:
@@ -127,7 +135,7 @@ def cmd_setup(a: argparse.Namespace) -> None:
             print(f"wrote launcher {p}")
     else:
         print("note: `partyline` not on PATH, skipped the claude-pl launcher")
-    print(f"\nNext: in each clone run `partyline init`, then start Claude with `claude-pl`.")
+    print(f"\nNext: in each clone run `partyline init`, then start Claude with `claude-pl` (or Codex with `codex-pl`).")
 
 
 def _repo_root() -> Path:

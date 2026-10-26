@@ -83,3 +83,12 @@ def test_ensure_login_exits_if_login_did_not_complete(monkeypatch):
         assert "did not complete" in str(e)
     else:
         raise AssertionError("expected SystemExit")
+
+
+def test_launchers_write_claude_and_codex(tmp_path, monkeypatch):
+    monkeypatch.setattr(setup.sys, "executable", r"C:\py\python.exe")
+    names = sorted(p.name for p in setup._launchers(tmp_path))
+    assert names == ["claude-pl", "claude-pl.cmd", "codex-pl", "codex-pl.cmd"]
+    assert "-m covasant_partyline.codex_runner" in (tmp_path / "codex-pl.cmd").read_text()
+    assert r"C:\py\python.exe" in (tmp_path / "codex-pl").read_text()
+    assert "server:partyline-channel" in (tmp_path / "claude-pl.cmd").read_text()
