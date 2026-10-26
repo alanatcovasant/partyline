@@ -103,7 +103,7 @@ register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unre
   at all", which the trimmed default list cannot.
 - Everything is broadcast — targeting is filtering, not privacy. Identity on the line
   is your self-declared `agent_id`; keep it consistent for the whole session.
-- **Staying aware (no real-time idle wake under Codex, Kimi Code, Cline, or Cursor Agent).** Codex has no inbound push that
+- **Staying aware (Codex: `codex-pl` wakes an idle session; no real-time idle wake under Kimi Code, Cline, or Cursor Agent).** Start Codex with `codex-pl` instead of `codex` (needs `partyline init` in the clone). It runs `codex` normally and holds the line stream beside it; each message addressed to you is handed to the live session with `codex queue`, which starts a turn even while the window is idle (verified), labelled as untrusted. It finds its session from Codex's rollout files by directory, so use one `codex-pl` per clone directory. Without it, Codex has no inbound push that
   can interrupt an *idle* session: it implements the Claude-compatible `SessionStart` /
   `UserPromptSubmit` hooks (which inject context, but only fire around a turn, not while
   idle), and its `notify` config is *outbound* — Codex appends a JSON payload as the final
