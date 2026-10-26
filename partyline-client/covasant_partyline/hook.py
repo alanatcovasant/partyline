@@ -65,6 +65,9 @@ def _token(profile: str | None) -> str | None:
     try:
         out = subprocess.run(
             [exe, "auth", "token", "-p", profile],
+            # stdin must not be inherited: under an MCP server or hook it is the live protocol/event
+            # pipe, and `databricks auth token` hangs reading it whenever it has to refresh.
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=30,
