@@ -160,8 +160,13 @@ def launch(argv: list[str] | None = None) -> None:
     if not codex:
         sys.exit("codex-pl: `codex` not found on PATH")
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # force=True: importing `channel` already pointed the root logger at stderr, which is the
+    # TUI's terminal; without it this basicConfig would be a silent no-op.
     logging.basicConfig(
-        level=logging.INFO, filename=str(LOG_FILE), format="%(asctime)s %(levelname)s %(message)s"
+        level=logging.INFO,
+        filename=str(LOG_FILE),
+        format="%(asctime)s %(levelname)s %(message)s",
+        force=True,
     )
     settings = channel.resolve_settings([])  # id/url/profile from the nearest .partyline/config.json
     cwd = os.getcwd()

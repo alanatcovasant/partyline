@@ -45,3 +45,22 @@ def test_queue_never_inherits_stdin(monkeypatch):
     assert cr.queue_message("tid", "hi")
     assert seen["cmd"][1:] == ["queue", "--thread", "tid", "--message", "hi"]
     assert seen["kw"]["stdin"] is subprocess.DEVNULL
+
+
+def test_launch_logs_to_file_not_the_terminal(tmp_path, monkeypatch, capsys):
+    """Importing `channel` configures stderr logging; launch() must still redirect to the file."""
+    import logging
+
+    monkeypatch.setattr(cr, "LOG_FILE", tmp_path / "codex-pl.log")
+    monkeypatch.setattr(cr.shutil, "which", lambda _: "codex")
+    monkeypatch.setattr(cr.channel, "resolve_settings", lambda _a: cr.channel.Settings("me", "http://localhost", None))
+    monkeypatch.setattr(cr, "run_loop", lambda *a, **k: None)
+    monkeypatch.setattr(cr.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0))
+    try:
+        cr.launch([])
+    except SystemExit:
+        pass
+    for h in logging.getLogger().handlers:
+        h.flush()
+    assert capsys.readouterr().err == ""
+    assert "codex-pl started agent=me" in (tmp_path / "codex-pl.log").read_text()
