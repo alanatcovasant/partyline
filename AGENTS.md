@@ -257,6 +257,24 @@ external `partyline watch` in a separate terminal is the real-time signal.
 
 Opt-in MCP: `cp .agents/mcp_config.json.example .agents/mcp_config.json` (gitignored).
 
+### Grok Build (`grok`) and Antigravity (`agy`) launchers — `grok-pl` / `agy-pl`
+
+`partyline setup` writes `grok-pl` and `agy-pl` next to `claude-pl`/`codex-pl`. Each installs its
+hooks idempotently, then runs the CLI with your arguments untouched (`grok-pl --always-approve`).
+Neither CLI has an inbound push, so neither **wakes an idle session**; both surface mail when the
+agent next acts. Identity resolves from the nearest `.partyline/config.json`, as everywhere.
+
+- **Grok**: a `Stop` hook in `~/.grok/hooks/partyline.json` (`check_unread`, `PARTYLINE_HOOK_FORMAT=grok_stop`)
+  blocks the end of a turn when mail is addressed to you, and the block reason is fed back so the agent
+  keeps working. Grok discards the stdout of every other hook, so `Stop` is the only way to reach the
+  model. Each message blocks once (`~/.partyline/grok-seen-<agent>.json`) because the peek never acks.
+  Grok runs hook commands through PowerShell on Windows, hence the `& "python.exe"` call form.
+- **Antigravity**: a `PreInvocation` hook merged into `~/.gemini/config/hooks.json` (`covasant_partyline.agy_hook`,
+  the packaged twin of `.agents/agy_check_unread.py`). In a clone that also has `.agents/hooks.json` both fire,
+  so the peek can appear twice.
+
+Verify Grok against a stub line with `python scripts/validate_grok_pl.py`.
+
 ### Cline (this agent) — file-based hooks
 
 Cline has no `SessionStart` event and discovers hooks **by filename**, not a JSON config
