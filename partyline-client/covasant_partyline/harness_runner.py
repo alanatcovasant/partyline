@@ -26,6 +26,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .autoregister import register_self
+
 HOME = Path.home()
 GROK_HOOKS = HOME / ".grok" / "hooks" / "partyline.json"
 AGY_HOOKS = HOME / ".gemini" / "config" / "hooks.json"
@@ -116,6 +118,7 @@ def launch(harness: str, argv: list[str] | None = None) -> None:
     if not exe:
         sys.exit(f"{exe_name}-pl: `{exe_name}` not found on PATH")
     install()
+    register_self(harness)
     while True:
         try:
             sys.exit(subprocess.run([exe, *args]).returncode)

@@ -55,6 +55,7 @@ def test_launch_logs_to_file_not_the_terminal(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cr.shutil, "which", lambda _: "codex")
     monkeypatch.setattr(cr.channel, "resolve_settings", lambda _a: cr.channel.Settings("me", "http://localhost", None))
     monkeypatch.setattr(cr, "run_loop", lambda *a, **k: None)
+    monkeypatch.setattr(cr, "register_self", lambda h: None)
     monkeypatch.setattr(cr.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0))
     try:
         cr.launch([])

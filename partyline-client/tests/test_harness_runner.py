@@ -37,6 +37,7 @@ def test_launch_installs_then_runs_the_cli_with_args_untouched(monkeypatch):
     calls = []
     monkeypatch.setattr(hr.shutil, "which", lambda n: f"/bin/{n}")
     monkeypatch.setitem(hr.HARNESSES, "grok", ("grok", lambda: calls.append("install")))
+    monkeypatch.setattr(hr, "register_self", lambda h: calls.append(f"register:{h}"))
 
     class R:
         returncode = 7
@@ -46,7 +47,7 @@ def test_launch_installs_then_runs_the_cli_with_args_untouched(monkeypatch):
         hr.launch("grok", ["--always-approve"])
     except SystemExit as e:
         assert e.code == 7
-    assert calls == ["install", ["/bin/grok", "--always-approve"]]
+    assert calls == ["install", "register:grok", ["/bin/grok", "--always-approve"]]
 
 
 def test_launch_exits_when_the_cli_is_missing(monkeypatch):

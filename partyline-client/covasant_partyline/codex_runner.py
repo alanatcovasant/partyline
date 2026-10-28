@@ -29,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import channel, cli
+from .autoregister import register_self
 
 log = logging.getLogger("partyline.codex")
 
@@ -169,6 +170,7 @@ def launch(argv: list[str] | None = None) -> None:
         force=True,
     )
     settings = channel.resolve_settings([])  # id/url/profile from the nearest .partyline/config.json
+    register_self("codex")
     cwd = os.getcwd()
     since = time.time() - 5  # tolerate clock/timestamp rounding between us and Codex
     stop = threading.Event()
