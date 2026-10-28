@@ -55,6 +55,9 @@ check("positive: codex-pl console script present", "codex-pl" in eps)
 setup_src = z.read("covasant_partyline/setup.py").decode()
 check("positive: setup writes claude-pl and codex-pl launchers",
       "claude-pl" in setup_src and "codex-pl" in setup_src)
+check("positive: kimi-pl console script and its Stop hook module ship",
+      "kimi-pl" in eps and "covasant_partyline/kimi_hook.py" in z.namelist())
+check("positive: launchers register the agent at startup", "covasant_partyline/autoregister.py" in z.namelist())
 
 # Databricks Apps answers an unauthenticated request with a redirect to its login page, which
 # urllib follows to a 200 HTML page: the proof of refusal is that no wheel bytes come back.
