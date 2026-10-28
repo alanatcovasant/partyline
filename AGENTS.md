@@ -257,9 +257,9 @@ external `partyline watch` in a separate terminal is the real-time signal.
 
 Opt-in MCP: `cp .agents/mcp_config.json.example .agents/mcp_config.json` (gitignored).
 
-### Grok Build (`grok`) and Antigravity (`agy`) launchers — `grok-pl` / `agy-pl`
+### Grok Build (`grok`) and Antigravity (`agy`) launchers — `grok-pl` / `agy-pl` / `kimi-pl`
 
-`partyline setup` writes `grok-pl` and `agy-pl` next to `claude-pl`/`codex-pl`. Each installs its
+`partyline setup` writes `grok-pl`, `agy-pl` and `kimi-pl` next to `claude-pl`/`codex-pl`. Each installs its
 hooks idempotently, then runs the CLI with your arguments untouched (`grok-pl --always-approve`).
 Neither CLI has an inbound push, so neither **wakes an idle session**; both surface mail when the
 agent next acts. Identity resolves from the nearest `.partyline/config.json`, as everywhere.
@@ -273,7 +273,18 @@ agent next acts. Identity resolves from the nearest `.partyline/config.json`, as
   the packaged twin of `.agents/agy_check_unread.py`). In a clone that also has `.agents/hooks.json` both fire,
   so the peek can appear twice.
 
-Verify Grok against a stub line with `python scripts/validate_grok_pl.py`.
+- **Kimi** (`kimi-pl`): a `Stop` hook in a managed block of `~/.kimi/config.toml`
+  (`covasant_partyline.kimi_hook`, `PARTYLINE_HOOK_FORMAT=kimi_stop`). Kimi never feeds a hook's stdout to
+  the model, but a `Stop` that denies re-runs the turn with its reason as the user message (once per stop),
+  so mail is delivered that way, deduplicated like Grok's. `kimi --config` replaces the whole config rather
+  than merging, so hooks cannot be passed per process; the launcher drops Kimi's default `hooks = []` and
+  leaves a user's own non-empty `hooks` untouched (it then installs nothing).
+
+Every launcher also registers the agent (`partyline register` equivalent, from `.partyline/config.json`) at
+startup, so it shows as live from the first moment.
+
+Verify Grok against a stub line with `python scripts/validate_grok_pl.py`, Kimi with
+`python scripts/validate_hook_launchers.py kimi`.
 
 ### Cline (this agent) — file-based hooks
 

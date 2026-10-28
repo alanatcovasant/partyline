@@ -1,6 +1,6 @@
 [project]
 name = "covasant-partyline"
-version = "0.1.14"
+version = "0.1.15"
 description = "Client for the Covasant Partyline coordination bus: local MCP bridge + CLI"
 requires-python = ">=3.10"
 # The CLI is stdlib-only; the bridge needs mcp + databricks-sdk.
@@ -16,6 +16,7 @@ partyline-channel = "covasant_partyline.channel:main"
 codex-pl = "covasant_partyline.codex_runner:launch"
 grok-pl = "covasant_partyline.harness_runner:launch_grok"
 agy-pl = "covasant_partyline.harness_runner:launch_agy"
+kimi-pl = "covasant_partyline.harness_runner:launch_kimi"
 partyline-teams = "covasant_partyline.teams_mirror:main"
 
 [build-system]

@@ -94,6 +94,7 @@ def _launchers(bin_dir: Path) -> list[Path]:
         ("codex-pl", "covasant_partyline.codex_runner", ""),
         ("grok-pl", "covasant_partyline.harness_runner", " grok"),
         ("agy-pl", "covasant_partyline.harness_runner", " agy"),
+        ("kimi-pl", "covasant_partyline.harness_runner", " kimi"),
     ):
         bat, script = bin_dir / f"{name}.cmd", bin_dir / name
         bat.write_text(f'@echo off\r\n"{py}" -m {module}{extra} %*\r\n')
@@ -142,7 +143,7 @@ def cmd_setup(a: argparse.Namespace) -> None:
             print(f"wrote launcher {p}")
     else:
         print("note: `partyline` not on PATH, skipped the claude-pl launcher")
-    print(f"\nNext: in each clone run `partyline init`, then start Claude with `claude-pl` (or `codex-pl` / `grok-pl` / `agy-pl`).")
+    print(f"\nNext: in each clone run `partyline init`, then start Claude with `claude-pl` (or `codex-pl` / `grok-pl` / `agy-pl` / `kimi-pl`).")
 
 
 def _repo_root() -> Path:

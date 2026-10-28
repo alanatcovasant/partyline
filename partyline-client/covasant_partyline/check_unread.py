@@ -107,6 +107,11 @@ def _emit(context: str, hook_event_name: str = "UserPromptSubmit") -> None:
     if fmt == "grok_stop":
         print(json.dumps({"decision": "block", "reason": context}))
         return
+    # Kimi's Stop hook works the same way but reads the verdict from hookSpecificOutput: a deny
+    # re-runs the turn with `permissionDecisionReason` as the user message (once per stop).
+    if fmt == "kimi_stop":
+        print(json.dumps({"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": context}}))
+        return
     # Cline hooks read a JSON envelope on stdout: {"cancel": false, "contextModification": "..."}.
     if fmt == "cline":
         print(json.dumps({"cancel": False, "contextModification": context}))
@@ -197,7 +202,7 @@ def main() -> None:
     except Exception:
         return
 
-    if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") == "grok_stop":
+    if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") in ("grok_stop", "kimi_stop"):
         msgs = _unseen(agent_id, msgs)
     if not msgs:
         return
@@ -214,7 +219,7 @@ def main() -> None:
         # Prefer the concise summary; fall back to payload when a message has no summary.
         text = (m.get("summary") or m.get("payload") or "").replace("\n", " ")[:200]
         lines.append(f"- #{m.get('id')} [{typ}] from {frm}: {text}")
-    if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") in ("cursor_stop", "grok_stop"):
+    if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") in ("cursor_stop", "grok_stop", "kimi_stop"):
         lines.insert(
             1,
             "Partyline wake: handle these, ack them, then stop — do not start unrelated work.",

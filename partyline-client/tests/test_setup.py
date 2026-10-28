@@ -88,7 +88,7 @@ def test_ensure_login_exits_if_login_did_not_complete(monkeypatch):
 def test_launchers_write_every_harness(tmp_path, monkeypatch):
     monkeypatch.setattr(setup.sys, "executable", r"C:\py\python.exe")
     names = sorted(p.name for p in setup._launchers(tmp_path))
-    assert names == sorted(f"{n}{ext}" for n in ("agy-pl", "claude-pl", "codex-pl", "grok-pl") for ext in ("", ".cmd"))
+    assert names == sorted(f"{n}{ext}" for n in ("agy-pl", "claude-pl", "codex-pl", "grok-pl", "kimi-pl") for ext in ("", ".cmd"))
     assert "-m covasant_partyline.harness_runner grok %*" in (tmp_path / "grok-pl.cmd").read_text()
     assert '-m covasant_partyline.harness_runner agy "$@"' in (tmp_path / "agy-pl").read_text()
     assert "-m covasant_partyline.codex_runner" in (tmp_path / "codex-pl.cmd").read_text()

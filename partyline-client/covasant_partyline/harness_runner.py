@@ -1,6 +1,6 @@
-"""`grok-pl` / `agy-pl`: launch Grok Build or the Antigravity CLI with Partyline hooks installed.
+"""`grok-pl` / `agy-pl` / `kimi-pl`: launch an agent CLI with Partyline hooks installed.
 
-Neither CLI has an inbound push into a live session (Codex's `queue --thread`, Claude Code's
+None of these CLIs has an inbound push into a live session (Codex's `queue --thread`, Claude Code's
 `claude/channel`), so awareness comes from hooks, and a hook only runs when the agent does:
 
 - **Grok Build**: a `Stop` hook (`check_unread` in `grok_stop` format) blocks the end of a turn
@@ -10,17 +10,21 @@ Neither CLI has an inbound push into a live session (Codex's `queue --thread`, C
   directory without a `.partyline/config.json`.
 - **Antigravity**: a `PreInvocation` hook (`agy_hook`) injects the first-turn digest and later
   unread peeks, in `~/.gemini/config/hooks.json`.
+- **Kimi**: a `Stop` hook (`kimi_hook`) in a managed block of `~/.kimi/config.toml`. Kimi feeds no
+  hook stdout to the model; a `Stop` that denies re-runs the turn with its reason as the user
+  message. (`kimi --config` replaces the whole config, so it cannot carry hooks per process.)
 
-Neither wakes an idle session. For that, watch the line in another terminal.
+None of them wakes an idle session. For that, watch the line in another terminal.
 
 The launcher installs the hooks idempotently, then runs the CLI untouched, so it is a drop-in:
-`grok-pl [grok args...]`, `agy-pl [agy args...]`.
+`grok-pl [grok args...]`, `agy-pl [agy args...]`, and so on.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +35,8 @@ from .autoregister import register_self
 HOME = Path.home()
 GROK_HOOKS = HOME / ".grok" / "hooks" / "partyline.json"
 AGY_HOOKS = HOME / ".gemini" / "config" / "hooks.json"
+KIMI_CONFIG = HOME / ".kimi" / "config.toml"
+KIMI_BEGIN, KIMI_END = "# >>> partyline hooks (managed by kimi-pl)", "# <<< partyline hooks"
 HOOK_TIMEOUT_S = 30
 
 
@@ -105,18 +111,48 @@ def install_agy_hooks(path: Path = AGY_HOOKS) -> bool:
     return _write_json(path, existing)
 
 
+def kimi_block() -> str:
+    py = _portable_py()
+    command = json.dumps(f"{py} -m covasant_partyline.kimi_hook")
+    return f'{KIMI_BEGIN}\n[[hooks]]\nevent = "Stop"\ncommand = {command}\ntimeout = {HOOK_TIMEOUT_S}\n{KIMI_END}\n'
+
+
+def install_kimi_hooks(path: Path = KIMI_CONFIG) -> bool:
+    """Keep one managed `[[hooks]]` block in Kimi's config, leaving the user's own hooks alone.
+
+    A top-level `hooks = []` (Kimi's default) cannot coexist with `[[hooks]]` tables, so that one
+    line is dropped; a non-empty inline `hooks = [...]` is the user's, so we do not touch the file.
+    """
+    try:
+        old = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    except OSError:
+        old = ""
+    text = re.sub(rf"\n*{re.escape(KIMI_BEGIN)}.*?{re.escape(KIMI_END)}\n", "\n", old, flags=re.S)
+    text = re.sub(r"(?m)^hooks\s*=\s*\[\s*\]\s*\n", "", text)
+    if re.search(r"(?m)^hooks\s*=", text):
+        return False
+    new = text.rstrip("\n") + ("\n\n" if text.strip() else "") + kimi_block()
+    if new == old:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(new, encoding="utf-8", newline="\n")
+    return True
+
+
+# harness -> (executable names to look for, hook installer)
 HARNESSES = {
-    "grok": ("grok", install_grok_hooks),
-    "agy": ("agy", install_agy_hooks),
+    "grok": (("grok",), install_grok_hooks),
+    "agy": (("agy",), install_agy_hooks),
+    "kimi": (("kimi",), install_kimi_hooks),
 }
 
 
 def launch(harness: str, argv: list[str] | None = None) -> None:
-    exe_name, install = HARNESSES[harness]
+    exe_names, install = HARNESSES[harness]
     args = list(sys.argv[1:] if argv is None else argv)
-    exe = shutil.which(exe_name)
+    exe = next(filter(None, map(shutil.which, exe_names)), None)
     if not exe:
-        sys.exit(f"{exe_name}-pl: `{exe_name}` not found on PATH")
+        sys.exit(f"{harness}-pl: `{exe_names[0]}` not found on PATH")
     install()
     register_self(harness)
     while True:
@@ -132,6 +168,10 @@ def launch_grok(argv: list[str] | None = None) -> None:
 
 def launch_agy(argv: list[str] | None = None) -> None:
     launch("agy", argv)
+
+
+def launch_kimi(argv: list[str] | None = None) -> None:
+    launch("kimi", argv)
 
 
 if __name__ == "__main__":

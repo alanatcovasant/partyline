@@ -36,7 +36,7 @@ def test_agy_install_survives_a_corrupt_file(tmp_path):
 def test_launch_installs_then_runs_the_cli_with_args_untouched(monkeypatch):
     calls = []
     monkeypatch.setattr(hr.shutil, "which", lambda n: f"/bin/{n}")
-    monkeypatch.setitem(hr.HARNESSES, "grok", ("grok", lambda: calls.append("install")))
+    monkeypatch.setitem(hr.HARNESSES, "grok", (("grok",), lambda: calls.append("install")))
     monkeypatch.setattr(hr, "register_self", lambda h: calls.append(f"register:{h}"))
 
     class R:
@@ -58,8 +58,8 @@ def test_launch_exits_when_the_cli_is_missing(monkeypatch):
         assert "not found" in str(e.code)
 
 
-def _run_peek(monkeypatch, tmp_path, payload, msgs):
-    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "grok_stop")
+def _run_peek(monkeypatch, tmp_path, payload, msgs, fmt="grok_stop"):
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", fmt)
     monkeypatch.setattr(check_unread, "SEEN_DIR", tmp_path)
     monkeypatch.setattr(check_unread.cli, "_load_config", lambda: {})
     monkeypatch.setattr(check_unread.cli, "resolve_url", lambda *a, **k: "http://localhost:8000")
@@ -114,3 +114,43 @@ def test_agy_command_is_shell_agnostic(monkeypatch):
     assert hr.agy_hook()["PreInvocation"][0]["command"] == "C:/py/python.exe -m covasant_partyline.agy_hook"
     monkeypatch.setattr(hr.sys, "executable", "C:/Program Files/py/python.exe")
     assert hr.agy_hook()["PreInvocation"][0]["command"].startswith('"C:/Program Files/py/python.exe" -m')
+
+
+def test_kimi_install_replaces_the_empty_default_and_is_idempotent(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('default_model = "m"\nhooks = []\ntheme = "dark"\n')
+    assert hr.install_kimi_hooks(path) is True
+    text = path.read_text()
+    assert "\nhooks = []" not in text and text.count("[[hooks]]") == 1
+    assert 'event = "Stop"' in text and "covasant_partyline.kimi_hook" in text
+    assert hr.install_kimi_hooks(path) is False
+    assert path.read_text() == text
+
+
+def test_kimi_install_keeps_the_users_own_hook_tables(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[[hooks]]\nevent = "Stop"\ncommand = "x"\n')
+    hr.install_kimi_hooks(path)
+    hr.install_kimi_hooks(path)
+    import tomllib
+
+    hooks = tomllib.loads(path.read_text())["hooks"]
+    assert [h["command"] for h in hooks][0] == "x" and len(hooks) == 2
+    assert "covasant_partyline.kimi_hook" in hooks[1]["command"]
+
+
+def test_kimi_install_leaves_a_users_inline_hooks_alone(tmp_path):
+    path = tmp_path / "config.toml"
+    original = 'hooks = [{ event = "Stop", command = "x" }]\n'
+    path.write_text(original)
+    assert hr.install_kimi_hooks(path) is False
+    assert path.read_text() == original
+
+
+
+
+def test_kimi_stop_denies_once_with_the_mail_as_the_reason(monkeypatch, tmp_path):
+    out = json.loads(_run_peek(monkeypatch, tmp_path, {}, MAIL, fmt="kimi_stop"))
+    hook = out["hookSpecificOutput"]
+    assert hook["permissionDecision"] == "deny" and "addressed to you" in hook["permissionDecisionReason"]
+    assert _run_peek(monkeypatch, tmp_path, {}, MAIL, fmt="kimi_stop") == ""  # deduped, no re-block loop
