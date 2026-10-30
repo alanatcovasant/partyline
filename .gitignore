@@ -46,3 +46,8 @@ scratch/**
 log.txt
 deploy.stdout.txt
 deploy.stderr.txt
+
+# Local handoffs, test databases, and per-machine agent permissions are not app source.
+.handoff/
+.claude/settings.local.json
+.commandcode/

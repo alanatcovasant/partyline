@@ -214,6 +214,39 @@ def close_pool() -> None:
 _SCHEMA = """
 CREATE SCHEMA IF NOT EXISTS partyline;
 
+CREATE TABLE IF NOT EXISTS progress_tasks (
+    id UUID PRIMARY KEY,
+    folder TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued','active','blocked','done','cancelled')),
+    agent_id TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    details TEXT,
+    workstream TEXT,
+    workdir TEXT,
+    branch TEXT,
+    issue_ref TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS progress_one_current_folder
+    ON progress_tasks(folder) WHERE status IN ('active','blocked');
+CREATE INDEX IF NOT EXISTS progress_folder ON progress_tasks(folder, created_at DESC);
+CREATE TABLE IF NOT EXISTS progress_updates (
+    id BIGSERIAL PRIMARY KEY,
+    operation_id UUID UNIQUE NOT NULL,
+    task_id UUID NOT NULL REFERENCES progress_tasks(id) ON DELETE CASCADE,
+    folder TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    details TEXT,
+    author TEXT,
+    request JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS progress_task_history ON progress_updates(task_id, id DESC);
+
 CREATE TABLE IF NOT EXISTS agents (
     agent_id       TEXT PRIMARY KEY,
     owner          TEXT NOT NULL,

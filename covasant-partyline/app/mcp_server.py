@@ -19,6 +19,7 @@ from mcp.server.fastmcp import FastMCP
 
 from . import db
 from .config import settings
+from . import progress
 from .targets import InvalidTarget, infer_resource_type, validate_target
 
 log = logging.getLogger("partyline.mcp")
@@ -63,6 +64,41 @@ Full protocol, CLI equivalents, and wake-up options: the using-partyline skill a
 """
 
 mcp = FastMCP("covasant-partyline", instructions=INSTRUCTIONS)
+
+
+@mcp.tool()
+async def record_progress(folder: str, agent_id: str, status: str, summary: str,
+                          task_id: str | None = None, details: str | None = None,
+                          workstream: str | None = None, workdir: str | None = None,
+                          branch: str | None = None, issue_ref: str | None = None,
+                          operation_id: str | None = None) -> dict:
+    """Track folder work. queued adds backlog, started starts work; progress/blocked/done
+    update its current task or an explicit task_id. History is retained after completion.
+    This records status only and does not acquire or transfer coordination claims.
+    """
+    fields = dict(folder=folder, agent_id=agent_id, status=status, summary=summary,
+                  task_id=task_id, details=details, workstream=workstream,
+                  workdir=workdir, branch=branch, issue_ref=issue_ref)
+    if operation_id:
+        fields["operation_id"] = operation_id
+    try:
+        return await run_in_threadpool(progress.record, progress.ProgressUpdate(**fields))
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def list_progress(folder: str | None = None, include_done: bool = False,
+                        workstream: str | None = None) -> list[dict]:
+    """Current tasks and backlog, optionally by folder/workstream. Completed tasks are hidden by default."""
+    return await run_in_threadpool(progress.list_tasks, folder, include_done, workstream)
+
+
+@mcp.tool()
+async def progress_history(task_id: str) -> list[dict]:
+    """Read a task's progress details and milestones, newest first."""
+    from uuid import UUID
+    return await run_in_threadpool(progress.history, UUID(task_id))
 
 
 @mcp.tool()

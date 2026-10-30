@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ProgressBoard, taskLink, type Task } from "./ProgressBoard";
 
 type Message = {
   id: number;
@@ -959,7 +960,16 @@ function initialView(): "overview" | "dashboard" {
 }
 
 export function App() {
-  const [view, setView] = useState<"overview" | "dashboard" | "connect">(initialView);
+  const [view, setView] = useState<"overview" | "dashboard" | "connect">(() => new URLSearchParams(window.location.search).has("task") ? "dashboard" : initialView());
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [progressError, setProgressError] = useState("");
+  const [progressLoading, setProgressLoading] = useState(true);
+  const refreshProgress = useCallback(() => {
+    setProgressLoading(true);
+    getJSON<Task[]>("/api/progress?include_done=true&limit=1000").then(rows => { setTasks(rows); setProgressError(""); })
+      .catch(() => setProgressError("Progress could not be loaded. Try Refresh."))
+      .finally(() => setProgressLoading(false));
+  }, []);
   // Record the visit in an effect, never in the useState initializer above: StrictMode
   // double-invokes initializers in dev, so a write there would mark the page visited before
   // the first render and send a genuine first-time visitor straight past the Overview.
@@ -1028,8 +1038,10 @@ export function App() {
       })
       .catch(() => {});
     const refresh = () => {
+      refreshProgress();
       pullNew(); // self-heal: tail messages even if the SSE push never reaches the browser
-      getJSON<Agent[]>("/api/agents").then(setAgents).catch(() => {});
+      getJSON<Agent[]>("/api/agents").then(rows => setAgents(rows.sort((a, b) =>
+        a.agent_id.localeCompare(b.agent_id, "en", { numeric: true, sensitivity: "base" }) || a.agent_id.localeCompare(b.agent_id, "en")))).catch(() => {});
       getJSON<Claim[]>("/api/claims").then(setClaims).catch(() => {});
       getJSON<Metrics>("/api/metrics").then(setMetrics).catch(() => {});
       getJSON<Diagnostics>("/api/diagnostics/agents?sample_size=25")
@@ -1122,6 +1134,8 @@ export function App() {
       {view === "overview" ? <Overview onConnect={() => setView("connect")} /> :
        view === "connect" ? <ConnectAgent /> : <>
       <div className="panels">
+          <ProgressBoard tasks={tasks} error={progressError} loading={progressLoading} onRefresh={refreshProgress}
+            agents={agents.map(a => a.agent_id)} onChange={refreshProgress} />
           <section className="diag-panel" style={{ order: 4 }}>
             <h2>🩺 Diagnostics</h2>
             <dl className="metrics">
@@ -1169,6 +1183,8 @@ export function App() {
                     .map((a) => (
                       <li key={a.agent_id}>
                         <b>{a.agent_id}</b>
+                        {tasks.filter(t => t.agent_id === a.agent_id && ["active", "blocked"].includes(t.status)).map(t =>
+                          <div key={t.id}><a href={taskLink(t)}>Current task: {t.title}</a> <span className="muted">({t.folder})</span></div>)}
                         {a.repo && <span className="muted">{a.repo}</span>}
                         <time>{fmtAge(a.heartbeat_age_seconds)}</time>
                       </li>

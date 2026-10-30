@@ -10,7 +10,7 @@ import asyncio
 import logging
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 
@@ -31,9 +31,30 @@ from .models import (
 )
 from .targets import infer_resource_type
 from .notify import hub
+from . import progress
+from uuid import UUID
 
 router = APIRouter(prefix="/api", tags=["partyline"])
 log = logging.getLogger("partyline.rest")
+
+
+@router.post("/progress")
+async def record_progress(body: progress.ProgressUpdate, request: Request) -> dict:
+    try:
+        return await run_in_threadpool(progress.record, body, await resolve_author(request))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.get("/progress")
+async def get_progress(folder: str | None = None, include_done: bool = False,
+                       workstream: str | None = None, limit: int = Query(200, ge=1, le=1000)) -> list[dict]:
+    return await run_in_threadpool(progress.list_tasks, folder, include_done, workstream, limit)
+
+
+@router.get("/progress/{task_id}/history")
+async def get_progress_history(task_id: UUID, limit: int = Query(100, ge=1, le=500)) -> list[dict]:
+    return await run_in_threadpool(progress.history, task_id, limit)
 
 
 @router.get("/health")
