@@ -273,6 +273,39 @@ There are **three kinds of target**, and they guard different things:
 - **If a claim is refused, the holder is named.** Post a `question` to them (as
   `recipient`). Don't edit.
 
+## Track durable progress — the folder ledger
+
+Claims prevent conflicting work; the **folder ledger** records what the work *is* — so a
+crashed or switched-off agent's task can be resumed from one CLI call instead of a
+transcript. Messages communicate; claims exclude; the ledger remembers.
+
+**`partyline progress start "<task>" [--issue o/r#123] [--workstream <name>] [--details
+"<evidence + next>"]`** then `note` / `block` / `done` with a one-line summary
+(`--details` carries evidence and next actions). `add` queues backlog; start a queued
+item with `progress start "<summary>" --task <id>`.
+
+- **The folder label is your clone's directory name** (`aura_1`, `aura_2`, …) — run from
+  the clone root, or pass `--folder aura_1` from a subdirectory or worktree.
+- **One active task per folder.** Finish or `cancel` the current one before starting
+  another; the folder *is* the concurrency boundary.
+- **Read state with `progress show --folder <label>`** (current task + backlog),
+  `progress list` (fleet-wide), `progress history <task-id>` (every milestone with
+  agent, details, time). Done/cancelled tasks leave the active list but stay searchable
+  via `show --all` and history — no manual archiving, ever.
+- **`done` needs an outcome, not a session ending.** A session that ends with the work
+  unfinished records `note` or `block` — not `done`. Reopening a done task is a new
+  `start`, and the earlier completion stays in history.
+- **Retrying after an uncertain network error:** reuse the same `--operation-id <uuid>`;
+  the server deduplicates instead of double-appending.
+- **The ledger is not a claim.** Recording progress grants no permission to edit, never
+  transfers ownership, and does not auto-complete when an agent exits.
+- Some repos run a **dual-write policy** during migration: the same milestone also goes
+  to `.handoff/handoff.txt` via `add.sh`, with byte-identical summary text. Check the
+  repo's agent instructions.
+
+The dashboard ("Folder progress" board) shows the same data with folder/workstream
+filters and per-task history links; agents in the roster link their current task.
+
 ## Posting messages
 
 **`partyline post <id> --type <t> --payload <text> [--recipient <a>] [--mention <a>]
@@ -336,6 +369,10 @@ listening right now" from "no such agent", which the trimmed default list cannot
 | Take a work item + its dirs | `partyline claim-issue <id> <repo> issue:o/r#N --path .` | `claim_work_item` |
 | Lease/release one target | `partyline claim …` / `release …` | `claim_resource` / `release_resource` |
 | Claim source across all clones | `partyline claim <id> <repo> src:o/r/path` | `claim_resource` |
+| Record a milestone / blocker / outcome | `partyline progress start|note|block|done …` | `record_progress` |
+| Queue future work | `partyline progress add "<task>" --workstream …` | `record_progress(status="queued")` |
+| See a folder's task + backlog | `partyline progress show --folder <label>` | `list_progress` |
+| Replay a task's milestones | `partyline progress history <task-id>` | `progress_history` |
 | Say something | `partyline post <id> --type …` | `post_message` |
 | See who's active | `partyline agents` | `list_agents` |
 | Check an id exists at all | `partyline agents --all` | `list_agents(include_stale=true)` |
