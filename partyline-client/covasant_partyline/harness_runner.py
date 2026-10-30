@@ -1,4 +1,4 @@
-"""`grok-pl` / `agy-pl` / `kimi-pl`: launch an agent CLI with Partyline hooks installed.
+"""`grok-pl`, `agy-pl`, `kimi-pl`, `cmdc-pl`, `cursor-agent-pl`, `devin-pl`: Partyline launchers.
 
 None of these CLIs has an inbound push into a live session (Codex's `queue --thread`, Claude Code's
 `claude/channel`), so awareness comes from hooks, and a hook only runs when the agent does:
@@ -13,6 +13,10 @@ None of these CLIs has an inbound push into a live session (Codex's `queue --thr
 - **Kimi**: a `Stop` hook (`kimi_hook`) in a managed block of `~/.kimi/config.toml`. Kimi feeds no
   hook stdout to the model; a `Stop` that denies re-runs the turn with its reason as the user
   message. (`kimi --config` replaces the whole config, so it cannot carry hooks per process.)
+- **Cursor Agent**: preserving global `sessionStart` and `stop` hooks. The adapter resolves
+  clone identity from the workspace payload because global hooks run from `~/.cursor`.
+- **Devin**: `SessionStart` and `Stop` hooks merged into the user-level config. The adapter
+  resolves clone identity from `DEVIN_PROJECT_DIR` because the hooks live in a global config.
 
 None of them wakes an idle session. For that, watch the line in another terminal.
 
@@ -36,6 +40,10 @@ HOME = Path.home()
 GROK_HOOKS = HOME / ".grok" / "hooks" / "partyline.json"
 AGY_HOOKS = HOME / ".gemini" / "config" / "hooks.json"
 KIMI_CONFIG = HOME / ".kimi" / "config.toml"
+CMDC_SETTINGS = HOME / ".commandcode" / "settings.json"
+CURSOR_HOOKS = HOME / ".cursor" / "hooks.json"
+DEVIN_CONFIG = (Path(os.environ["APPDATA"]) / "devin" / "config.json") if os.environ.get("APPDATA") \
+    else (HOME / ".config" / "devin" / "config.json")
 KIMI_BEGIN, KIMI_END = "# >>> partyline hooks (managed by kimi-pl)", "# <<< partyline hooks"
 HOOK_TIMEOUT_S = 30
 
@@ -139,20 +147,117 @@ def install_kimi_hooks(path: Path = KIMI_CONFIG) -> bool:
     return True
 
 
+def install_cmdc_hooks(path: Path = CMDC_SETTINGS) -> bool:
+    """Merge our session/stop hooks without replacing user settings or other hooks."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+        raise ValueError(f"cmdc-pl: invalid settings in {path}")
+    hooks = data.setdefault("hooks", {})
+    command = f"{_portable_py()} -m covasant_partyline.cmdc_hook"
+    for event in ("SessionStart", "Stop"):
+        entries = hooks.setdefault(event, [])
+        if not isinstance(entries, list):
+            raise ValueError(f"cmdc-pl: invalid {event} hooks in {path}")
+        # Replace only our exact module invocation; retain the user's other commands.
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                raise ValueError(f"cmdc-pl: invalid {event} hook entry in {path}")
+            entry["hooks"] = [h for h in entry["hooks"]
+                              if not (isinstance(h, dict) and str(h.get("command", "")).endswith(
+                                  " -m covasant_partyline.cmdc_hook"))]
+        entries[:] = [entry for entry in entries if entry["hooks"]]
+        entries.append({"hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT_S}]})
+    return _write_json(path, data)
+
+
+def install_cursor_hooks(path: Path = CURSOR_HOOKS) -> bool:
+    """Merge global Cursor hooks, keeping user hooks and rejecting malformed config."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {"version": 1}
+    if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+        raise ValueError(f"cursor-agent-pl: invalid hooks in {path}")
+    data.setdefault("version", 1)
+    hooks = data.setdefault("hooks", {})
+    for event in ("sessionStart", "stop"):
+        entries = hooks.setdefault(event, [])
+        if not isinstance(entries, list) or any(not isinstance(e, dict) for e in entries):
+            raise ValueError(f"cursor-agent-pl: invalid {event} hooks in {path}")
+        suffix = f" -m covasant_partyline.cursor_hook {event}"
+        entries[:] = [e for e in entries if not str(e.get("command", "")).endswith(suffix)]
+        entry = {"command": f"{_portable_py()}{suffix}", "timeout": HOOK_TIMEOUT_S}
+        if event == "stop":
+            entry["loop_limit"] = 3
+        entries.append(entry)
+    return _write_json(path, data)
+
+
+def cursor_executable() -> str | None:
+    """The generic `agent` name can belong to Grok; verify it before using it."""
+    exe = shutil.which("cursor-agent")
+    if exe:
+        return exe
+    exe = shutil.which("agent")
+    if exe:
+        try:
+            result = subprocess.run([exe, "--help"], capture_output=True, text=True,
+                                    stdin=subprocess.DEVNULL, timeout=15)
+            if result.returncode == 0 and "Cursor Agent" in result.stdout:
+                return exe
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+def install_devin_hooks(path: Path = DEVIN_CONFIG) -> bool:
+    """Merge SessionStart/Stop hooks into Devin's user config, keeping other settings."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+        raise ValueError(f"devin-pl: invalid config in {path}")
+    hooks = data.setdefault("hooks", {})
+    command = f"{_portable_py()} -m covasant_partyline.devin_hook"
+    for event in ("SessionStart", "Stop"):
+        entries = hooks.setdefault(event, [])
+        if not isinstance(entries, list):
+            raise ValueError(f"devin-pl: invalid {event} hooks in {path}")
+        # Replace only our exact module invocation; retain the user's other hooks.
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                raise ValueError(f"devin-pl: invalid {event} hook entry in {path}")
+            entry["hooks"] = [h for h in entry["hooks"]
+                              if not (isinstance(h, dict) and str(h.get("command", "")).endswith(
+                                  " -m covasant_partyline.devin_hook"))]
+        entries[:] = [entry for entry in entries if entry["hooks"]]
+        entries.append({"matcher": "", "hooks": [{"type": "command", "command": command,
+                                                  "timeout": HOOK_TIMEOUT_S}]})
+    return _write_json(path, data)
+
+
 # harness -> (executable names to look for, hook installer)
 HARNESSES = {
     "grok": (("grok",), install_grok_hooks),
     "agy": (("agy",), install_agy_hooks),
     "kimi": (("kimi",), install_kimi_hooks),
+    "cmdc": (("cmdc", "command-code"), install_cmdc_hooks),
+    "cursor": (("cursor-agent", "agent"), install_cursor_hooks),
+    "devin": (("devin",), install_devin_hooks),
 }
 
 
 def launch(harness: str, argv: list[str] | None = None) -> None:
     exe_names, install = HARNESSES[harness]
     args = list(sys.argv[1:] if argv is None else argv)
-    exe = next(filter(None, map(shutil.which, exe_names)), None)
+    exe = cursor_executable() if harness == "cursor" else next(filter(None, map(shutil.which, exe_names)), None)
     if not exe:
-        sys.exit(f"{harness}-pl: `{exe_names[0]}` not found on PATH")
+        name = "cursor-agent-pl" if harness == "cursor" else f"{harness}-pl"
+        sys.exit(f"{name}: `{exe_names[0]}` not found on PATH (or fallback is not this CLI)")
     install()
     register_self(harness)
     while True:
@@ -172,6 +277,18 @@ def launch_agy(argv: list[str] | None = None) -> None:
 
 def launch_kimi(argv: list[str] | None = None) -> None:
     launch("kimi", argv)
+
+
+def launch_cmdc(argv: list[str] | None = None) -> None:
+    launch("cmdc", argv)
+
+
+def launch_cursor(argv: list[str] | None = None) -> None:
+    launch("cursor", argv)
+
+
+def launch_devin(argv: list[str] | None = None) -> None:
+    launch("devin", argv)
 
 
 if __name__ == "__main__":

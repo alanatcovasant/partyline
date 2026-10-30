@@ -102,9 +102,9 @@ def _unseen(agent_id: str, msgs: list) -> list:
 
 def _emit(context: str, hook_event_name: str = "UserPromptSubmit") -> None:
     fmt = os.getenv("PARTYLINE_HOOK_FORMAT") or ""
-    # Grok Build stop gate: blocking the stop feeds `reason` back as a user message and the
-    # agent runs another round, which is the only way a Grok hook can put text in front of the model.
-    if fmt == "grok_stop":
+    # Grok Build and Devin stop gates: blocking the stop feeds `reason` back and the agent
+    # runs another round. Grok's is the only one where that round is a user message.
+    if fmt in ("grok_stop", "cmdc_stop", "devin_stop"):
         print(json.dumps({"decision": "block", "reason": context}))
         return
     # Kimi's Stop hook works the same way but reads the verdict from hookSpecificOutput: a deny
@@ -156,6 +156,7 @@ def main() -> None:
     hook_event_name = "UserPromptSubmit"
     cursor_stop_ok = True
     grok_stop_ok = True
+    cmdc_stop_ok = True
     try:
         raw = sys.stdin.read()
         try:
@@ -168,6 +169,8 @@ def main() -> None:
                 # Grok fires Stop at session end too (its output is ignored there), and again for
                 # each round a block continues; gate only on a genuine end of turn, once.
                 grok_stop_ok = not payload.get("stopHookActive") and payload.get("reason", "end_turn") == "end_turn"
+                # Command Code and Devin both gate on the snake_case retry flag.
+                cmdc_stop_ok = not payload.get("stop_hook_active")
         except ValueError:
             pass
     except Exception:
@@ -176,6 +179,8 @@ def main() -> None:
     if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") == "cursor_stop" and not cursor_stop_ok:
         return
     if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") == "grok_stop" and not grok_stop_ok:
+        return
+    if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") in ("cmdc_stop", "devin_stop") and not cmdc_stop_ok:
         return
 
     # One resolution chain, shared with cli/channel/outbox/hook (cli.resolve_*): flag/env →
@@ -202,7 +207,7 @@ def main() -> None:
     except Exception:
         return
 
-    if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") in ("grok_stop", "kimi_stop"):
+    if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") in ("grok_stop", "kimi_stop", "cmdc_stop", "devin_stop"):
         msgs = _unseen(agent_id, msgs)
     if not msgs:
         return
@@ -219,7 +224,7 @@ def main() -> None:
         # Prefer the concise summary; fall back to payload when a message has no summary.
         text = (m.get("summary") or m.get("payload") or "").replace("\n", " ")[:200]
         lines.append(f"- #{m.get('id')} [{typ}] from {frm}: {text}")
-    if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") in ("cursor_stop", "grok_stop", "kimi_stop"):
+    if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") in ("cursor_stop", "grok_stop", "kimi_stop", "cmdc_stop", "devin_stop"):
         lines.insert(
             1,
             "Partyline wake: handle these, ack them, then stop — do not start unrelated work.",

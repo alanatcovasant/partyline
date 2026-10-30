@@ -178,13 +178,16 @@ def _get(url: str, token: str | None) -> object:
 
 def _emit(context: str) -> None:
     fmt = os.getenv("PARTYLINE_HOOK_FORMAT") or ""
+    if fmt == "cmdc":
+        print(json.dumps({"additionalContext": context}))
+        return
     # Cline hooks read a JSON envelope on stdout: {"cancel": false, "contextModification": "..."}.
     if fmt == "cline":
         print(json.dumps({"cancel": False, "contextModification": context}))
         return
-    # Qwen Code SessionStart hooks inject context only from the JSON envelope —
+    # Qwen Code and Devin CLI inject context only from the JSON envelope —
     # plain stdout is not added to the session. hookEventName is required.
-    if fmt == "qwen":
+    if fmt in ("qwen", "devin"):
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}))
         return
     # Antigravity injects context only through PreInvocation's injectSteps envelope;

@@ -1,5 +1,7 @@
 import io
 import json
+import os
+import pytest
 
 from covasant_partyline import check_unread, harness_runner as hr
 
@@ -33,10 +35,12 @@ def test_agy_install_survives_a_corrupt_file(tmp_path):
     assert "partyline" in json.loads(path.read_text())
 
 
-def test_launch_installs_then_runs_the_cli_with_args_untouched(monkeypatch):
+@pytest.mark.parametrize("harness,flag", [("grok", "--always-approve"), ("cmdc", "--yolo"), ("cursor", "--yolo"), ("devin", "--permission-mode")])
+def test_launch_installs_then_runs_the_cli_with_args_untouched(monkeypatch, harness, flag):
     calls = []
     monkeypatch.setattr(hr.shutil, "which", lambda n: f"/bin/{n}")
-    monkeypatch.setitem(hr.HARNESSES, "grok", (("grok",), lambda: calls.append("install")))
+    monkeypatch.setattr(hr, "cursor_executable", lambda: "/bin/cursor")
+    monkeypatch.setitem(hr.HARNESSES, harness, ((harness,), lambda: calls.append("install")))
     monkeypatch.setattr(hr, "register_self", lambda h: calls.append(f"register:{h}"))
 
     class R:
@@ -44,10 +48,10 @@ def test_launch_installs_then_runs_the_cli_with_args_untouched(monkeypatch):
 
     monkeypatch.setattr(hr.subprocess, "run", lambda cmd: calls.append(cmd) or R())
     try:
-        hr.launch("grok", ["--always-approve"])
+        hr.launch(harness, [flag])
     except SystemExit as e:
         assert e.code == 7
-    assert calls == ["install", "register:grok", ["/bin/grok", "--always-approve"]]
+    assert calls == ["install", f"register:{harness}", [f"/bin/{harness}", flag]]
 
 
 def test_launch_exits_when_the_cli_is_missing(monkeypatch):
@@ -83,6 +87,117 @@ def _run_peek(monkeypatch, tmp_path, payload, msgs, fmt="grok_stop"):
 
 
 MAIL = [{"id": 5, "agent_id": "bob", "message_type": "question", "summary": "ready?"}]
+
+
+def test_cmdc_install_preserves_settings_and_hooks_and_is_idempotent(tmp_path):
+    path = tmp_path / "settings.json"
+    own = {"hooks": [{"type": "command", "command": "my-hook"}]}
+    path.write_text(json.dumps({"permissions": {"allow": ["read"]}, "hooks": {"Stop": [own]}}))
+    assert hr.install_cmdc_hooks(path) is True
+    assert hr.install_cmdc_hooks(path) is False
+    data = json.loads(path.read_text())
+    assert data["permissions"] == {"allow": ["read"]}
+    assert data["hooks"]["Stop"][0] == own
+    for event in ("SessionStart", "Stop"):
+        entry = data["hooks"][event][-1]
+        assert "matcher" not in entry
+        assert entry["hooks"][0]["command"].endswith("-m covasant_partyline.cmdc_hook")
+
+
+def test_cmdc_install_refuses_to_overwrite_invalid_settings(tmp_path):
+    import pytest
+
+    path = tmp_path / "settings.json"
+    path.write_text("broken JSON")
+    with pytest.raises(ValueError):
+        hr.install_cmdc_hooks(path)
+    assert path.read_text() == "broken JSON"
+
+
+def test_cmdc_stop_blocks_once_and_honors_snake_case_retry_flag(monkeypatch, tmp_path):
+    assert _run_peek(monkeypatch, tmp_path, {"stop_hook_active": True}, MAIL, fmt="cmdc_stop") == ""
+    out = json.loads(_run_peek(monkeypatch, tmp_path, {}, MAIL, fmt="cmdc_stop"))
+    assert out["decision"] == "block" and "#5" in out["reason"]
+    assert _run_peek(monkeypatch, tmp_path, {}, MAIL, fmt="cmdc_stop") == ""
+    assert _run_peek(monkeypatch, tmp_path, {}, [], fmt="cmdc_stop") == ""
+
+
+def test_cmdc_hook_dispatches_session_start_and_stop(monkeypatch):
+    from covasant_partyline import cmdc_hook, hook
+
+    called = []
+    monkeypatch.setattr(hook, "main", lambda: called.append("start"))
+    monkeypatch.setattr(check_unread, "main", lambda: called.append("stop"))
+    for event, fmt in (("SessionStart", "cmdc"), ("Stop", "cmdc_stop")):
+        monkeypatch.setattr(cmdc_hook.sys, "stdin", io.StringIO(json.dumps({"hook_event_name": event})))
+        cmdc_hook.main()
+        assert cmdc_hook.os.environ["PARTYLINE_HOOK_FORMAT"] == fmt
+    assert called == ["start", "stop"]
+
+
+def test_cmdc_session_digest_uses_json_context(monkeypatch, capsys):
+    from covasant_partyline import hook
+
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "cmdc")
+    hook._emit("recent traffic")
+    assert json.loads(capsys.readouterr().out) == {"additionalContext": "recent traffic"}
+
+
+def test_devin_install_preserves_settings_and_hooks_and_is_idempotent(tmp_path):
+    path = tmp_path / "config.json"
+    own = {"hooks": [{"type": "command", "command": "my-hook"}]}
+    path.write_text(json.dumps({"model": "opus", "hooks": {"Stop": [own]}}))
+    assert hr.install_devin_hooks(path) is True
+    assert hr.install_devin_hooks(path) is False
+    data = json.loads(path.read_text())
+    assert data["model"] == "opus"
+    assert data["hooks"]["Stop"][0] == own
+    for event in ("SessionStart", "Stop"):
+        entry = data["hooks"][event][-1]
+        assert entry["matcher"] == ""
+        assert entry["hooks"][0]["command"].endswith("-m covasant_partyline.devin_hook")
+
+
+def test_devin_install_refuses_to_overwrite_invalid_config(tmp_path):
+    import pytest
+
+    path = tmp_path / "config.json"
+    path.write_text("broken JSON")
+    with pytest.raises(ValueError):
+        hr.install_devin_hooks(path)
+    assert path.read_text() == "broken JSON"
+
+
+def test_devin_stop_blocks_once_and_honors_snake_case_retry_flag(monkeypatch, tmp_path):
+    assert _run_peek(monkeypatch, tmp_path, {"stop_hook_active": True}, MAIL, fmt="devin_stop") == ""
+    out = json.loads(_run_peek(monkeypatch, tmp_path, {}, MAIL, fmt="devin_stop"))
+    assert out["decision"] == "block" and "#5" in out["reason"]
+    assert _run_peek(monkeypatch, tmp_path, {}, MAIL, fmt="devin_stop") == ""
+    assert _run_peek(monkeypatch, tmp_path, {}, [], fmt="devin_stop") == ""
+
+
+def test_devin_hook_resolves_project_dir_and_restores_process(monkeypatch, tmp_path):
+    from covasant_partyline import devin_hook, hook
+
+    original = os.getcwd()
+    calls = []
+    monkeypatch.setattr(hook, "main", lambda: calls.append((os.getcwd(), os.environ["PARTYLINE_HOOK_FORMAT"])))
+    monkeypatch.setattr(check_unread, "main", lambda: calls.append((os.getcwd(), os.environ["PARTYLINE_HOOK_FORMAT"])))
+    monkeypatch.setenv("DEVIN_PROJECT_DIR", str(tmp_path))
+    for event in ("SessionStart", "Stop"):
+        monkeypatch.setattr(devin_hook.sys, "stdin", io.StringIO(json.dumps({"hook_event_name": event})))
+        devin_hook.main()
+        assert os.getcwd() == original
+    assert calls == [(str(tmp_path), "devin"), (str(tmp_path), "devin_stop")]
+
+
+def test_devin_session_digest_uses_hook_specific_output(monkeypatch, capsys):
+    from covasant_partyline import hook
+
+    monkeypatch.setenv("PARTYLINE_HOOK_FORMAT", "devin")
+    hook._emit("recent traffic")
+    assert json.loads(capsys.readouterr().out) == {
+        "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "recent traffic"}}
 
 
 def test_stop_blocks_once_with_the_mail_as_the_reason(monkeypatch, tmp_path):

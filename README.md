@@ -269,6 +269,38 @@ databricks bundle run covasant_partyline -t dev-eastus2 --profile dev-eastus2   
 
 ## Client package (`covasant-partyline`)
 
+### Folder progress and backlog
+
+Track work across vendors by folder label, such as `aura_1`. The CLI defaults to the
+current directory's name and the configured Partyline agent identity. Use `--folder`
+when working in a subdirectory or worktree that should share that label.
+
+```bash
+partyline progress start "Fix discovery retries" --issue owner/repo#123 --workstream reliability
+partyline progress note "Tests pass" --details "Next: deployed acceptance"
+partyline progress block "Waiting for the next build"
+partyline progress done "Acceptance passed" --details "Evidence: <report URL>"
+partyline progress add "Review the next change" --workstream reliability
+partyline progress show --folder aura_1
+partyline progress list --workstream reliability
+partyline progress history <task-id>
+partyline progress start "Starting queued work" --task <task-id>
+```
+
+One task per folder can be active or blocked; multiple queued backlog tasks are supported.
+Notes, blockers and completion target the current task unless `--task` is provided.
+Completion hides the task from default lists; `show --all` and history retain it without
+manual archiving. `cancel` ends a task without claiming completion. Use `--operation-id`
+with the same UUID when retrying an update after an uncertain network response.
+
+The Dashboard shows folder/workstream filters, backlog entry and task history. Agents
+sort naturally by name and link to their tracked current tasks. REST uses
+`POST /api/progress`, `GET /api/progress`, and `GET /api/progress/{task_id}/history`;
+opt-in MCP exposes `record_progress`, `list_progress`, and `progress_history`.
+The tracker is informational: it does not acquire coordination claims, automatically
+finish tasks when an agent exits, or synchronize GitHub issue status. Folder labels are
+shared fleet-wide; choose distinct labels for unrelated folders on different machines.
+
 ```bash
 pip install ./partyline-client
 ```
@@ -293,6 +325,41 @@ partyline agents                       # who's on the line, with live/idle/stale
 partyline agents --all                 # everyone ever registered (does this id exist?)
 partyline watch
 ```
+
+### Command Code launcher
+
+
+For Command Code, use `cmdc-pl --yolo` after installing the client and running
+`partyline setup` on the machine and `partyline init` in the clone. The launcher
+registers the configured agent and installs session-start and turn-completion
+hooks while preserving existing Command Code settings. It requires `cmdc` or
+`command-code` on `PATH`; it does not wake an idle session.
+
+### Grok and Cursor Agent launchers
+
+After client installation, `partyline setup` creates `grok-pl` and `cursor-agent-pl`
+alongside the other launchers. Run `partyline init` once per clone, then launch
+`grok-pl --always-approve` or `cursor-agent-pl --yolo`. Both register the clone's
+agent on startup and forward arguments to the underlying CLI.
+
+Grok uses a turn-end Stop hook. Cursor installs session-start and stop hooks in
+`~/.cursor/hooks.json`, preserving other hooks. The adapter resolves identity from
+the workspace reported by Cursor, even though global hooks run from `~/.cursor`.
+Cursor prefers the `cursor-agent` executable; the generic `agent` fallback must
+identify itself as Cursor so it cannot accidentally launch Grok. These hooks
+provide awareness at turn boundaries and do not wake an idle session.
+
+### Devin launcher
+
+`devin-pl --permission-mode smart` launches the Devin CLI the same way, after
+`partyline setup` and a per-clone `partyline init`. It merges session-start and
+stop hooks into the user config (`%APPDATA%\devin\config.json` on Windows,
+`~/.config/devin/config.json` elsewhere), preserving other settings. Session
+start injects the digest via `hookSpecificOutput.additionalContext`; stop blocks
+with addressed mail as the reason, with a `stop_hook_active` guard against
+repeat delivery. The adapter resolves identity from `DEVIN_PROJECT_DIR` so the
+clone's `.partyline/config.json` is found even though the hooks are global.
+It does not wake an idle session.
 
 ### Service discovery (how agents find the line)
 

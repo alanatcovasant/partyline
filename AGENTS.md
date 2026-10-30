@@ -17,6 +17,21 @@ for product context.
 
 ## Partyline (inter-agent coordination)
 
+### Folder progress tracker
+
+After registration and acquiring the required claims, record significant task milestones
+with `partyline progress start "<task>"`, `note "<progress>"`, `block "<reason>"`, and
+`done "<outcome>"`. These resolve the agent from config and folder from the working
+directory; use `--folder aura_1` in subdirectories/worktrees. Use `--details` for evidence
+and next actions, and `--issue` / `--workstream` for context. Do not mark a task done merely
+because a session or implementation step ended.
+
+`partyline progress add "<task>" --workstream <name>` adds queued backlog. Start a queued
+item with `progress start "<summary>" --task <id>`. One current task per folder is allowed;
+completed items leave the active list automatically, with their history retained.
+Recover with `progress show --folder aura_1` and `progress history <task-id>`.
+The tracker records work; it does not replace claims or grant permission to edit.
+
 Multiple agents work these repos in parallel. There are two ways to reach the line;
 **prefer the CLI + hooks path** and load MCP only when you specifically want typed tools.
 
@@ -257,9 +272,9 @@ external `partyline watch` in a separate terminal is the real-time signal.
 
 Opt-in MCP: `cp .agents/mcp_config.json.example .agents/mcp_config.json` (gitignored).
 
-### Grok Build (`grok`) and Antigravity (`agy`) launchers — `grok-pl` / `agy-pl` / `kimi-pl`
+### Hook launchers — `grok-pl` / `agy-pl` / `kimi-pl` / `cmdc-pl` / `cursor-agent-pl` / `devin-pl`
 
-`partyline setup` writes `grok-pl`, `agy-pl` and `kimi-pl` next to `claude-pl`/`codex-pl`. Each installs its
+`partyline setup` writes `grok-pl`, `agy-pl`, `kimi-pl`, `cmdc-pl`, `cursor-agent-pl` and `devin-pl` next to `claude-pl`/`codex-pl`. Each installs its
 hooks idempotently, then runs the CLI with your arguments untouched (`grok-pl --always-approve`).
 Neither CLI has an inbound push, so neither **wakes an idle session**; both surface mail when the
 agent next acts. Identity resolves from the nearest `.partyline/config.json`, as everywhere.
@@ -282,6 +297,36 @@ agent next acts. Identity resolves from the nearest `.partyline/config.json`, as
 
 Every launcher also registers the agent (`partyline register` equivalent, from `.partyline/config.json`) at
 startup, so it shows as live from the first moment.
+
+- **Cursor Agent** (`cursor-agent-pl`): launches `cursor-agent`, with a verified
+  Cursor-only `agent` fallback (the generic name may belong to Grok). Installs
+  preserving, idempotent global `sessionStart` and `stop` hooks in `~/.cursor/hooks.json`.
+  The packaged adapter switches to the workspace from `workspace_roots` or
+  `CURSOR_PROJECT_DIR` before resolving Partyline config. Session start emits
+  `additional_context`; stop emits `followup_message` for completed turns, bounded
+  by `loop_limit: 3`. Global hooks may run alongside project hooks, so the digest
+  can appear twice in a clone that also has the tracked hooks. No idle wake.
+
+- **Command Code** (`cmdc-pl`): launches `cmdc` (or `command-code`) with arguments
+  untouched, e.g. `cmdc-pl --yolo`. It merges `SessionStart` and `Stop` hooks into
+  `~/.commandcode/settings.json`, preserving other settings and hooks. Session start injects
+  the Partyline digest as JSON `additionalContext`; Stop returns `decision: "block"` with
+  addressed mail as `reason`. The snake-case `stop_hook_active` retry guard and message
+  deduplication prevent repeated follow-ups. Hooks resolve identity from the nearest
+  `.partyline/config.json`. Invalid settings are left untouched and reported at launch.
+  This provides context at session start and turn completion; it does not wake an idle session.
+  Hook contract: https://commandcode.ai/docs/hooks.
+
+- **Devin** (`devin-pl`): launches `devin` with arguments untouched, e.g.
+  `devin-pl --permission-mode smart`. It merges `SessionStart` and `Stop` hooks into the
+  user config (`%APPDATA%\devin\config.json` on Windows, `~/.config/devin/config.json`
+  elsewhere), preserving other settings and hooks. Session start injects the digest as
+  `hookSpecificOutput.additionalContext`; Stop returns `decision: "block"` with addressed
+  mail as `reason`. The snake-case `stop_hook_active` retry guard and message
+  deduplication prevent repeated follow-ups. The adapter resolves identity from
+  `DEVIN_PROJECT_DIR`, so global hooks find the clone's `.partyline/config.json`.
+  Invalid config is left untouched and reported at launch. No idle wake.
+  Hook contract: https://docs.devin.ai/cli/extensibility/hooks/overview.
 
 Verify Grok against a stub line with `python scripts/validate_grok_pl.py`, Kimi with
 `python scripts/validate_hook_launchers.py kimi`.

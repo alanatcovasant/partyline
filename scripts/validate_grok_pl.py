@@ -83,7 +83,12 @@ mail = [{"id": 9001, "agent_id": "stub_sender", "message_type": "question",
          "summary": f"{CODEWORD}: reply with this codeword"}]
 out, peeks = run_grok(mail)
 check("positive: model is handed the mail and states the codeword", CODEWORD in out)
-check("positive: line peeked exactly once (no re-block loop)", peeks == 1, f"{peeks} unread requests")
+check("positive: model states the addressed codeword once", out.count(CODEWORD) == 1,
+      f"{out.count(CODEWORD)} codeword responses")
+# Grok may fire Stop again after the codeword reply. That second inbox read is harmless:
+# the hook's persisted deduplication suppresses a second delivery of the same message.
+check("positive: inbox checks remain bounded across the reply", 1 <= peeks <= 2,
+      f"{peeks} unread requests")
 
 out, peeks = run_grok([])
 check("negative: quiet line does not block the stop", CODEWORD not in out and "ready" in out.lower())

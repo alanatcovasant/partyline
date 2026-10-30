@@ -1,6 +1,6 @@
-"""Post-deploy check: `kimi-pl` surfaces Partyline mail to the model.
+"""Post-deploy check: `kimi-pl` / `devin-pl` surface Partyline mail to the model.
 
-    python scripts/validate_hook_launchers.py [kimi]
+    python scripts/validate_hook_launchers.py [kimi devin]
 
 For each harness (default: kimi) it runs the launcher's own code path - register, install hooks -
 then drives the real CLI headless against a throwaway project whose Partyline config points at a
@@ -63,6 +63,9 @@ def serve(mail: list):
 
 
 def command(harness: str) -> list[str]:
+    if harness == "devin":
+        # --print cannot show the workspace-trust prompt in the throwaway project, so skip it.
+        return [shutil.which("devin"), "--print", "--respect-workspace-trust", "false", PROMPT]
     # kimi --print takes the prompt on stdin
     return [shutil.which("kimi"), "--print"]
 

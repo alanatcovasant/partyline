@@ -57,6 +57,10 @@ check("positive: setup writes claude-pl and codex-pl launchers",
       "claude-pl" in setup_src and "codex-pl" in setup_src)
 check("positive: kimi-pl console script and its Stop hook module ship",
       "kimi-pl" in eps and "covasant_partyline/kimi_hook.py" in z.namelist())
+check("positive: cmdc-pl console script and session/Stop adapter ship",
+      "cmdc-pl" in eps and "covasant_partyline/cmdc_hook.py" in z.namelist())
+check("positive: devin-pl console script and session/Stop adapter ship",
+      "devin-pl" in eps and "covasant_partyline/devin_hook.py" in z.namelist())
 check("positive: launchers register the agent at startup", "covasant_partyline/autoregister.py" in z.namelist())
 
 # Databricks Apps answers an unauthenticated request with a redirect to its login page, which
