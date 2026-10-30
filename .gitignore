@@ -46,6 +46,7 @@ scratch/**
 log.txt
 deploy.stdout.txt
 deploy.stderr.txt
+deploy-run.log
 
 # Local handoffs, test databases, and per-machine agent permissions are not app source.
 .handoff/

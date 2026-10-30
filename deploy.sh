@@ -47,7 +47,9 @@ ENDPOINT_NAME="$ENDPOINT_NAME" APP_NAME="mcp-covasant-partyline" DATABRICKS_CONF
   python scripts/migrate_schema.py
 
 echo "==> 2/4 Building ops SPA"
-( cd covasant-partyline/client && npm install && npm run build )
+# --include=dev: an ambient NODE_ENV=production (set on some machines) makes npm skip
+# devDependencies, so tsc/vite vanish and the build dies with "tsc is not recognized".
+( cd covasant-partyline/client && npm install --include=dev && npm run build )
 
 echo "==> 2.5/4 Packaging VS Code extension for download"
 # Build the extension and host it from the SPA's static dir so teammates can install it
@@ -55,7 +57,7 @@ echo "==> 2.5/4 Packaging VS Code extension for download"
 # SPA build — vite empties client/dist on build, which would otherwise wipe the .vsix.
 (
   cd editors/vscode
-  npm install
+  npm install --include=dev
   npm run compile
   # --allow-missing-repository: the manifest has no `repository` field, and without this
   # flag vsce errors in a non-interactive shell (set -e would then abort the deploy).

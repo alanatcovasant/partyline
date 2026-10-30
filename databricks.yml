@@ -10,7 +10,13 @@ include:
 # node_modules/.venv are already skipped via .gitignore. The built ops SPA and the
 # deploy-stamped build metadata are gitignored (build artifacts) but ARE needed at
 # runtime, so force-sync them — otherwise the app falls back to 0.1.0.dev0 defaults.
+# .handoff/ (local notes, disposable test dirs) is excluded explicitly: gitignore
+# matching still requires the walker to open each entry, and a leftover pytest
+# basetemp dir with a broken ACL aborted the whole sync with "Access is denied".
 sync:
+  exclude:
+    - ".handoff/**"
+    - ".commandcode/**"
   include:
     - "covasant-partyline/client/dist/**"
     - "covasant-partyline/app/__version__.py"
