@@ -1,6 +1,6 @@
 # Proposal: Partyline Work Ledger
 
-**Status:** Draft for discussion; no implementation or deployment authorized by this document.  
+**Status:** Draft for discussion; no implementation or deployment authorized by this document. **Partly superseded 2026-10-31:** the lightweight folder-keyed progress ledger (`partyline progress`, deployed 0.1.18) covers current-state, append-only history and completed-work filtering. The items/runs/events schema, evidence-bound completion and machine-qualified locations proposed below remain unimplemented.  
 **Date:** 2026-10-30  
 **Purpose:** Replace maintained `.handoff/handoff.txt` files with durable, queryable work records shared across agents, vendors, sessions, clones, and machines.
 
