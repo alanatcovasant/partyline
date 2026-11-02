@@ -247,6 +247,33 @@ CREATE TABLE IF NOT EXISTS progress_updates (
 );
 CREATE INDEX IF NOT EXISTS progress_task_history ON progress_updates(task_id, id DESC);
 
+CREATE TABLE IF NOT EXISTS vq_items (
+    id UUID PRIMARY KEY,
+    issue_ref TEXT NOT NULL,
+    target TEXT NOT NULL,
+    script TEXT,
+    proc TEXT,
+    pr TEXT,
+    enqueued_by TEXT NOT NULL,
+    claimed_by TEXT,
+    claimed_until TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (issue_ref, target)
+);
+CREATE TABLE IF NOT EXISTS vq_runs (
+    id BIGSERIAL PRIMARY KEY,
+    operation_id UUID UNIQUE NOT NULL,
+    item_id UUID NOT NULL REFERENCES vq_items(id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL,
+    exit_code INT NOT NULL CHECK (exit_code IN (0,1,2)),
+    executed BOOLEAN NOT NULL DEFAULT false,
+    commit TEXT,
+    output_tail TEXT,
+    request JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS vq_runs_item ON vq_runs(item_id, id DESC);
+
 CREATE TABLE IF NOT EXISTS agents (
     agent_id       TEXT PRIMARY KEY,
     owner          TEXT NOT NULL,

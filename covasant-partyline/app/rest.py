@@ -31,7 +31,7 @@ from .models import (
 )
 from .targets import infer_resource_type
 from .notify import hub
-from . import progress
+from . import progress, vq
 from uuid import UUID
 
 router = APIRouter(prefix="/api", tags=["partyline"])
@@ -55,6 +55,43 @@ async def get_progress(folder: str | None = None, include_done: bool = False,
 @router.get("/progress/{task_id}/history")
 async def get_progress_history(task_id: UUID, limit: int = Query(100, ge=1, le=500)) -> list[dict]:
     return await run_in_threadpool(progress.history, task_id, limit)
+
+
+def _vq_call(fn, *args):
+    try:
+        return fn(*args)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(423, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.post("/vq/items")
+async def vq_enqueue(body: vq.Enqueue) -> dict:
+    return await run_in_threadpool(_vq_call, vq.enqueue, body)
+
+
+@router.post("/vq/claim")
+async def vq_claim(body: vq.Claim) -> dict:
+    return await run_in_threadpool(_vq_call, vq.claim, body)
+
+
+@router.post("/vq/runs")
+async def vq_run(body: vq.Run) -> dict:
+    return await run_in_threadpool(_vq_call, vq.record_run, body)
+
+
+@router.get("/vq/items")
+async def vq_list(target: str | None = None, state: str | None = None,
+                  limit: int = Query(200, ge=1, le=1000)) -> list[dict]:
+    return await run_in_threadpool(_vq_call, vq.list_items, target, state, limit)
+
+
+@router.get("/vq/show")
+async def vq_show(issue_ref: str, target: str) -> dict:
+    return await run_in_threadpool(_vq_call, vq.show, issue_ref, target)
 
 
 @router.get("/health")
