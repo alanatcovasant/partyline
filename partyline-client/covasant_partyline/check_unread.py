@@ -42,8 +42,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
 import sys
 import urllib.parse
 import urllib.request
@@ -56,27 +54,15 @@ SEEN_DIR = Path.home() / ".partyline"
 
 
 def _token(profile: str | None) -> str | None:
+    # An expired exported token would otherwise outrank the mint and 401 every call.
+    cli._drop_stale_env_token("check_unread")
     if os.getenv("PARTYLINE_TOKEN"):
         return os.environ["PARTYLINE_TOKEN"]
     if not profile:
         return None  # local app — no profile to mint against, and none needed
-    exe = shutil.which("databricks")
-    if not exe:
-        return None
-    try:
-        out = subprocess.run(
-            [exe, "auth", "token", "-p", profile],
-            # stdin must not be inherited: under an MCP server or hook it is the live protocol/event
-            # pipe, and `databricks auth token` hangs reading it whenever it has to refresh.
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=True,
-        ).stdout
-        return json.loads(out).get("access_token")
-    except Exception:
-        return None
+    # Delegate to the cli mint so a failure is diagnosed the same way everywhere (one
+    # stderr warning per process) instead of going silently deaf here.
+    return cli._mint_token(profile)
 
 
 def _unseen(agent_id: str, msgs: list) -> list:

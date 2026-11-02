@@ -39,8 +39,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
-import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -55,27 +53,15 @@ MAX_COLD_SHOWN = 6
 
 
 def _token(profile: str | None) -> str | None:
+    # An expired exported token would otherwise outrank the mint and 401 every call.
+    cli._drop_stale_env_token("hook")
     if os.getenv("PARTYLINE_TOKEN"):
         return os.environ["PARTYLINE_TOKEN"]
     if not profile:
         return None  # local app — no profile to mint against, and none needed
-    exe = shutil.which("databricks")
-    if not exe:
-        return None
-    try:
-        out = subprocess.run(
-            [exe, "auth", "token", "-p", profile],
-            # stdin must not be inherited: under an MCP server or hook it is the live protocol/event
-            # pipe, and `databricks auth token` hangs reading it whenever it has to refresh.
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=True,
-        ).stdout
-        return json.loads(out).get("access_token")
-    except Exception:
-        return None
+    # Delegate to the cli mint so a failure is diagnosed the same way everywhere (one
+    # stderr warning per process) instead of going silently deaf here.
+    return cli._mint_token(profile)
 
 
 def _is_path_target(target: str) -> bool:
@@ -230,7 +216,9 @@ def main() -> None:
 
     token = _token(cli.resolve_profile(a.profile, url=base, cfg=cfg))
     if not token and not cli.is_local_url(base):
-        return  # remote app without a token would only 401; stay silent
+        # cli._mint_token has already warned on stderr once if the mint failed; a remote
+        # app without a token would only 401, so stay silent past that.
+        return
 
     try:
         agents = _get(f"{base}/api/agents?include_stale=true", token)

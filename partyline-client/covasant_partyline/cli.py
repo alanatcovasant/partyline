@@ -42,13 +42,16 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 
 from .targets import normalize_target
 
@@ -77,6 +80,15 @@ def _explain_http_error(code: int, raw: str) -> str:
             lines.append("  registered ids that look close: " + ", ".join(detail["suggestions"]))
         lines.append("  see who is on the line: partyline agents --all")
         return "\n".join(lines)
+    if code in (401, 403) and not detail:
+        # The Apps auth proxy answers a tokenless/expired request with an empty body —
+        # 'HTTP 401: {}' says nothing about why. The mint is the usual suspect, so name it.
+        return (
+            f"HTTP {code}: the app rejected the request as unauthenticated.\n"
+            "  partyline mints a Databricks token from the configured profile; that mint "
+            "failed or its token was rejected. Look for the mint warning on stderr, run "
+            "`databricks auth token -p <profile>`, or export PARTYLINE_TOKEN."
+        )
     return f"HTTP {code}: {raw}"
 
 
@@ -490,12 +502,65 @@ def resolve_teams_webhook(cli_arg: str | None = None, cfg: dict | None = None) -
     return cfg.get("teamsWebhookUrl")
 
 
+def expired_env_token_exp() -> str | None:
+    """ISO timestamp if PARTYLINE_TOKEN is a JWT whose exp has passed, else None.
+
+    A token exported into the environment (the documented escape hatch) lives ~1h. Once
+    it expires, every call 401s with an empty body, because the env token outranks the
+    profile mint — the incident that cost a debugging session on 2026-10-31. Surfacing
+    and dropping it lets the mint take over.
+    """
+    tok = os.getenv("PARTYLINE_TOKEN")
+    if not tok:
+        return None
+    try:
+        payload = tok.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        exp = float(json.loads(base64.urlsafe_b64decode(payload))["exp"])
+    except Exception:
+        return None  # not a parseable JWT — leave it alone
+    if time.time() < exp:
+        return None
+    return datetime.fromtimestamp(exp, timezone.utc).isoformat()
+
+
+def _drop_stale_env_token(where: str) -> None:
+    stale = expired_env_token_exp()
+    if stale:
+        print(
+            f"partyline: PARTYLINE_TOKEN in the environment expired at {stale} - ignoring "
+            f"it ({where}) and minting from the Databricks profile instead",
+            file=sys.stderr,
+        )
+        os.environ.pop("PARTYLINE_TOKEN", None)
+
+
+_mint_warned = False
+
+
+def _warn_mint_failed(profile: str, reason: str) -> None:
+    """Loud exactly once per process. A failed mint sends every request to a remote app
+    out with no Authorization header, and the Apps proxy answers those with an empty
+    '401 {}' — an error that costs a debugging session to attribute to the mint."""
+    global _mint_warned
+    if _mint_warned:
+        return
+    _mint_warned = True
+    print(
+        f"partyline: token mint failed for profile {profile!r} ({reason}) - remote-app "
+        f"requests will be unauthenticated (HTTP 401). Check `databricks auth token "
+        f"-p {profile}`, or export PARTYLINE_TOKEN.",
+        file=sys.stderr,
+    )
+
+
 def _mint_token(profile: str) -> str | None:
     """Best-effort Databricks OAuth token via the `databricks` CLI (stdlib subprocess only).
 
     Returns None if the CLI is missing or auth fails — the caller then proceeds tokenless
     (fine for a local/unauthenticated app; the deployed app will answer 401, which is a
-    clearer signal than a crash).
+    clearer signal than a crash). The failure is loud exactly once per process: without
+    the warning it surfaces downstream as the undebuggable 'HTTP 401: {}'.
     """
     try:
         out = subprocess.run(
@@ -508,9 +573,18 @@ def _mint_token(profile: str) -> str | None:
             timeout=30,
             check=True,
         ).stdout
-        return json.loads(out).get("access_token")
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
-        return None
+        token = json.loads(out).get("access_token")
+        if not token:
+            raise ValueError("no access_token in `databricks auth token` output")
+        return token
+    except FileNotFoundError:
+        _warn_mint_failed(profile, "`databricks` CLI not found on PATH")
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()[:200]
+        _warn_mint_failed(profile, f"`databricks auth token` exited {exc.returncode}: {stderr}")
+    except (subprocess.SubprocessError, ValueError, KeyError, OSError) as exc:
+        _warn_mint_failed(profile, f"{type(exc).__name__}: {exc}")
+    return None
 
 
 def resolve_stream_token(url: str, profile: str | None, fallback: str | None = None) -> str | None:
@@ -756,6 +830,10 @@ def main(argv: list[str] | None = None) -> None:
 
     # URL: --url > PARTYLINE_URL env > config > localhost default.
     args.url = args.url or os.getenv("PARTYLINE_URL") or cfg.get("url") or "http://localhost:8000"
+
+    # A stale exported PARTYLINE_TOKEN outranks the mint below and would 401 every call
+    # with an empty body — drop it loudly before deciding how to authenticate.
+    _drop_stale_env_token("cli.main")
 
     # Token: reuse PARTYLINE_TOKEN if set; otherwise mint one for a remote app. The
     # app-specific config profile wins over the ambient DATABRICKS_CONFIG_PROFILE (which

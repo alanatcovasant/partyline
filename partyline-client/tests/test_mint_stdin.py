@@ -27,6 +27,8 @@ class _Done:
     ids=["cli", "check_unread", "hook"],
 )
 def test_mint_does_not_inherit_stdin(monkeypatch, mint):
+    # An ambient PARTYLINE_TOKEN (stale or not) would short-circuit the mint under test.
+    monkeypatch.delenv("PARTYLINE_TOKEN", raising=False)
     seen = {}
 
     def fake_run(cmd, **kw):
