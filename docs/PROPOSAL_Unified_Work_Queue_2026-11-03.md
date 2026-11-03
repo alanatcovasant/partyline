@@ -6,7 +6,7 @@
 
 ## Position
 
-An agent's work list, the handoff log and the validation queue are one thing: **work items with an owner, a state and an append-only history.** A handoff is an owner change on an item; a validation is an item of another kind; the "what should I do next?" list is the unowned items in rank order. Persistence, transfer and fleet visibility fall out of keeping that in Partyline rather than in files.
+An agent's work list, the handoff log and the validation queue are one thing: **work items with an owner, a state and an append-only history.** The owner is a **seat**: an agent in a specific folder, because that folder holds the agent's memory and working context. A handoff to a different seat is therefore the exception, and the default for an interrupted item is to resume in the seat that had it; a validation is an item of another kind; the "what should I do next?" list is the unowned items in rank order. Persistence, transfer and fleet visibility fall out of keeping that in Partyline rather than in files.
 
 It is not only a naming change. The deployed `partyline progress` ledger covers persistence and history, but four things are missing (section 2), and the intake queue (section 3) is new.
 
@@ -14,7 +14,7 @@ It is not only a naming change. The deployed `partyline progress` ledger covers 
 
 | Need | Today | Gap |
 |---|---|---|
-| Persistent record of what an agent is doing | `progress_tasks` + `progress_updates` (folder-keyed, append-only history) | Keyed by **folder**, so work cannot move between clones or machines |
+| Persistent record of what an agent is doing | `progress_tasks` + `progress_updates` (folder-keyed, append-only history) | Folder-keying is right for resume (see 2.1) but the folder label is only the directory name, so two machines with an `aura_2` collide |
 | Who owns it | `agent_id` column, overwritten by whoever updates last | No ownership; any agent can overwrite another's task |
 | Handoff | Free-text `NEXT:` lines in `.handoff/handoff.txt`, mirrored by `add.sh` | No transfer event, no offer/accept, no structured next action |
 | A queue of what to do | `queued` status per folder (backlog) | Per folder only; no global order, no priority, no atomic "take the next one" |
@@ -24,11 +24,22 @@ It is not only a naming change. The deployed `partyline progress` ledger covers 
 
 Add to the item (the `work_items` shape from the work-ledger proposal; the existing `progress_tasks` migrate into it):
 
-- `owner_agent_id`, separate from `folder`/location. `folder`, `workdir`, `branch` become **location** attributes of the current run, not the identity of the item.
+- `owner_agent_id` **and** `home` (the seat: agent id plus a workspace-qualified folder, see 2.1). The folder stays first-class; it is not demoted to a location attribute. `workdir` and `branch` remain attributes of the current run.
 - `next_action` (structured, one line) required when leaving unfinished work, shown by `resume`.
 - **Handoff events** instead of overwrites: `offer(from, to|anyone, note)` -> `accept(by)` | `decline` | `expire`. Acceptance is one transaction: owner changes, the item's claims move, the event is logged. A message to another agent stays a notification until accepted.
 - **Fencing.** Updates carry the owner and revision they were made against. A non-owner update is refused (409) with the owner named; an explicit `take over` is allowed only when the owner is stale and records who and why.
 - **Staleness is derived, never silent.** The line already labels agents `live|idle|stale`. An item whose owner has been stale beyond a threshold shows as `orphaned` and becomes claimable via takeover; nothing auto-completes, auto-cancels or auto-transfers (consistent with the work-ledger proposal).
+
+### 2.1 Folder affinity: resume in the seat that has the memory
+
+A folder carries state no ledger row can reproduce: the agent's memory files for that directory, the clone's `.partyline` identity, local notes and the working tree. Until an orchestrator (for example Omnigent) owns sessions, the cheapest continuity is to keep an issue in the same folder, and to let the same agent resume it after an interruption such as a token-window reset. So:
+
+- **An interruption is not a release.** A session ending with unfinished work leaves the item owned by its seat in state `interrupted` (derived, not typed). That folder's next session finds it first via `resume`. This matches today's rule that a folder has one current task, which is the resume point.
+- **Items remember their home.** The first seat to work an issue becomes its `home`, retained across interruptions. Follow-ups tend to return to the same place: review fixes, a reopened issue, the deployed validation of the fix, and other issues under the same epic or parent.
+- **Affinity is a soft reservation, never a lock.** A homed item is reserved for its home seat for a grace period (suggested: 24h after the last activity, tunable). After that, or on an explicit release, it re-enters the global pool. Another seat can take it earlier only by an explicit takeover. Without the expiry, affinity recreates the dropped-issue problem: an item stuck behind a folder nobody opens.
+- **Moving seats is allowed and visible.** The resume packet for a new seat states that the item's home is elsewhere and that the memory there did not move, so the new agent leans on the item's history and structured notes (objective, decisions, next action) instead of assuming context. This is why `next_action` and decision notes are required fields, not nice-to-haves.
+- **Seat identity must be unambiguous.** Today the folder is the directory name. Qualify it with a machine/workspace id (as the work-ledger proposal already requires for claims) so `aura_2` on two machines is two seats. The agent id convention is already per clone, so the pair `(agent_id, workspace folder)` is stable enough to be the seat key.
+- **Orchestrator-ready.** `home` is stored as an opaque seat reference. If Omnigent or another runner later owns sessions and worktrees, the seat becomes that session/worktree, and the queue logic does not change.
 
 ## 3. The unclaimed queue, populated from GitHub Issues
 
@@ -48,11 +59,17 @@ Order is **band first, then rank within the band, then age**. Every rank change 
 
 ### 3.3 Pulling work
 
-`partyline work next [--queue aura]` atomically claims the top eligible item (the same `FOR UPDATE SKIP LOCKED` pattern proven in the validation-queue prototype), creates the run and returns the resume packet. Eligibility filters, applied server-side so an agent cannot be handed out-of-scope work:
+`partyline work next [--queue aura]` atomically claims one item (the same `FOR UPDATE SKIP LOCKED` pattern proven in the validation-queue prototype), creates the run and returns the resume packet. It picks in this order, so affinity is honored without starving the pool:
+
+1. **Your own interrupted or active item** in this seat: resume, do not start something new.
+2. **Items reserved to this seat** (home = this seat, inside the grace period), in rank order.
+3. **The global pool**, in band/rank order, **skipping items reserved to another seat** until their grace period lapses.
+
+Eligibility filters, applied server-side so an agent cannot be handed out-of-scope work:
 
 - **Agent scope.** An agent registers the repos it works in. `next` defaults to that scope. A Partyline-repo agent is never handed an Aura item; crossing scope needs an explicit `--queue`.
 - Not `blocked`/`waiting`, dependencies done, and no conflicting claim on the source/path (existing claims stay the mutual-exclusion authority).
-- Skipped items stay in place; they are not reordered by being skipped.
+- Skipped items stay in place; they are not reordered by being skipped. The audit lists items waiting only on another seat's reservation, and how long, so a reserved item cannot hide.
 
 Direct claim by name remains possible (`claim-issue`), but it takes the item *out of the queue* instead of creating a second, untracked record.
 
@@ -104,6 +121,7 @@ Each phase ships a validation script with positive and negative cases (exits non
 
 ## 6. Acceptance
 
+0. A session ends mid-item (simulated token-window reset); the same seat's next `work next` returns that item before anything else, with its next action; a different seat's `work next` skips it during the grace period and takes it afterward, and its packet says the home memory did not move.
 1. Agent A offers an item to anyone; agent B accepts; A's later update to it is refused naming B, and the item's claims moved with it atomically.
 2. A stale owner's item shows `orphaned`; a takeover records who and why; it never silently changes hands.
 3. Two agents run `work next` concurrently on a queue and get different items; an agent whose scope is `partyline` is never handed an `aura` item.
@@ -121,4 +139,7 @@ Each phase ships a validation script with positive and negative cases (exits non
 5. **Tracked repos:** a configured list, or every repo an agent registers against? Which labels exclude an issue from intake (for example `question`, `discussion`)?
 6. **Queue scope per agent:** declared at register time, or derived from `repo` and workdirs?
 7. **Untriaged threshold and escalation target** (who is paged, how often).
-8. **Migration of existing `progress_tasks`:** convert in place (folder becomes location) or leave read-only history and start fresh at phase 1.
+8. **Migration of existing `progress_tasks`:** convert in place (folder becomes the seat's workspace-qualified folder) or leave read-only history and start fresh at phase 1.
+9. **Affinity grace period** (proposed 24h) and whether it differs by band: should a P0 item reserved to a folder that is not running be released sooner?
+10. **Who validates a fix:** the seat that built it (keeps context) or an independent seat (independent evidence)? The queue supports either; the default routing should be chosen.
+11. **Seat key:** is `(agent_id, workspace-qualified folder)` right, given that some folders are shared by several agent ids over time (for example the Aura main clone)?
