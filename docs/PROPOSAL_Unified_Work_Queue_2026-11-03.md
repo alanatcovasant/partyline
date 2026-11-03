@@ -126,6 +126,11 @@ GitHub Projects already has ordered boards. Keeping the order there lets humans 
 ## 4. Folding in the validation queue and the handoff log
 
 - **Validation items** are `kind=validation` items with `target`, `script` and executed-run evidence (the prototype's rules unchanged: only an executed passing run validates). They live in per-target queues and are pulled with the same `next`. The `vq_*` prototype tables should share this model's ownership, claim and event mechanics; whether they share physical tables is an implementation choice, but agents must see **one** list: `partyline work list --mine` shows tasks and validations together.
+- **Who validates a fix** (decided 2026-11-03): the builder's seat may validate its own fix, but another seat is preferred. This is the mirror image of folder affinity: for validation items the builder's seat is the one that is *deprioritized*.
+  - A validation item records `built_by` (the seat that owned the fix item; the prototype's `enqueued_by` is the closest field today).
+  - `work next` on a validation queue skips items built by the caller's seat while the **independence grace** runs. It reuses the same Fibonacci table as affinity (P0 3h, P1 5h, P2 8h, P3 13h, measured from when the item became ready), so there is one timing concept to learn. Once it lapses, the builder's seat may take it rather than letting the item wait.
+  - Each run records the validator seat, and the item shows `independent: true|false`. A builder-validated item is fully `validated` (it still needs an executed passing run); the flag makes it findable, so an operator can spot-check or re-queue those items for another seat.
+  - Independence is at **seat** level (a different agent in a different folder). It does not guarantee a different model or vendor; that would need `harness`/`model` on the seat and is left as a later refinement.
 - **`.handoff/handoff.txt`** stops being a source of truth once session start prints the agent's queue and `resume` packet. `add.sh` dual-write is then retired: milestones are written once, to the ledger.
 - **Session start** (hook) prints: your owned items with next actions, offers addressed to you, then the top of your scope's queue and any `untriaged` count. Agents begin from the queue rather than from a file they must locate.
 
@@ -148,6 +153,7 @@ Each phase ships a validation script with positive and negative cases (exits non
 5. An untriaged issue older than the threshold produces exactly one escalation, not one per sync.
 6. A rank change by an agent is reversible from the event log; an agent move of an operator-set item without a reason is refused.
 7. `work list --mine` shows owned tasks and validations together, and no manual file is consulted to resume.
+8. A validation item built by seat A is not handed to A by `work next` while another seat can take it; after the band's independence grace it is. A run by A is recorded `independent: false` and still validates; a run by B is `independent: true`; a hand-typed PASS by either still cannot validate.
 
 ## 7. Decisions to settle
 
@@ -160,5 +166,5 @@ Each phase ships a validation script with positive and negative cases (exits non
 7. **Untriaged threshold and escalation target** (who is paged, how often).
 8. **Migration of existing `progress_tasks`:** convert in place (folder becomes the seat's workspace-qualified folder) or leave read-only history and start fresh at phase 1.
 9. ~~Affinity grace period~~ **Decided:** by band, Fibonacci: P0 3h, P1 5h, P2 8h, P3 13h, P4 21h (see 2.1). Still open: whether P4 should exist and whether wall-clock hours are acceptable.
-10. **Who validates a fix:** the seat that built it (keeps context) or an independent seat (independent evidence)? The queue supports either; the default routing should be chosen.
+10. ~~Who validates a fix~~ **Decided:** builder allowed, another seat preferred, via the independence grace in section 4. Still open: whether a builder-validated P0/P1 should be automatically re-queued for an independent spot-check, or only flagged.
 11. **Seat key:** is `(agent_id, workspace-qualified folder)` right, given that some folders are shared by several agent ids over time (for example the Aura main clone)?
