@@ -34,6 +34,7 @@ PROMPT = ("Reply with the single word: ready. If you later receive a Partyline m
 # Partyline tools; a turn that ends on that permission prompt never states the codeword. Observed in
 # 14 of 22 logged runs before this suffix. Ask for a plain-text answer so the check measures delivery.
 DEVIN_SUFFIX = " Answer in plain text only; do not call any tools."
+ATTEMPTS = 3
 failed = 0
 
 
@@ -114,11 +115,18 @@ def validate(harness: str) -> None:
     harness_runner.HARNESSES[harness][1]()  # install hooks, as launch() does
     mail = [{"id": 9001, "agent_id": "stub_sender", "message_type": "question",
              "summary": f"{CODEWORD}: reply with this codeword", "payload": f"{CODEWORD}: reply with this codeword"}]
-    out, seen = run(harness, mail)
-    # An agent that was handed the mail may answer on the line instead of in its own output.
-    said = CODEWORD in out or any(m == "POST" and p == "/api/messages" and CODEWORD in b for m, p, b in seen)
+    # A model-in-the-loop check: one success proves the whole path (hook fetch -> block -> model),
+    # while a single failure can be the model choosing a tool print mode cannot approve. Devin gets
+    # up to ATTEMPTS tries (its failures were measured at roughly a third of runs); others run once.
+    attempts = ATTEMPTS if harness == "devin" else 1
+    said, tries = False, 0
+    while not said and tries < attempts:
+        tries += 1
+        out, seen = run(harness, mail)
+        # An agent that was handed the mail may answer on the line instead of in its own output.
+        said = CODEWORD in out or any(m == "POST" and p == "/api/messages" and CODEWORD in b for m, p, b in seen)
     check(f"{harness} positive: model is handed the mail and states the codeword", said,
-          "" if said else f"output={out[-300:]!r}")
+          f"attempt {tries}/{attempts}" if said and tries > 1 else ("" if said else f"{attempts} attempts failed; last output={out[-300:]!r}"))
     check(f"{harness} positive: launcher registered the agent",
           any((m, p) == ("POST", "/api/agents") for m, p, _ in seen), f"{len(seen)} requests")
     out, seen = run(harness, [])
