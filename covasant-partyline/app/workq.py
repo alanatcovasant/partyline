@@ -22,7 +22,15 @@ WORK_TTL_SECONDS = int(os.getenv("PARTYLINE_WORK_CLAIM_TTL", "14400"))  # 4h, re
 FIB = (1, 2, 3, 5, 8, 13)
 CLAIM_LABEL = "partyline:claimed"
 TEST_PREFIX = "zz/"
-STATES = ("ready", "untriaged", "claimed", "external", "closed")
+# Labels that mean "not new task work": decision/discussion items, parents, parked or finished work, work already
+# under way, and fixes awaiting validation (a later phase). Override with PARTYLINE_QUEUE_EXCLUDE_LABELS.
+EXCLUDE_LABELS = frozenset(x.strip().lower() for x in os.getenv(
+    "PARTYLINE_QUEUE_EXCLUDE_LABELS",
+    "epic,spike,question,discussion,needs-decision,wontfix,duplicate,invalid,deferred,on-hold,blocked,use-case,"
+    "in-progress,completed,pending-deploy,deployed").split(",") if x.strip())
+CLOSE_GUARD_MIN = 5       # a complete sync that would close more than this many entries ...
+CLOSE_GUARD_FRACTION = 0.2  # ... and more than this share of the repo's open entries is refused unless forced
+STATES = ("ready", "untriaged", "claimed", "excluded", "external", "closed")
 _REPO = r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
 _REF = r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$"
 _SEV_BAND = {"S1": 0, "S2": 1, "S3": 2, "S4": 3}
@@ -49,6 +57,10 @@ def parse_labels(labels: list[str]) -> dict:
             "claim_label": CLAIM_LABEL in labels}
 
 
+def excluded_by(labels: list[str]) -> str | None:
+    return next((x for x in (n.strip() for n in labels) if x.lower() in EXCLUDE_LABELS), None)
+
+
 class Issue(BaseModel):
     number: int = Field(ge=1)
     title: str = Field(max_length=1000)
@@ -63,9 +75,11 @@ class Issue(BaseModel):
 class Sync(BaseModel):
     agent_id: str = Field(min_length=1, max_length=200)
     repo: str = Field(pattern=_REPO, max_length=200)
-    viewer: str | None = Field(None, max_length=100)  # the gh login: an assignee equal to it is not a claim
-    issues: list[Issue] = Field(max_length=2000)
+    viewer: str | None = Field(None, min_length=1, max_length=100)  # the OPERATOR login: an assignee equal to it
+    issues: list[Issue] = Field(max_length=2000)                       # is ordinary work, not a claim
     complete: bool = False  # True = `issues` is EVERY open issue, so an open entry not listed was closed
+    change_operator: bool = False  # accept a different operator than the one this repo was last synced with
+    force_close: bool = False      # apply a closure the guard would refuse as implausibly large
 
 
 class Next(BaseModel):
@@ -82,10 +96,11 @@ class Release(BaseModel):
 # claimed = a live row in `claims` for this issue; compared case-insensitively because repo casing varies
 _SELECT = """
 SELECT w.source_ref, w.repo, w.number, w.title, w.url, w.gh_state, w.priority, w.severity, w.points, w.cluster,
-       w.band, w.claim_label, w.external_claim, w.gh_created_at, w.gh_updated_at, w.first_seen_at, w.synced_at,
+       w.band, w.claim_label, w.external_claim, w.excluded_by, w.operator, w.gh_created_at, w.gh_updated_at, w.first_seen_at, w.synced_at,
        c.agent_id AS claimed_by, c.expires_at AS claimed_until,
        CASE WHEN w.gh_state <> 'open' THEN 'closed'
             WHEN c.agent_id IS NOT NULL THEN 'claimed'
+            WHEN w.excluded_by IS NOT NULL THEN 'excluded'
             WHEN w.external_claim IS NOT NULL THEN 'external'
             WHEN w.band IS NULL OR w.points IS NULL THEN 'untriaged'
             ELSE 'ready' END AS state
@@ -109,10 +124,20 @@ def sync(body: Sync) -> dict:
     from . import db
     from psycopg.types.json import Jsonb
 
+    if not body.viewer:
+        raise ValueError("the operator login is unknown; pass --operator (or set PARTYLINE_OPERATOR)")
     added = updated = closed = 0
     seen = []
+    skipped = None
     with db.get_pool().connection() as conn:
         _registered(conn, body.agent_id)
+        # One operator per repo: external claims are "assigned to anyone but the operator", so a sync made under
+        # another login would re-label every issue assigned to the operator and flip them on each sync.
+        prev = conn.execute("SELECT operator FROM work_items WHERE repo=%s AND operator IS NOT NULL "
+                            "ORDER BY synced_at DESC LIMIT 1", (body.repo,)).fetchone()
+        if prev and prev["operator"] != body.viewer and not body.change_operator:
+            raise ValueError(f"{body.repo} is mirrored with operator {prev['operator']}, but this sync used "
+                             f"{body.viewer}; pass --operator {prev['operator']}, or --change-operator to switch")
         for it in body.issues:
             ref = f"{body.repo}#{it.number}"
             seen.append(ref)
@@ -120,28 +145,40 @@ def sync(body: Sync) -> dict:
             others = [a for a in it.assignees if a and a != body.viewer]
             row = conn.execute(
                 """INSERT INTO work_items (source_ref, repo, number, title, url, gh_state, labels, assignees,
-                          priority, severity, points, cluster, band, claim_label, external_claim,
-                          gh_created_at, gh_updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                          priority, severity, points, cluster, band, claim_label, external_claim, operator,
+                          excluded_by, gh_created_at, gh_updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (source_ref) DO UPDATE SET
                      title=EXCLUDED.title, url=EXCLUDED.url, gh_state=EXCLUDED.gh_state, labels=EXCLUDED.labels,
                      assignees=EXCLUDED.assignees, priority=EXCLUDED.priority, severity=EXCLUDED.severity,
                      points=EXCLUDED.points, cluster=EXCLUDED.cluster, band=EXCLUDED.band,
                      claim_label=EXCLUDED.claim_label, external_claim=EXCLUDED.external_claim,
+                     operator=EXCLUDED.operator, excluded_by=EXCLUDED.excluded_by,
                      gh_created_at=EXCLUDED.gh_created_at, gh_updated_at=EXCLUDED.gh_updated_at, synced_at=now()
                    RETURNING (xmax = 0) AS inserted""",
                 (ref, body.repo, it.number, it.title, it.url, it.state.lower(), Jsonb(it.labels), Jsonb(it.assignees),
                  f["priority"], f["severity"], f["points"], f["cluster"], f["band"], f["claim_label"],
-                 others[0] if others else None, it.created_at, it.updated_at)).fetchone()
+                 others[0] if others else None, body.viewer, excluded_by(it.labels),
+                 it.created_at, it.updated_at)).fetchone()
             added += bool(row["inserted"])
             updated += not row["inserted"]
         if body.complete:
-            closed = conn.execute(
-                "UPDATE work_items SET gh_state='closed', synced_at=now() "
-                "WHERE repo=%s AND gh_state='open' AND NOT (source_ref = ANY(%s))", (body.repo, seen)).rowcount
+            # A login that can see fewer issues than the operator (token scope, a private area) looks exactly
+            # like "everything else was closed", so an implausibly large closure is held back unless forced.
+            vanished = conn.execute("SELECT count(*) AS n FROM work_items WHERE repo=%s AND gh_state='open' "
+                                    "AND NOT (source_ref = ANY(%s))", (body.repo, seen)).fetchone()["n"]
+            open_now = conn.execute("SELECT count(*) AS n FROM work_items WHERE repo=%s AND gh_state='open'",
+                                    (body.repo,)).fetchone()["n"]
+            if vanished > CLOSE_GUARD_MIN and vanished > CLOSE_GUARD_FRACTION * open_now and not body.force_close:
+                skipped = (f"{vanished} of {open_now} open entries are missing from this sync, which looks like a "
+                           "partial view rather than closures; none were closed (pass --confirm-close to apply)")
+            else:
+                closed = conn.execute(
+                    "UPDATE work_items SET gh_state='closed', synced_at=now() "
+                    "WHERE repo=%s AND gh_state='open' AND NOT (source_ref = ANY(%s))", (body.repo, seen)).rowcount
         conn.commit()
-    return {"repo": body.repo, "received": len(body.issues), "added": added, "updated": updated,
-            "closed_upstream": closed, "complete": body.complete}
+    return {"repo": body.repo, "operator": body.viewer, "received": len(body.issues), "added": added,
+            "updated": updated, "closed_upstream": closed, "complete": body.complete, "closure_skipped": skipped}
 
 
 def _scope_sql(queue: str | None, agent_repo: str) -> tuple[str, list]:
@@ -161,7 +198,7 @@ def next_item(body: Next) -> dict:
             _SELECT + " WHERE w.gh_state='open' AND c.agent_id = %s" + _ORDER + " LIMIT 1", (body.agent_id,)).fetchone()
         scope_sql, scope_args = _scope_sql(body.queue, agent["repo"])
         cands = [] if own else conn.execute(
-            _SELECT + " WHERE w.gh_state='open' AND c.agent_id IS NULL AND w.external_claim IS NULL"
+            _SELECT + " WHERE w.gh_state='open' AND c.agent_id IS NULL AND w.external_claim IS NULL AND w.excluded_by IS NULL"
             " AND w.band IS NOT NULL AND w.points IS NOT NULL" + scope_sql + _ORDER + " LIMIT 25",
             scope_args).fetchall()
         conn.commit()
@@ -228,6 +265,7 @@ def audit(repo: str | None = None) -> dict:
         "untriaged": [brief(r) for r in sorted(open_rows, key=lambda r: r["gh_created_at"] or datetime.max.astimezone())
                       if r["state"] == "untriaged"],
         "external_claims": [brief(r) for r in open_rows if r["state"] == "external"],
+        "excluded": [{**brief(r), "excluded_by": r["excluded_by"]} for r in open_rows if r["state"] == "excluded"],
         "label_without_live_claim": [brief(r) for r in open_rows if r["claim_label"] and not r["claimed_by"]],
         "closed_upstream_while_claimed": [brief(r) for r in closed_held],
         "last_sync": syncs,

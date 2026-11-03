@@ -63,9 +63,9 @@ for ag in (a, b, *drain):
 call("DELETE", f"/api/queue?repo={REPO}")  # clear any leftovers from an aborted run
 
 
-def sync(issues, complete=False):
+def sync(issues, complete=False, **extra):
     return call("POST", "/api/queue/sync", {"agent_id": a, "repo": REPO, "viewer": "me", "issues": issues,
-                                              "complete": complete})
+                                              "complete": complete, **extra})
 
 
 def iss(n, labels=(), assignees=()):
@@ -124,8 +124,8 @@ check("audit lists the untriaged intake and the external claim",
 
 s, _ = sync([iss(1, ["P2", "sp-3"])], complete=False)
 check("NEG: a partial sync closes nothing", s == 200 and states()["2"] == "claimed", str(states()))
-s, r = sync([iss(1, ["P2", "sp-3"])], complete=True)
-check("a complete sync closes what vanished upstream", s == 200 and states()["2"] == "closed", f"{s} {r} {states()}")
+s, r = sync([iss(1, ["P2", "sp-3"])], complete=True, force_close=True)  # 6 of 7 vanish: only closes when confirmed
+check("a confirmed complete sync closes what vanished upstream", s == 200 and states()["2"] == "closed", f"{s} {r} {states()}")
 s, au = call("GET", f"/api/queue/audit?repo={REPO}")
 check("audit lists work closed upstream while still held",
       s == 200 and f"{REPO}#2" in [x["source_ref"] for x in au["closed_upstream_while_claimed"]], f"{s} {au}")
@@ -142,8 +142,33 @@ if TOKEN:
     s, _ = call("GET", f"/api/queue?repo={REPO}", auth=False)
     check("NEG: an unauthenticated call is refused", s in (401, 403), str(s))
 
+# --- guards added after review: exclusions, one operator per repo, implausibly large closures ---
+call("DELETE", f"/api/queue?repo={REPO}")
+s, r = sync([iss(1, ["P0", "sp-1", "epic"]), iss(2, ["P1", "sp-2"], ["me"])])
+check("an epic-labelled issue is excluded, an operator-assigned issue is ordinary work",
+      s == 200 and states() == {"1": "excluded", "2": "ready"}, f"{s} {r} {states()}")
+s, got = nxt(drain[0], queue=REPO)
+check("NEG: work next skips the excluded P0 and hands out the ready P1", s == 200 and got["source_ref"].endswith("#2"),
+      f"{s} {got}")
+s, r = call("POST", "/api/queue/sync", {"agent_id": a, "repo": REPO, "viewer": "someone-else", "issues": [iss(2, ["P1", "sp-2"], ["me"])]})
+check("NEG: a sync under a different operator login is refused (409) and changes nothing",
+      s == 409 and "operator me" in str(r) and states()["2"] == "claimed", f"{s} {r} {states()}")
+s, r = call("POST", "/api/queue/sync", {"agent_id": a, "repo": REPO, "issues": [iss(2, ["P1", "sp-2"])]})
+check("NEG: a sync with no operator login is refused (409)", s == 409, f"{s} {r}")
+call("DELETE", f"/api/queue?repo={REPO}")
+full = [iss(n, ["P1", "sp-1"]) for n in range(1, 13)]
+sync(full)
+s, r = sync(full[:3], complete=True)
+check("NEG: a sync that sees 3 of 12 does not close the other 9", s == 200 and r["closed_upstream"] == 0
+      and r["closure_skipped"] and "closed" not in states().values(), f"{s} {r}")
+s, r = sync(full[:11], complete=True)
+check("a small closure (1 of 12) is applied normally", s == 200 and r["closed_upstream"] == 1, f"{s} {r}")
+s, r = call("POST", "/api/queue/sync", {"agent_id": a, "repo": REPO, "viewer": "me", "issues": full[:3],
+                                        "complete": True, "force_close": True})
+check("a large closure is applied when confirmed", s == 200 and r["closed_upstream"] == 8, f"{s} {r}")
+
 s, pr = call("DELETE", f"/api/queue?repo={REPO}")
-check("cleanup: purge removes the test repo's entries", s == 200 and pr["deleted_items"] >= 7, f"{s} {pr}")
+check("cleanup: purge removes the test repo's entries", s == 200 and pr["deleted_items"] >= 1, f"{s} {pr}")
 check("cleanup: nothing left", call("GET", f"/api/queue?repo={REPO}")[1] == [], "")
 s, cl = call("GET", "/api/claims")
 check("cleanup: no claim left on the test repo",

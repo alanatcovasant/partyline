@@ -44,6 +44,16 @@ def fetch_issues(gh, repo: str, limit: int = LIMIT) -> dict:
             "complete": len(raw) < limit}
 
 
+def resolve_operator(flag: str | None, viewer: str | None) -> str | None:
+    """Whose assignments are ordinary work (not a claim): --operator, PARTYLINE_OPERATOR, config `operator`, and
+    only then the gh login. Setting it once per machine keeps every seat's sync equivalent."""
+    import os
+
+    from . import cli
+
+    return flag or os.getenv("PARTYLINE_OPERATOR") or cli._load_config().get("operator") or viewer
+
+
 def command(args):
     from . import cli
 
@@ -64,9 +74,12 @@ def command(args):
             got = fetch_issues(ghclaim.Gh(), args.repo)
         except RuntimeError as exc:
             raise SystemExit(f"partyline: {exc}")
-        body = {"agent_id": agent, "repo": args.repo, "viewer": got["viewer"], "issues": got["issues"],
-                "complete": got["complete"] and not args.partial}
+        body = {"agent_id": agent, "repo": args.repo, "viewer": resolve_operator(args.operator, got["viewer"]),
+                "issues": got["issues"], "complete": got["complete"] and not args.partial,
+                "change_operator": args.change_operator, "force_close": args.confirm_close}
         res = cli._request("POST", args.url, "/api/queue/sync", body)
+        if res.get("closure_skipped"):
+            print("partyline: " + res["closure_skipped"], file=sys.stderr)
         if not got["complete"]:
             print(f"partyline: fetched {len(got['issues'])} issues (the limit); closure is not inferred", file=sys.stderr)
         return _out(res)
@@ -102,6 +115,11 @@ def add_parser(sub):
     p = qa.add_parser("sync", help="Push this repo's open issues (read with your gh login) into the queue")
     p.add_argument("--repo", required=True, help="owner/repo")
     p.add_argument("--partial", action="store_true", help="Never infer that a missing issue was closed")
+    p.add_argument("--operator", help="GitHub login whose assignments are ordinary work, not a claim "
+                   "(default: PARTYLINE_OPERATOR, config `operator`, else your gh login)")
+    p.add_argument("--change-operator", action="store_true", help="Accept a different operator than the repo's last sync")
+    p.add_argument("--confirm-close", action="store_true",
+                   help="Apply a closure that looks like a partial view (most open entries missing)")
     p.add_argument("--agent-id")
     p = qa.add_parser("list", help="List queue entries in order")
     p.add_argument("--repo", help="owner/repo or just repo")

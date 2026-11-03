@@ -72,3 +72,31 @@ def test_work_next_projects_to_github_only_when_asked(monkeypatch, tmp_path):
     a = p.parse_args(["work", "next", "--agent-id", "alan_x_1", "--github"])
     a.func(a)
     assert seen == [("issue:o/r#7", "alan_x_1")]
+
+
+def test_operator_resolution_prefers_explicit_then_env_then_config_then_gh(monkeypatch):
+    monkeypatch.delenv("PARTYLINE_OPERATOR", raising=False)
+    monkeypatch.setattr(cli, "_load_config", lambda: {})
+    assert workq.resolve_operator(None, "ghlogin") == "ghlogin"
+    monkeypatch.setattr(cli, "_load_config", lambda: {"operator": "from-config"})
+    assert workq.resolve_operator(None, "ghlogin") == "from-config"
+    monkeypatch.setenv("PARTYLINE_OPERATOR", "from-env")
+    assert workq.resolve_operator(None, "ghlogin") == "from-env"
+    assert workq.resolve_operator("flag", "ghlogin") == "flag"
+
+
+def test_sync_sends_the_resolved_operator_and_surfaces_a_held_back_closure(monkeypatch, capsys):
+    sent = []
+    monkeypatch.setattr(cli, "_request", lambda m, u, path, body=None: sent.append(body) or
+                        {"closed_upstream": 0, "closure_skipped": "9 of 12 look like a partial view"})
+    monkeypatch.setattr(ghclaim, "Gh", lambda: FakeGh([issue(1)], viewer="some-other-account"))
+    monkeypatch.setenv("PARTYLINE_OPERATOR", "alanatcovasant")
+    p = cli.build_parser()
+    a = p.parse_args(["queue", "sync", "--repo", "o/r", "--agent-id", "a"])
+    a.func(a)
+    # the repo's operator, not whichever account happened to run the sync, decides what an assignee means
+    assert sent[-1]["viewer"] == "alanatcovasant" and sent[-1]["force_close"] is False
+    assert "partial view" in capsys.readouterr().err
+    a = p.parse_args(["queue", "sync", "--repo", "o/r", "--agent-id", "a", "--confirm-close", "--change-operator"])
+    a.func(a)
+    assert sent[-1]["force_close"] is True and sent[-1]["change_operator"] is True

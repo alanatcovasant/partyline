@@ -297,6 +297,8 @@ CREATE TABLE IF NOT EXISTS work_items (
     band           INT,
     claim_label    BOOLEAN NOT NULL DEFAULT false,
     external_claim TEXT,
+    operator       TEXT,
+    excluded_by    TEXT,
     gh_created_at  TIMESTAMPTZ,
     gh_updated_at  TIMESTAMPTZ,
     first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -405,6 +407,8 @@ _MIGRATIONS = [
     "ALTER TABLE progress_tasks ADD COLUMN IF NOT EXISTS handoff_from TEXT",
     "ALTER TABLE progress_tasks ADD COLUMN IF NOT EXISTS handoff_note TEXT",
     "ALTER TABLE progress_tasks ADD COLUMN IF NOT EXISTS handoff_offered_at TIMESTAMPTZ",
+    "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS operator TEXT",
+    "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS excluded_by TEXT",
     "ALTER TABLE messages         ADD COLUMN IF NOT EXISTS conversation_id UUID",
     "ALTER TABLE messages_archive ADD COLUMN IF NOT EXISTS conversation_id UUID",
     # Concise agent-authored summary; payload keeps the full detail. Nullable — existing

@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.workq import parse_labels
+from app.workq import excluded_by, parse_labels
 
 
 def test_labels_carry_priority_points_severity_and_cluster():
@@ -30,10 +30,10 @@ async def line(client):
     for a in ag.values():
         await client.post("/api/agents", json={"agent_id": a, "owner": "test", "repo": f"q{sfx}"})
 
-    async def sync(issues, complete=False, viewer="me"):
+    async def sync(issues, complete=False, viewer="me", expect=200, **extra):
         r = await client.post("/api/queue/sync", json={"agent_id": ag["a"], "repo": repo, "viewer": viewer,
-                                                       "issues": issues, "complete": complete})
-        assert r.status_code == 200, r.text
+                                                       "issues": issues, "complete": complete, **extra})
+        assert r.status_code == expect, r.text
         return r.json()
 
     def iss(n, labels=(), assignees=(), state="open", created="2026-11-0%dT00:00:00Z"):
@@ -152,3 +152,58 @@ async def test_scope_direct_claims_and_closed_upstream(line):
     audit = (await c.get("/api/queue/audit", params={"repo": line.repo})).json()
     assert f"{line.repo}#9" in [x["source_ref"] for x in audit["untriaged"]]
     assert f"{line.repo}#10" in [x["source_ref"] for x in audit["label_without_live_claim"]]
+
+
+def test_exclusion_labels_are_matched_case_insensitively_and_ordinary_labels_are_not():
+    assert excluded_by(["bug", "Epic"]) == "Epic"
+    assert excluded_by(["pending-deploy"]) == "pending-deploy"
+    assert excluded_by(["bug", "enhancement", "P1", "sp-3", "validation-failed"]) is None
+
+
+@pytest.mark.anyio
+async def test_excluded_work_is_never_handed_out_but_is_audited(line):
+    c = line.client
+    await line.sync([line.iss(1, ["P0", "sp-1", "epic"]), line.iss(2, ["P0", "sp-1", "question"]),
+                     line.iss(3, ["P2", "sp-5"])])
+    assert await line.states() == {"1": "excluded", "2": "excluded", "3": "ready"}
+    got = await c.post("/api/queue/next", json={"agent_id": line.ag["a"], "queue": line.repo})
+    assert got.json()["source_ref"].endswith("#3")      # the P0 items are skipped, not the P2 one chosen by accident
+    assert (await c.post("/api/queue/next", json={"agent_id": line.ag["b"], "queue": line.repo})).status_code == 404
+    audit = (await c.get("/api/queue/audit", params={"repo": line.repo})).json()
+    assert {x["source_ref"].split("#")[1]: x["excluded_by"] for x in audit["excluded"]} == {"1": "epic", "2": "question"}
+    # removing the label in GitHub puts it back in the queue at its band at the next sync
+    await line.sync([line.iss(1, ["P0", "sp-1"]), line.iss(2, ["P0", "sp-1", "question"]), line.iss(3, ["P2", "sp-5"])])
+    assert (await line.states())["1"] == "ready"
+
+
+@pytest.mark.anyio
+async def test_a_second_operator_cannot_flip_the_external_claims(line):
+    issues = [line.iss(1, ["P1", "sp-1"], assignees=["alan"]), line.iss(2, ["P1", "sp-1"])]
+    await line.sync(issues, viewer="alan")
+    assert (await line.states())["1"] == "ready"        # assigned to the operator: ordinary work
+    # NEGATIVE: another login syncing the same repo would make #1 look claimed by "alan", so it is refused
+    r = await line.sync(issues, viewer="someone-else", expect=409)
+    assert "operator alan" in r["detail"] and "--change-operator" in r["detail"]
+    assert (await line.states())["1"] == "ready"        # nothing was written by the refused sync
+    # NEGATIVE: an unknown operator is refused rather than treating every assignee as a claim
+    r = await line.client.post("/api/queue/sync", json={"agent_id": line.ag["a"], "repo": line.repo, "issues": issues})
+    assert r.status_code == 409 and "operator login is unknown" in r.json()["detail"]
+    # POSITIVE: switching operator is possible, but only on request
+    await line.sync(issues, viewer="someone-else", change_operator=True)
+    assert (await line.states())["1"] == "external"
+
+
+@pytest.mark.anyio
+async def test_an_implausibly_large_closure_is_held_back_unless_forced(line):
+    full = [line.iss(n, ["P1", "sp-1"]) for n in range(1, 13)]
+    await line.sync(full)
+    # NEGATIVE: a login that sees 3 of 12 would "close" 9; that is a partial view, so nothing closes
+    r = await line.sync(full[:3], complete=True)
+    assert r["closed_upstream"] == 0 and "looks like a partial view" in r["closure_skipped"]
+    assert sum(v == "closed" for v in (await line.states()).values()) == 0
+    # POSITIVE: a small closure (1 of 12) is applied normally
+    r = await line.sync(full[:11], complete=True)
+    assert r["closed_upstream"] == 1 and r["closure_skipped"] is None
+    # POSITIVE: the same large closure goes through when the caller confirms it
+    r = await line.sync(full[:3], complete=True, force_close=True)
+    assert r["closed_upstream"] == 8
