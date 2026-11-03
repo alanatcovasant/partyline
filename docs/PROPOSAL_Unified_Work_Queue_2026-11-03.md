@@ -23,7 +23,7 @@ It is not only a naming change. The deployed `partyline progress` ledger covers 
 | Epic / parent grouping | **Sub-issues** (parent/child, nested) | Read parent links for affinity and for "same epic" routing |
 | Blocked by / blocking | **Issue dependencies** (generally available since 2025-08-21, REST API, `is:blocked` search) | `ready` means no open blocker, read from GitHub; do not model dependencies ourselves |
 | Kind of work (including validation) | **Issue types** (org-level), sub-issues | A validation request can be a typed sub-issue of its fix (section 4) |
-| Human sees what is in flight | Assignees, Project views | Mirror the Partyline claim to the assignee when write access exists (optional) |
+| Who has claimed an issue, visibly | Comments, labels, a Project text field, assignees | **Project the Partyline claim into GitHub** (section 2.2); accept claims made in GitHub. Assignees alone cannot name a seat |
 
 Gaps GitHub does not fill, which remain Partyline's job (and are what the rest of this document designs):
 - **An atomic claim with a lease and liveness.** Assigning is not a lease: it has no expiry, does not know the agent died, and cannot be raced safely by many agents calling `next`.
@@ -82,6 +82,51 @@ The series continues (34, 55, ...) if more bands are ever added. Rules around it
 - **Moving seats is allowed and visible.** The resume packet for a new seat states that the item's home is elsewhere and that the memory there did not move, so the new agent leans on the item's history and structured notes (objective, decisions, next action) instead of assuming context. This is why `next_action` and decision notes are required fields, not nice-to-haves.
 - **Seat identity must be unambiguous.** Today the folder is the directory name. Qualify it with a machine/workspace id (as the work-ledger proposal already requires for claims) so `aura_2` on two machines is two seats. The agent id convention is already per clone, so the pair `(agent_id, workspace folder)` is stable enough to be the seat key.
 - **Orchestrator-ready.** `home` is stored as an opaque seat reference. If Omnigent or another runner later owns sessions and worktrees, the seat becomes that session/worktree, and the queue logic does not change.
+
+### 2.2 A seat claims a GitHub issue, visibly in GitHub (decided 2026-11-03)
+
+A claim that exists only in Partyline is invisible to a person reading the issue, and to anyone working without Partyline. So **claiming an issue is an explicit act that leaves marks in GitHub**, and a claim made in GitHub is honored by Partyline.
+
+**Authority.** Partyline holds the lease and decides races (it is atomic, with a TTL and liveness); GitHub cannot arbitrate between two near-simultaneous writers. The marks in GitHub are a **projection of the Partyline claim**, written only by the seat that won it. The reverse path (2.2.3) makes GitHub-side claims binding on Partyline.
+
+#### 2.2.1 The marks
+
+All are written together when the claim succeeds (`partyline claim-issue`, and `work next`, which claims):
+
+| Mark | Content | Why this one |
+|---|---|---|
+| **Claim comment** (one per issue, edited in place) | A readable line plus a hidden machine marker: `<!-- partyline-claim v1 seat="alan_aura_2" folder="aura_2" since="2026-11-03T10:15Z" -->` and text such as "Claimed by `alan_aura_2` (aura_2), branch `fix/4836`, since 10:15Z. Next: re-run the validator." | Visible in the issue timeline for people who live in issues; the marker lets tools and other agents verify the claimant without scraping prose |
+| **Label `partyline:claimed`** (one static label, never one per seat) | Present while the issue is claimed | Searchable (`label:partyline:claimed`), filterable in Projects, usable by GitHub automations. A label per seat would sprawl across every agent id and clone |
+| **Project field `Claimed by`** (text) | The seat id | Shows in board and table views at a glance, and is sortable and filterable there |
+| **Assignee** (optional) | The operator's GitHub account | Notifications and "assigned to me" views. It does not identify a seat, because every seat usually acts as the same GitHub user |
+
+#### 2.2.2 Keeping GitHub in step
+
+- **Claim:** all four marks. **Release / done / lease expiry:** the comment is edited to "released" with the reason, the label and the field are cleared.
+- **Milestones:** the comment's "latest / next" line is edited, at most once per few minutes. Heartbeats are **not** written to GitHub (too noisy, and rate-limited); liveness stays in Partyline.
+- **Handoff accepted or takeover:** the claim comment is edited to the new seat, and a **new short comment** records the change ("handed off from A to B: note", or "taken over from stale A"), so the ownership trail is in the timeline even though edits of the claim comment are not.
+- **Owner stale (orphaned):** the comment gains "owner stale since ...; claimable" while the label stays until the claim is released or taken over, so readers see an issue that is nominally claimed but not being worked.
+- **Issue closed upstream while claimed:** the claim is released with the reason "issue closed", and the seat is told over the line.
+
+#### 2.2.3 Claims made in GitHub (inbound)
+
+Someone not using Partyline, or a person, can claim an issue in GitHub by any of: applying `partyline:claimed`, commenting `/claim` (optionally `/claim seat=<agent id>`), or setting an assignee. At the next sync such an issue is a **foreign claim**:
+
+- It is **not pullable** by `work next`, so a Partyline seat cannot pick up work someone already took.
+- If it names a registered seat, Partyline **adopts** it as that seat's claim. Otherwise it is recorded against the GitHub login and shown in the audit as an external claim.
+- **A human removing the label (or the claim comment) is a release**, consistent with a human's change always winning (3.2): Partyline releases the claim and tells the seat over the line.
+
+#### 2.2.4 Conflicts and failure
+
+- Partyline claim and GitHub marks disagree (different seat in the comment): Partyline's recorded claim is authoritative among Partyline seats; it rewrites the marks and logs a `claim_mismatch` event.
+- Two seats race: exactly one wins the Partyline lease, and only the winner writes marks.
+- **A failed GitHub write never blocks the claim.** The claim stands and is flagged `unprojected` in listings and the audit; the next sync retries. `work next` shows the flag so the agent knows others cannot yet see the claim.
+- Comments are advisory: only the recorded lease governs pulls. A spoofed `/claim` can block an issue from `work next` but is visible in the audit with its author; commands are honored only from repository collaborators.
+
+#### 2.2.5 Who writes
+
+- **MVP: from the client, with the agent's own `gh` authentication.** No server secret; the comment and label appear under the operator's account with the seat id in the body, and the Project field is set the same way. This works today for any seat that has `gh`.
+- **Later: from the server with a GitHub App** (bot identity, retries, the audit's `unprojected` repair). This is the same credential decision as the sync (decision 4), needing write permission for issues and the Project.
 
 ## 3. The unclaimed queue, populated from GitHub Issues
 
@@ -184,7 +229,7 @@ Costs accepted: moves go through the Projects GraphQL API; reads are eventually 
 ## 5. Phasing
 
 1. **Ownership + handoff on the existing ledger**: `next_action`, offer/accept/decline/takeover, opt-in fencing, orphan labeling. Partyline-only runtime state, unaffected by section 0. Prerequisite for everything else.
-2. **Read-through queue + `work next`** (no rank or triage tables): a GitHub App with read access, the sync (client-pushed first, server-side scheduled second), a mirror of Project fields, order, parents and blockers, `work next` with the claim in Partyline, agent scope, seat affinity, and `queue audit`.
+2. **Read-through queue + `work next` + visible claims** (no rank or triage tables): a GitHub App with read access, the sync (client-pushed first, server-side scheduled second), a mirror of Project fields, order, parents and blockers, `work next` with the claim in Partyline, **the client-side claim projection into GitHub (2.2: comment, label, Project field) and the foreign-claim detection**, agent scope, seat affinity, and `queue audit`.
 3. **Agent moves and triage written to GitHub** (Project field and position mutations, the optional assignee mirror), human-change detection to set `pinned`, the alarms for untriaged and orphaned items, and the dashboard views.
 4. **Validation as typed sub-issues**: created at deploy, Priority one band higher, claimed and evidenced in Partyline; session-start queue digest; retire the `add.sh` dual-write.
 
@@ -202,6 +247,9 @@ Each phase ships a validation script with positive and negative cases (exits non
 5. An untriaged issue older than the threshold produces exactly one escalation, not one per sync.
 6. An agent's move takes effect immediately as `proposed`, with its reason, and appears in `queue review`; it is reversible from the event log. After a human pins an item, an agent's move of it is stored as a pending proposal and the pinned order is unchanged; an unreviewed proposal never blocks `work next`.
 7. `work list --mine` shows owned tasks and validations together, and no manual file is consulted to resume.
+10. Claiming an issue through Partyline leaves, in GitHub, the claim comment, the `partyline:claimed` label and the `Claimed by` field naming the seat; releasing removes the label and field and edits the comment; a handoff edits the seat and adds a trail comment.
+11. An issue claimed in GitHub by someone not using Partyline (label, `/claim` or assignee) is not returned by `work next` and appears in `queue audit` as an external claim; removing the label releases it and the seat is notified.
+12. If the GitHub write fails, the Partyline claim still stands, is flagged `unprojected`, and a later sync projects it. Two seats claiming the same issue concurrently produce exactly one set of marks.
 9. A validation item is `waiting` and not pullable until a deploy event for its target covers its fix; then it is `ready` at the issue's band minus one (P1 -> P0, P0 stays P0) and sorts ahead of tasks in that band.
 8. A validation item built by seat A is not handed to A by `work next` while another seat can take it; after the band's independence grace it is. A run by A is recorded `independent: false` and still validates; a run by B is `independent: true`; a hand-typed PASS by either still cannot validate.
 
@@ -217,6 +265,7 @@ Each phase ships a validation script with positive and negative cases (exits non
 8. **Migration of existing `progress_tasks`:** convert in place (folder becomes the seat's workspace-qualified folder) or leave read-only history and start fresh at phase 1.
 9. ~~Affinity grace period~~ **Decided:** by band, Fibonacci: P0 3h, P1 5h, P2 8h, P3 13h, P4 21h (see 2.1). Still open: whether P4 should exist and whether wall-clock hours are acceptable.
 10. ~~Who validates a fix~~ **Decided:** builder allowed, another seat preferred, via the independence grace in section 4. Still open: whether a builder-validated P0/P1 should be automatically re-queued for an independent spot-check, or only flagged.
+15. **Claim marks in GitHub:** the label name (`partyline:claimed`), the Project field name (`Claimed by`), the comment marker format, and whether the optional assignee mirror is wanted. Client-side `gh` for the MVP, as proposed, or wait for the GitHub App? Is a human's removal of the label always a release? How often may the comment be edited (the proposal says at most once every few minutes)?
 14. **Validation requests as GitHub sub-issues:** acceptable volume and noise (the legacy backlog is about 468 items), who creates them (the deploy step via the GitHub App needs `issues:write`), and the issue type name. The alternative is to keep validations only in Partyline and show them in the dashboard, at the cost of a second place to look.
 13. **Validation boost details:** is one band always right, or should it depend on the issue (a security fix to P0 regardless)? What is the starvation cap, if any? Which seat capabilities gate a target (profile, identity, deploy-lock)?
 12. **Severity and effort scales and labels:** are S1..S4 and Fibonacci points 1..13 right, and what GitHub label names carry them (`severity:S2`, `effort:5`)? Should an issue with effort above 13 be refused at triage until split? Should the system-proposed band come only from severity, or also weigh age and what the issue blocks?
