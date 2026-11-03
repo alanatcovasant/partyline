@@ -66,15 +66,26 @@ The series continues (34, 55, ...) if more bands are ever added. Rules around it
 
 A **queue** is an ordered set of unowned work items. Named queues: one intake queue per scope (repo or area, for example `aura`, `partyline`), and per-target validation queues (`validation:dev-eastus2`).
 
-An item enters the queue as `kind=task`, `status=ready`, with a `rank`. Fields added: `queue`, `priority_band` (P0..P3 or a smaller agreed set), `rank` (orderable key allowing insertion between two items without renumbering), `source` (`github` | `agent` | `operator`), `source_ref` (`owner/repo#N`), `enqueued_by`, `ranked_by`/`ranked_at`.
+**Triage gate** (decided 2026-11-03): an issue is available for the queue only once it has a **severity** and an **effort estimate**. Until then it is `untriaged`: visible in intake and audited, but not pullable by `work next`. Once both are set it is `triaged`, and enters the queue.
 
-Order is **band first, then rank within the band, then age**. Every rank change is an event (actor, before, after, reason), so reordering is auditable and a bad reorder is revertable.
+- **Severity** `S1..S4` (S1 critical: broken or blocking; S2 major; S3 minor; S4 cosmetic or nice-to-have). **Effort** in Fibonacci points `1, 2, 3, 5, 8, 13` (anything larger needs splitting before it is triaged). The scales are proposed; see decision 12.
+- **Who triages:** anyone. A human sets them in GitHub (labels such as `severity:S2`, `effort:5`, read at sync; GitHub wins when present), or an agent estimates them with `partyline queue triage --issue owner/repo#N --severity S2 --effort 5 --why "..."`. Agent estimates are recorded `triage_source: agent` and show as such, so a human can confirm or correct them. Agent estimates stay local to Partyline unless a later phase writes them back to GitHub (that needs a write credential, which is not assumed).
 
-### 3.2 Who can put things in and reorder
+On triage the server **proposes a position**: band from severity (S1 -> P0, S2 -> P1, S3 -> P2, S4 -> P3; P4 icebox only by explicit parking), then within the band **smaller effort first, then older first** (cheap work clears before large work). The proposal is effective immediately; no one has to approve it for it to be workable.
 
-- **Any agent** may enqueue an item with a priority band and a one-line reason (`partyline queue add --issue owner/repo#N --band P1 --before W-123 --why "blocks #4700"`), or move an existing one.
-- **The operator** (or a nominated triager) has authority: a band change by an operator is marked `operator-set`; agents may not move an operator-set item without a reason, and the item shows the override. This keeps "the order we want" a human decision without making agents ask permission to add work.
-- Concurrent reorders resolve by server commit order; both are in the event log. There is no merge step, which is the point.
+Fields added: `queue`, `severity`, `effort`, `triage_source` (`github` | `agent` | `human`), `priority_band`, `rank` (orderable key allowing insertion between two items without renumbering), `order_state` (`proposed` | `confirmed` | `pinned`), `source` (`github` | `agent` | `operator`), `source_ref` (`owner/repo#N`), `enqueued_by`, `ranked_by`/`ranked_at`.
+
+Order is **band first, then rank within the band, then age**. Every change to severity, effort, band or rank is an event (actor, before, after, reason), so reordering is auditable and a bad reorder is revertable.
+
+### 3.2 Who proposes the order, who decides (non-blocking)
+
+**Agents propose; a human decides; nothing waits for the decision.**
+
+- **Proposals take effect at once.** Any agent can propose a band or position for a triaged item (`partyline queue move --issue owner/repo#N --band P1 --before W-123 --why "blocks #4700"`). It applies immediately as `order_state: proposed`, with the reason recorded. Work is never held for approval.
+- **A human reviews on their own schedule.** `partyline queue review` (and a dashboard view) lists items whose order is still `proposed`, oldest first. The human confirms them in bulk (`confirmed`) or sets a band or rank (`pinned`). Review age appears in the audit; an unreviewed proposal never expires, never blocks, and never changes the order by itself.
+- **A human's decision outranks agents without freezing them.** A `pinned` item's order does not change when an agent proposes otherwise: the proposal is stored as a pending proposal beside it (visible in the review list) and the pinned order stays in force until the human acts. This is the only case where an agent's proposal does not take effect, and it exists because a person has already decided.
+- **No agent needs permission to add work.** Moving a triaged item in the queue is an agent action; only changes to a `pinned` item need a human.
+- Concurrent proposals resolve by server commit order; both are in the event log. There is no merge step, which is the point.
 
 ### 3.3 Pulling work
 
@@ -87,7 +98,7 @@ Order is **band first, then rank within the band, then age**. Every rank change 
 Eligibility filters, applied server-side so an agent cannot be handed out-of-scope work:
 
 - **Agent scope.** An agent registers the repos it works in. `next` defaults to that scope. A Partyline-repo agent is never handed an Aura item; crossing scope needs an explicit `--queue`.
-- Not `blocked`/`waiting`, dependencies done, and no conflicting claim on the source/path (existing claims stay the mutual-exclusion authority).
+- `triaged` (severity and effort set), not `blocked`/`waiting`, dependencies done, and no conflicting claim on the source/path (existing claims stay the mutual-exclusion authority).
 - Skipped items stay in place; they are not reordered by being skipped. The audit lists items waiting only on another seat's reservation, and how long, so a reserved item cannot hide.
 
 Direct claim by name remains possible (`claim-issue`), but it takes the item *out of the queue* instead of creating a second, untracked record.
@@ -100,7 +111,7 @@ Issues are missed when they are in no list at all. The design makes that state *
 
 Mechanics:
 
-1. **Sync.** A reconciler lists open issues for each tracked repo (and, optionally, those matching labels) and upserts them by `source_ref`. A **new** issue enters a top `untriaged` band, ahead of ranked work, so it cannot sit unseen below a long queue. It stays there until someone sets a band (triage) or parks it.
+1. **Sync.** A reconciler lists open issues for each tracked repo (and, optionally, those matching labels) and upserts them by `source_ref`. A **new** issue enters the `untriaged` intake list, shown ahead of the ranked queue so it cannot sit unseen below a long one. It is not pullable. It stays there until someone triages it (severity and effort, see 3.1) or parks it; on triage it joins the queue at its proposed position.
 2. **GitHub is authoritative for issue state.** An issue closed in GitHub closes the entry; if an agent owned it, the item flips to `needs attention: closed upstream` instead of vanishing. A reopened issue reopens the entry.
 3. **Coverage report** (`partyline queue audit`, also on the dashboard): GitHub-open issues with no entry (should be zero after a sync), entries whose issue is closed, orphaned items, `untriaged` older than a threshold, and owned items with no progress for N days.
 4. **Alarm.** Untriaged-too-long and orphaned items post a single `escalation` message to the operator/triager (deduplicated by item and threshold, not per sync), which the existing hooks and the channel already deliver. A silent queue is then evidence there is nothing wrong, not evidence nobody is looking.
@@ -149,15 +160,15 @@ Each phase ships a validation script with positive and negative cases (exits non
 1. Agent A offers an item to anyone; agent B accepts; A's later update to it is refused naming B, and the item's claims moved with it atomically.
 2. A stale owner's item shows `orphaned`; a takeover records who and why; it never silently changes hands.
 3. Two agents run `work next` concurrently on a queue and get different items; an agent whose scope is `partyline` is never handed an `aura` item.
-4. After a sync, a newly opened GitHub issue appears at the top as `untriaged`; closing it upstream closes the entry; an issue deliberately omitted from the queue appears in `queue audit`.
+4. After a sync, a newly opened GitHub issue appears in intake as `untriaged` and `work next` never returns it; setting severity and effort (by label or `queue triage`) puts it in the queue at the proposed band and rank with no human action; closing it upstream closes the entry; an issue deliberately omitted from the queue appears in `queue audit`.
 5. An untriaged issue older than the threshold produces exactly one escalation, not one per sync.
-6. A rank change by an agent is reversible from the event log; an agent move of an operator-set item without a reason is refused.
+6. An agent's move takes effect immediately as `proposed`, with its reason, and appears in `queue review`; it is reversible from the event log. After a human pins an item, an agent's move of it is stored as a pending proposal and the pinned order is unchanged; an unreviewed proposal never blocks `work next`.
 7. `work list --mine` shows owned tasks and validations together, and no manual file is consulted to resume.
 8. A validation item built by seat A is not handed to A by `work next` while another seat can take it; after the band's independence grace it is. A run by A is recorded `independent: false` and still validates; a run by B is `independent: true`; a hand-typed PASS by either still cannot validate.
 
 ## 7. Decisions to settle
 
-1. **Authority over order:** operator-only reordering, or any agent with the operator override described above?
+1. ~~Authority over order~~ **Decided:** agents propose, a human decides, and nothing blocks on the decision (3.2). Still open: who the reviewer is (you, or a nominated triager) and the review cadence the audit should nag at.
 2. **Priority bands:** how many, with what meaning? (Proposed: P0 drop everything, P1 this sprint, P2 next, P3 backlog.)
 3. **Order store:** Partyline rank (recommended) or a GitHub Project as source of truth?
 4. **Sync credential:** reuse the Aura GitHub App, or create a read-only app for Partyline? Who provisions the secret so it stays automated?
@@ -167,4 +178,5 @@ Each phase ships a validation script with positive and negative cases (exits non
 8. **Migration of existing `progress_tasks`:** convert in place (folder becomes the seat's workspace-qualified folder) or leave read-only history and start fresh at phase 1.
 9. ~~Affinity grace period~~ **Decided:** by band, Fibonacci: P0 3h, P1 5h, P2 8h, P3 13h, P4 21h (see 2.1). Still open: whether P4 should exist and whether wall-clock hours are acceptable.
 10. ~~Who validates a fix~~ **Decided:** builder allowed, another seat preferred, via the independence grace in section 4. Still open: whether a builder-validated P0/P1 should be automatically re-queued for an independent spot-check, or only flagged.
+12. **Severity and effort scales and labels:** are S1..S4 and Fibonacci points 1..13 right, and what GitHub label names carry them (`severity:S2`, `effort:5`)? Should an issue with effort above 13 be refused at triage until split? Should the system-proposed band come only from severity, or also weigh age and what the issue blocks?
 11. **Seat key:** is `(agent_id, workspace-qualified folder)` right, given that some folders are shared by several agent ids over time (for example the Aura main clone)?
