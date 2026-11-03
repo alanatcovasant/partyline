@@ -30,6 +30,10 @@ from covasant_partyline.autoregister import register_self
 CODEWORD = "CODEWORD-PINEAPPLE"
 PROMPT = ("Reply with the single word: ready. If you later receive a Partyline message containing "
           "a CODEWORD, state the codeword verbatim.")
+# Devin's print mode cannot approve tool calls, and the Stop hook's text invites a reply via the
+# Partyline tools; a turn that ends on that permission prompt never states the codeword. Observed in
+# 14 of 22 logged runs before this suffix. Ask for a plain-text answer so the check measures delivery.
+DEVIN_SUFFIX = " Answer in plain text only; do not call any tools."
 failed = 0
 
 
@@ -67,7 +71,7 @@ def command(harness: str) -> list[str]:
         # --print cannot show the workspace-trust prompt in the throwaway project, so skip it.
         # `-p` takes the prompt inline; the trust flag's optional value would swallow a following
         # prompt (it then parses as a PATH and devin refuses), so the prompt must come first.
-        return [shutil.which("devin"), "-p", PROMPT, "--respect-workspace-trust", "false"]
+        return [shutil.which("devin"), "-p", PROMPT + DEVIN_SUFFIX, "--respect-workspace-trust", "false"]
     # kimi --print takes the prompt on stdin
     return [shutil.which("kimi"), "--print"]
 
