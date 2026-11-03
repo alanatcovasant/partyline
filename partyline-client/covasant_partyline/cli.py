@@ -52,6 +52,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .targets import normalize_target
 
@@ -226,7 +227,19 @@ def cmd_claim(a: argparse.Namespace) -> None:
     )
 
 
+def _gh_claim_enabled(a: argparse.Namespace) -> bool:
+    return bool(getattr(a, "github", False)) or os.getenv("PARTYLINE_GH_CLAIM", "").lower() in ("1", "true", "yes")
+
+
+def _gh_report(result: dict) -> None:
+    for w in result["warnings"]:
+        print(f"partyline: github: {w}", file=sys.stderr)
+    if result["written"]:
+        print(f"partyline: github: {result['ref']}: " + ", ".join(result["written"]), file=sys.stderr)
+
+
 def cmd_claim_issue(a: argparse.Namespace) -> None:
+    work_item = normalize_target(a.work_item)
     _print(
         _request(
             "POST",
@@ -235,7 +248,7 @@ def cmd_claim_issue(a: argparse.Namespace) -> None:
             {
                 "agent_id": a.agent_id,
                 "repo": a.repo,
-                "work_item": normalize_target(a.work_item),
+                "work_item": work_item,
                 "paths": [normalize_target(p) for p in (a.path or [])],
                 "branch": a.branch,
                 "claim_scope": a.scope,
@@ -244,22 +257,41 @@ def cmd_claim_issue(a: argparse.Namespace) -> None:
             },
         )
     )
+    # The lease was granted (a refusal exits above). Make it visible in GitHub; never block on it.
+    if _gh_claim_enabled(a) and work_item.startswith("issue:"):
+        from . import ghclaim
+
+        _gh_report(ghclaim.project_claim(ghclaim.Gh(), work_item, a.agent_id, Path.cwd().name.lower(), a.branch))
 
 
 def cmd_release(a: argparse.Namespace) -> None:
+    target = normalize_target(a.resource_path)
     _print(
         _request(
             "POST",
             a.url,
             "/api/claims/release",
-            {
-                "agent_id": a.agent_id,
-                "repo": a.repo,
-                "resource_path": normalize_target(a.resource_path),
-                "branch": a.branch,
-            },
+            {"agent_id": a.agent_id, "repo": a.repo, "resource_path": target, "branch": a.branch},
         )
     )
+    if _gh_claim_enabled(a) and target.startswith("issue:"):
+        from . import ghclaim
+
+        _gh_report(ghclaim.release_claim(ghclaim.Gh(), target, a.agent_id, getattr(a, "note", None)))
+
+
+def cmd_gh_claim_show(a: argparse.Namespace) -> None:
+    """Read-only: what GitHub says about the claim on one issue, and whether it is foreign to this seat."""
+    from . import ghclaim
+
+    try:
+        state = ghclaim.read_state(ghclaim.Gh(), a.issue)
+    except (RuntimeError, ValueError) as exc:
+        sys.exit(f"partyline: {exc}")
+    seat = a.agent_id or resolve_agent_id()
+    state["foreign_to_me"] = ghclaim.foreign_claim(state, seat) if seat else None
+    state["release_requested"] = ghclaim.release_requested(state)
+    _print(state)
 
 
 def cmd_agents(a: argparse.Namespace) -> None:
@@ -719,6 +751,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--scope", default="exclusive", choices=["exclusive", "shared_read", "intent"])
     sp.add_argument("--reason")
     sp.add_argument("--ttl", type=int, help="Lease seconds")
+    sp.add_argument("--github", action="store_true",
+                    help="Also mark the claim in GitHub (comment + label) with your gh login "
+                    "(or set PARTYLINE_GH_CLAIM=1); a GitHub failure never blocks the claim")
     sp.set_defaults(func=cmd_claim_issue)
 
     sp = sub.add_parser("claim", help="Claim one target (dir, work item, or source)")
@@ -744,7 +779,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("repo")
     sp.add_argument("resource_path")
     sp.add_argument("--branch")
+    sp.add_argument("--github", action="store_true", help="Also mark the GitHub claim released (issue targets)")
+    sp.add_argument("--note", help="Reason shown on the GitHub claim comment")
     sp.set_defaults(func=cmd_release)
+
+    sp = sub.add_parser("gh-claim", help="Inspect how GitHub shows the claim on an issue")
+    gsub = sp.add_subparsers(dest="gh_action", required=True)
+    gp = gsub.add_parser("show", help="Read the claim marks and any foreign claim (read-only)")
+    gp.add_argument("issue", help="owner/repo#N or issue:owner/repo#N")
+    gp.add_argument("--agent-id", help="Your seat, to tell your own claim from a foreign one")
+    gp.set_defaults(func=cmd_gh_claim_show)
 
     sp = sub.add_parser("agents", help="List agents with presence (live/idle/stale)")
     sp.add_argument(

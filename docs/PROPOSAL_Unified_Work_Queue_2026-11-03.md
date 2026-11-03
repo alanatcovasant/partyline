@@ -110,7 +110,7 @@ All are written together when the claim succeeds (`partyline claim-issue`, and `
 
 #### 2.2.3 Claims made in GitHub (inbound)
 
-Someone not using Partyline, or a person, can claim an issue in GitHub by any of: applying `partyline:claimed`, commenting `/claim` (optionally `/claim seat=<agent id>`), or setting an assignee. At the next sync such an issue is a **foreign claim**:
+Someone not using Partyline, or a person, can claim an issue in GitHub by any of: applying `partyline:claimed`, commenting `/claim` (optionally `/claim seat=<agent id>`), or setting an assignee **other than the account the seats act as**. (Every seat usually acts as one GitHub account, and issues are often assigned to it as ordinary practice, so an assignee equal to that account is not a claim; counting it would block all of the fleet's own work. Found when the first read-only check hit an issue assigned to the operator.) At the next sync such an issue is a **foreign claim**:
 
 - It is **not pullable** by `work next`, so a Partyline seat cannot pick up work someone already took.
 - If it names a registered seat, Partyline **adopts** it as that seat's claim. Otherwise it is recorded against the GitHub login and shown in the audit as an external claim.
