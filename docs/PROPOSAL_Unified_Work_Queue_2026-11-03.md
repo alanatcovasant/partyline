@@ -10,6 +10,29 @@ An agent's work list, the handoff log and the validation queue are one thing: **
 
 It is not only a naming change. The deployed `partyline progress` ledger covers persistence and history, but four things are missing (section 2), and the intake queue (section 3) is new.
 
+## 0. GitHub first: use what GitHub has, store only what it lacks (decided 2026-11-03)
+
+**GitHub is the source of every issue.** Where GitHub has a capability that does the job, we use it and do not rebuild it in Partyline. Partyline stores only **runtime state about agents that GitHub has no concept of**: who is working on something right now, in which seat, with what lease, with what evidence.
+
+| Need | GitHub capability (verified in docs and changelog, 2026-11-03) | Partyline's role |
+|---|---|---|
+| The issue: title, state, labels, body, assignees | Issues | Read-through cache only. Never the source. |
+| Intake: every new issue lands somewhere | Projects v2 **auto-add** and **auto-archive** built-in workflows | Audit that no tracked issue is outside the Project; do not rebuild intake |
+| Severity, priority band, effort | Projects v2 **custom fields**: single-select (Severity, Priority) and number (Effort) | Read them. No severity/effort/band columns of our own |
+| Order of the queue | Projects v2 **manual item order**, changeable by API (`updateProjectV2ItemPosition`) and by dragging in the UI | Read it. Agents move items through GitHub, not through a Partyline rank column |
+| Epic / parent grouping | **Sub-issues** (parent/child, nested) | Read parent links for affinity and for "same epic" routing |
+| Blocked by / blocking | **Issue dependencies** (generally available since 2025-08-21, REST API, `is:blocked` search) | `ready` means no open blocker, read from GitHub; do not model dependencies ourselves |
+| Kind of work (including validation) | **Issue types** (org-level), sub-issues | A validation request can be a typed sub-issue of its fix (section 4) |
+| Human sees what is in flight | Assignees, Project views | Mirror the Partyline claim to the assignee when write access exists (optional) |
+
+Gaps GitHub does not fill, which remain Partyline's job (and are what the rest of this document designs):
+- **An atomic claim with a lease and liveness.** Assigning is not a lease: it has no expiry, does not know the agent died, and cannot be raced safely by many agents calling `next`.
+- **Seats, affinity and handoff** (offer/accept/takeover, orphan detection, the Fibonacci grace windows).
+- **Run evidence.** An executed script's exit code, target and deployed commit are not an issue or comment concept; Partyline records them and links back.
+- **Resume packets, `next_action`, the session-start digest, and escalations** delivered over the line to agents and humans.
+
+Consequences for the sections below: severity, effort, band, order, parent and blocker data are **read from GitHub** (section 3.1); moves are performed **in GitHub** (section 3.2); and phase 2 no longer builds rank or triage tables (section 5). References: [Projects fields and the GraphQL API](https://docs.github.com/en/graphql/reference/projects), [issue dependencies GA](https://github.blog/changelog/2025-08-21-dependencies-on-issues/), [issue dependencies REST](https://docs.github.com/en/rest/issues/issue-dependencies). Issue types and sub-issue limits were confirmed only from secondary sources; verify against docs.github.com before building.
+
 ## 1. What exists today, and what it can't do
 
 | Need | Today | Gap |
@@ -69,21 +92,22 @@ A **queue** is an ordered set of unowned work items. Named queues: one intake qu
 **Triage gate** (decided 2026-11-03): an issue is available for the queue only once it has a **severity** and an **effort estimate**. Until then it is `untriaged`: visible in intake and audited, but not pullable by `work next`. Once both are set it is `triaged`, and enters the queue.
 
 - **Severity** `S1..S4` (S1 critical: broken or blocking; S2 major; S3 minor; S4 cosmetic or nice-to-have). **Effort** in Fibonacci points `1, 2, 3, 5, 8, 13` (anything larger needs splitting before it is triaged). The scales are proposed; see decision 12.
-- **Who triages:** anyone. A human sets them in GitHub (labels such as `severity:S2`, `effort:5`, read at sync; GitHub wins when present), or an agent estimates them with `partyline queue triage --issue owner/repo#N --severity S2 --effort 5 --why "..."`. Agent estimates are recorded `triage_source: agent` and show as such, so a human can confirm or correct them. Agent estimates stay local to Partyline unless a later phase writes them back to GitHub (that needs a write credential, which is not assumed).
+- **Who triages:** anyone. A human sets them in GitHub (labels such as `severity:S2`, `effort:5`, read at sync; GitHub wins when present), or an agent estimates them with `partyline queue triage --issue owner/repo#N --severity S2 --effort 5 --why "..."`, which sets the Project fields. Agent estimates carry a `triage_source: agent` marker (a comment or a field) so a human can confirm or correct them.
 
 On triage the server **proposes a position**: band from severity (S1 -> P0, S2 -> P1, S3 -> P2, S4 -> P3; P4 icebox only by explicit parking), then within the band **smaller effort first, then older first** (cheap work clears before large work). The proposal is effective immediately; no one has to approve it for it to be workable.
 
-Fields added: `queue`, `severity`, `effort`, `triage_source` (`github` | `agent` | `human`), `priority_band`, `rank` (orderable key allowing insertion between two items without renumbering), `order_state` (`proposed` | `confirmed` | `pinned`), `source` (`github` | `agent` | `operator`), `source_ref` (`owner/repo#N`), `enqueued_by`, `ranked_by`/`ranked_at`.
+**Where this lives (section 0):** Severity, Priority band and Effort are **Project fields**, and the order is the **Project's item order**. Partyline's queue is a read-through mirror (`source_ref` = `owner/repo#N`, plus the field values, position, parent and blockers at last sync), used for fast `work next`; it has no `severity`, `effort`, `band` or `rank` columns of its own. The only queue state Partyline adds is what GitHub lacks: `order_state` (`proposed` | `confirmed` | `pinned`, derived as described in 3.2), the current claim, seat and affinity. Agent estimates (`triage_source: agent`) are written to the Project fields through the GitHub App, so GitHub stays the record; if write access is not available the estimate is held in Partyline as an unapplied proposal and shown as such.
 
-Order is **band first, then rank within the band, then age**. Every change to severity, effort, band or rank is an event (actor, before, after, reason), so reordering is auditable and a bad reorder is revertable.
+Order is **Priority band first, then the Project's item order within the band, then age**. Changes made through Partyline are events (actor, before, after, reason). A change made directly in GitHub is seen at the next sync as a position or field difference with no matching Partyline event, which is how a human decision is recognized (3.2).
 
 ### 3.2 Who proposes the order, who decides (non-blocking)
 
 **Agents propose; a human decides; nothing waits for the decision.**
 
-- **Proposals take effect at once.** Any agent can propose a band or position for a triaged item (`partyline queue move --issue owner/repo#N --band P1 --before W-123 --why "blocks #4700"`). It applies immediately as `order_state: proposed`, with the reason recorded. Work is never held for approval.
+- **Proposals take effect at once.** Any agent can propose a band or position for a triaged item (`partyline queue move --issue owner/repo#N --band P1 --before owner/repo#123 --why "blocks #4700"`). Partyline performs it in GitHub (the Priority field and the item position, via the Projects API) and records the actor and reason. It is `order_state: proposed`. Work is never held for approval.
+- **A human's change is recognized without any extra step.** If a sync finds a Priority or position that differs from Partyline's last recorded state and no Partyline event explains it, a person changed it in the GitHub UI: the item becomes `pinned`. Humans keep their normal tool, and agents never have to ask.
 - **A human reviews on their own schedule.** `partyline queue review` (and a dashboard view) lists items whose order is still `proposed`, oldest first. The human confirms them in bulk (`confirmed`) or sets a band or rank (`pinned`). Review age appears in the audit; an unreviewed proposal never expires, never blocks, and never changes the order by itself.
-- **A human's decision outranks agents without freezing them.** A `pinned` item's order does not change when an agent proposes otherwise: the proposal is stored as a pending proposal beside it (visible in the review list) and the pinned order stays in force until the human acts. This is the only case where an agent's proposal does not take effect, and it exists because a person has already decided.
+- **A human's decision outranks agents without freezing them.** A `pinned` item's order does not change when an agent proposes otherwise: Partyline does not write the move to GitHub; it keeps it as a pending proposal beside the item (visible in the review list) and the pinned order stays in force until the human acts. This is the only case where an agent's proposal does not take effect, and it exists because a person has already decided.
 - **No agent needs permission to add work.** Moving a triaged item in the queue is an agent action; only changes to a `pinned` item need a human.
 - Concurrent proposals resolve by server commit order; both are in the event log. There is no merge step, which is the point.
 
@@ -128,16 +152,19 @@ This is the main open design question; both options need the "no manual steps" r
 
 Recommendation: ship **A** first so the queue and ordering can be used immediately, then **B** to make the guarantee real. The invariant is only enforceable once B exists; until then the audit report says when the last sync ran.
 
-Only issue **metadata** is mirrored (ref, title, labels, state, assignee, updated_at, URL). Issue bodies and comments stay in GitHub.
+What is mirrored: from **issues** the ref, title, state, labels, assignees, parent, blockers, updated_at and URL; from the **Project** the Severity, Priority and Effort field values and the item order. Issue bodies and comments stay in GitHub. The credential is a GitHub App with read access to issues and the organization Project; write access (Project fields and position, assignee) is only needed for agent moves and the optional assignee mirror, and can be a second, later grant.
 
-### 3.6 GitHub Projects as the ordering store (alternative)
+### 3.6 GitHub Projects as the order store (decided)
 
-GitHub Projects already has ordered boards. Keeping the order there lets humans reorder in the GitHub UI and avoids a second source of ranking. The cost: ordering through GraphQL per agent action, no atomic claim, and no connection to Partyline agent scope or liveness. Recommendation: Partyline holds the authoritative rank (agents write it fast and claim atomically); optionally mirror band/rank to a Project field later for human visibility. Settle this before building (decision 3).
+Decided 2026-11-03 (section 0): the order and the triage fields live in a GitHub Project. This reverses the earlier recommendation to keep an authoritative rank in Partyline. What the Project cannot do (an atomic claim with a lease, seat affinity, run evidence) stays in Partyline, which is why `work next` reads the Project's order but takes the claim itself.
+
+Costs accepted: moves go through the Projects GraphQL API; reads are eventually consistent with the sync interval (so `work next` may briefly use a slightly stale order, and the claim is still safe because it is atomic in Partyline); and one Project (or a small fixed set) must be named as the source per scope. Open point: GitHub Projects v2 is organization-owned, so the Project and the GitHub App must live in the `covasant` org.
 
 ## 4. Folding in the validation queue and the handoff log
 
 - **Validation items** are `kind=validation` items with `target`, `script` and executed-run evidence (the prototype's rules unchanged: only an executed passing run validates). They live in the **same priority queue** as tasks (a per-target view is a filter, not a separate queue) and are pulled with the same `next`.
 - **Validation enters the queue after deploy, one band higher than its issue** (decided 2026-11-03). The bias is deliberate: clearing validations is worth more than starting new work, and the existing validation backlog (468 pending sections in the Aura testing-queue doc) is the problem this is meant to break.
+  - **A validation request is a GitHub item** (decided direction, see decision 14): a sub-issue of the fix issue with the issue type `Validation`, created by the deploy step through the GitHub App, with its Project Priority set one band above the parent. It is then visible, orderable and countable in the same Project as everything else, and "validated" is closing that issue after Partyline's executed run passes. Partyline keeps what GitHub has no place for: the executed run (exit code, target, commit, validator seat, `independent`) and the claim.
   - **Before deploy** the item exists but is `waiting` on its deploy (created when the fix PR is enqueued). It is not pullable, so nobody tries to validate a build that is not running.
   - **A deploy event** for a target (posted by whoever deploys, for example the build agent: "build X is live on target T", carrying the commit) moves every waiting item for that target whose fix is in that commit to `ready`.
   - **Band = the issue's band minus one, floored at P0** (P1 -> P0, P2 -> P1, P3 -> P2). A P0 fix's validation stays P0.
@@ -156,10 +183,12 @@ GitHub Projects already has ordered boards. Keeping the order there lets humans 
 
 ## 5. Phasing
 
-1. **Ownership + handoff on the existing ledger**: `owner_agent_id`, `next_action`, offer/accept/decline, fencing, orphan labeling. Prerequisite for everything else.
-2. **Queue + ranking + `work next`**: bands, rank, agent scope, atomic claim, rank events. Client-pushed `queue sync` (option A) and `queue audit`.
-3. **Server-side sync (B)** and the alarm for untriaged/orphaned items; dashboard queue and audit views.
-4. **Fold in validation items**, session-start queue digest, retire the `add.sh` dual-write.
+1. **Ownership + handoff on the existing ledger**: `next_action`, offer/accept/decline/takeover, opt-in fencing, orphan labeling. Partyline-only runtime state, unaffected by section 0. Prerequisite for everything else.
+2. **Read-through queue + `work next`** (no rank or triage tables): a GitHub App with read access, the sync (client-pushed first, server-side scheduled second), a mirror of Project fields, order, parents and blockers, `work next` with the claim in Partyline, agent scope, seat affinity, and `queue audit`.
+3. **Agent moves and triage written to GitHub** (Project field and position mutations, the optional assignee mirror), human-change detection to set `pinned`, the alarms for untriaged and orphaned items, and the dashboard views.
+4. **Validation as typed sub-issues**: created at deploy, Priority one band higher, claimed and evidenced in Partyline; session-start queue digest; retire the `add.sh` dual-write.
+
+The `vq_*` prototype and the handoff work stay valid: they hold exactly the runtime state GitHub lacks.
 
 Each phase ships a validation script with positive and negative cases (exits non-zero on failure), per repository practice.
 
@@ -180,7 +209,7 @@ Each phase ships a validation script with positive and negative cases (exits non
 
 1. ~~Authority over order~~ **Decided:** agents propose, a human decides, and nothing blocks on the decision (3.2). Still open: who the reviewer is (you, or a nominated triager) and the review cadence the audit should nag at.
 2. **Priority bands:** how many, with what meaning? (Proposed: P0 drop everything, P1 this sprint, P2 next, P3 backlog.)
-3. **Order store:** Partyline rank (recommended) or a GitHub Project as source of truth?
+3. ~~Order store~~ **Decided:** the GitHub Project (section 0, 3.6). Still open: which Project(s), and who owns the Priority/Severity/Effort field definitions.
 4. **Sync credential:** reuse the Aura GitHub App, or create a read-only app for Partyline? Who provisions the secret so it stays automated?
 5. **Tracked repos:** a configured list, or every repo an agent registers against? Which labels exclude an issue from intake (for example `question`, `discussion`)?
 6. **Queue scope per agent:** declared at register time, or derived from `repo` and workdirs?
@@ -188,6 +217,7 @@ Each phase ships a validation script with positive and negative cases (exits non
 8. **Migration of existing `progress_tasks`:** convert in place (folder becomes the seat's workspace-qualified folder) or leave read-only history and start fresh at phase 1.
 9. ~~Affinity grace period~~ **Decided:** by band, Fibonacci: P0 3h, P1 5h, P2 8h, P3 13h, P4 21h (see 2.1). Still open: whether P4 should exist and whether wall-clock hours are acceptable.
 10. ~~Who validates a fix~~ **Decided:** builder allowed, another seat preferred, via the independence grace in section 4. Still open: whether a builder-validated P0/P1 should be automatically re-queued for an independent spot-check, or only flagged.
+14. **Validation requests as GitHub sub-issues:** acceptable volume and noise (the legacy backlog is about 468 items), who creates them (the deploy step via the GitHub App needs `issues:write`), and the issue type name. The alternative is to keep validations only in Partyline and show them in the dashboard, at the cost of a second place to look.
 13. **Validation boost details:** is one band always right, or should it depend on the issue (a security fix to P0 regardless)? What is the starvation cap, if any? Which seat capabilities gate a target (profile, identity, deploy-lock)?
 12. **Severity and effort scales and labels:** are S1..S4 and Fibonacci points 1..13 right, and what GitHub label names carry them (`severity:S2`, `effort:5`)? Should an issue with effort above 13 be refused at triage until split? Should the system-proposed band come only from severity, or also weigh age and what the issue blocks?
 11. **Seat key:** is `(agent_id, workspace-qualified folder)` right, given that some folders are shared by several agent ids over time (for example the Aura main clone)?
