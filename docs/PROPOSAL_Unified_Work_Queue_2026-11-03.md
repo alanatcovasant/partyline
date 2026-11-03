@@ -36,7 +36,26 @@ A folder carries state no ledger row can reproduce: the agent's memory files for
 
 - **An interruption is not a release.** A session ending with unfinished work leaves the item owned by its seat in state `interrupted` (derived, not typed). That folder's next session finds it first via `resume`. This matches today's rule that a folder has one current task, which is the resume point.
 - **Items remember their home.** The first seat to work an issue becomes its `home`, retained across interruptions. Follow-ups tend to return to the same place: review fixes, a reopened issue, the deployed validation of the fix, and other issues under the same epic or parent.
-- **Affinity is a soft reservation, never a lock.** A homed item is reserved for its home seat for a grace period (suggested: 24h after the last activity, tunable). After that, or on an explicit release, it re-enters the global pool. Another seat can take it earlier only by an explicit takeover. Without the expiry, affinity recreates the dropped-issue problem: an item stuck behind a folder nobody opens.
+- **Affinity is a soft reservation, never a lock.** A homed item is reserved for its home seat for a grace period that **shrinks as priority rises**, following the Fibonacci series (table below). After that, or on an explicit release, it re-enters the global pool. Another seat can take it earlier only by an explicit takeover. Without the expiry, affinity recreates the dropped-issue problem: an item stuck behind a folder nobody opens.
+**Grace period by priority band** (decided 2026-11-03: the more urgent the item, the less it may wait for its home seat):
+
+| Band | Meaning | Grace (hours since the home seat's last activity on the item) |
+|---|---|---|
+| P0 | drop everything | 3 |
+| P1 | this sprint | 5 |
+| P2 | next | 8 |
+| P3 | backlog | 13 |
+| P4 | icebox (optional fifth band) | 21 |
+
+The series continues (34, 55, ...) if more bands are ever added. Rules around it:
+
+- **The clock starts at the home seat's last activity on the item** (a progress note, a claim refresh or the session that interrupted), not at enqueue.
+- **Re-banding re-evaluates immediately.** Raising an item to P0 that has been idle 4h releases it at once; lowering it extends the reservation only from the last activity, so priority changes cannot be used to hold an item hostage.
+- **A stale home agent shortens it.** If the home seat's agent is `stale` on the line (not merely idle), the reservation ends at the next sweep instead of waiting out the grace. The grace is the upper bound.
+- **Release is announced.** A reservation that lapses for P0 or P1 posts one message naming the item and the former home, so a human can see it moved; lower bands show up only in the audit.
+- **Wall-clock hours, not working hours,** for simplicity. A P3 reserved at the end of the day therefore lapses roughly overnight; that is acceptable for backlog work, and a business-hours clock can be added later if it proves too aggressive.
+- Untriaged items have no home and no grace.
+
 - **Moving seats is allowed and visible.** The resume packet for a new seat states that the item's home is elsewhere and that the memory there did not move, so the new agent leans on the item's history and structured notes (objective, decisions, next action) instead of assuming context. This is why `next_action` and decision notes are required fields, not nice-to-haves.
 - **Seat identity must be unambiguous.** Today the folder is the directory name. Qualify it with a machine/workspace id (as the work-ledger proposal already requires for claims) so `aura_2` on two machines is two seats. The agent id convention is already per clone, so the pair `(agent_id, workspace folder)` is stable enough to be the seat key.
 - **Orchestrator-ready.** `home` is stored as an opaque seat reference. If Omnigent or another runner later owns sessions and worktrees, the seat becomes that session/worktree, and the queue logic does not change.
@@ -121,7 +140,7 @@ Each phase ships a validation script with positive and negative cases (exits non
 
 ## 6. Acceptance
 
-0. A session ends mid-item (simulated token-window reset); the same seat's next `work next` returns that item before anything else, with its next action; a different seat's `work next` skips it during the grace period and takes it afterward, and its packet says the home memory did not move.
+0. A session ends mid-item (simulated token-window reset); the same seat's next `work next` returns that item before anything else, with its next action; a different seat's `work next` skips it during that band's grace (3h for P0 ... 13h for P3) and takes it afterward, and its packet says the home memory did not move. Raising the band of an idle item past its new grace releases it immediately; a stale home agent releases it before the grace ends.
 1. Agent A offers an item to anyone; agent B accepts; A's later update to it is refused naming B, and the item's claims moved with it atomically.
 2. A stale owner's item shows `orphaned`; a takeover records who and why; it never silently changes hands.
 3. Two agents run `work next` concurrently on a queue and get different items; an agent whose scope is `partyline` is never handed an `aura` item.
@@ -140,6 +159,6 @@ Each phase ships a validation script with positive and negative cases (exits non
 6. **Queue scope per agent:** declared at register time, or derived from `repo` and workdirs?
 7. **Untriaged threshold and escalation target** (who is paged, how often).
 8. **Migration of existing `progress_tasks`:** convert in place (folder becomes the seat's workspace-qualified folder) or leave read-only history and start fresh at phase 1.
-9. **Affinity grace period** (proposed 24h) and whether it differs by band: should a P0 item reserved to a folder that is not running be released sooner?
+9. ~~Affinity grace period~~ **Decided:** by band, Fibonacci: P0 3h, P1 5h, P2 8h, P3 13h, P4 21h (see 2.1). Still open: whether P4 should exist and whether wall-clock hours are acceptable.
 10. **Who validates a fix:** the seat that built it (keeps context) or an independent seat (independent evidence)? The queue supports either; the default routing should be chosen.
 11. **Seat key:** is `(agent_id, workspace-qualified folder)` right, given that some folders are shared by several agent ids over time (for example the Aura main clone)?
