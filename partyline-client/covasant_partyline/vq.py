@@ -45,6 +45,9 @@ def command(args):
     if act == "show":
         q = urllib.parse.urlencode({"issue_ref": args.issue, "target": args.target})
         return _out(cli._request("GET", args.url, "/api/vq/show?" + q))
+    if act == "purge":
+        q = urllib.parse.urlencode({"target": args.target})
+        return _out(cli._request("DELETE", args.url, "/api/vq/items?" + q))
     agent = _agent(args)
     if act == "enqueue":
         body = {"issue_ref": args.issue, "target": args.target, "agent_id": agent,
@@ -76,7 +79,7 @@ def command(args):
 def add_parser(sub):
     parser = sub.add_parser("vq", help="Validation queue: code-complete work awaiting validation on a target")
     actions = parser.add_subparsers(dest="action", required=True)
-    for action in ("enqueue", "list", "next", "record", "run", "show"):
+    for action in ("enqueue", "list", "next", "record", "run", "show", "purge"):
         p = actions.add_parser(action)
         p.add_argument("--target", required=action != "list", help="Deployed target, e.g. dev-eastus2")
         if action in {"enqueue", "record", "run", "show"}:
@@ -98,6 +101,6 @@ def add_parser(sub):
             p.add_argument("--operation-id", help="UUID to reuse when retrying the same run")
         if action == "run":
             p.add_argument("--timeout", type=int, default=900)
-        if action not in {"list", "show"}:
+        if action not in {"list", "show", "purge"}:
             p.add_argument("--agent-id")
         p.set_defaults(func=command)

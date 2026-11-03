@@ -89,6 +89,11 @@ async def vq_list(target: str | None = None, state: str | None = None,
     return await run_in_threadpool(_vq_call, vq.list_items, target, state, limit)
 
 
+@router.delete("/vq/items")
+async def vq_purge(target: str) -> dict:
+    return await run_in_threadpool(_vq_call, vq.purge_test_target, target)
+
+
 @router.get("/vq/show")
 async def vq_show(issue_ref: str, target: str) -> dict:
     return await run_in_threadpool(_vq_call, vq.show, issue_ref, target)

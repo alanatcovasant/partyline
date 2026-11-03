@@ -59,3 +59,11 @@ def test_list_and_show_are_read_only(monkeypatch):
     _go(["vq", "list", "--target", "dev-eastus2", "--state", "pending"])
     _go(["vq", "show", "--target", "dev-eastus2", "--issue", "o/r#1"])
     assert all(r[0] == "GET" for r in seen) and "state=pending" in seen[0][2]
+
+
+def test_purge_is_a_delete_on_the_target_and_needs_no_identity(monkeypatch):
+    seen = []
+    monkeypatch.setattr(cli, "_request", lambda *a: seen.append(a) or {})
+    monkeypatch.setattr(cli, "resolve_agent_id", lambda: None)  # would abort if purge asked for one
+    _go(["vq", "purge", "--target", "zz-vq-x"])
+    assert seen[0][0] == "DELETE" and seen[0][2] == "/api/vq/items?target=zz-vq-x"

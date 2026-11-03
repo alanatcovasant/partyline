@@ -206,6 +206,23 @@ def list_items(target: str | None = None, state: str | None = None, limit: int =
         return conn.execute(sql, args).fetchall()
 
 
+TEST_PREFIX = "zz-"
+
+
+def purge_test_target(target: str) -> dict:
+    """Delete every item (and its runs, by cascade) on a reserved test target. The queue's history
+    is otherwise append-only, so only the `zz-` namespace, used by validation scripts, may be purged."""
+    from . import db
+
+    target = target.strip().lower()
+    if not target.startswith(TEST_PREFIX):
+        raise ValueError(f"only test targets starting with '{TEST_PREFIX}' can be purged")
+    with db.get_pool().connection() as conn:
+        n = conn.execute("DELETE FROM vq_items WHERE target = %s", (target,)).rowcount
+        conn.commit()
+        return {"target": target, "deleted_items": n}
+
+
 def show(issue_ref: str, target: str) -> dict:
     from . import db
 

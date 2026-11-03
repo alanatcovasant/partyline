@@ -7,8 +7,9 @@ Negative: a hand-recorded PASS only reaches self_reported; a second validator ca
 record against a held item; a bad state filter and unknown item are refused; an unauthenticated
 call is refused. Prints PASS/FAIL per case; exits non-zero on any failure.
 
-Uses a throwaway target (zz-vq-validate-<pid>) and two throwaway agents. There is no delete API
-yet, so the rows remain, but they are confined to that target and never claimed by a real `next`.
+Cleans up after itself: items live on a throwaway `zz-` target that is purged at the end (and
+asserted gone), and it reuses two FIXED test agents (the line never deletes agents, so a fresh
+pair per run would accumulate; re-registering the same ids is a no-op).
 """
 import json
 import os
@@ -56,7 +57,7 @@ def call(method, path, body=None, auth=True):
 
 
 sfx = uuid4().hex[:8]
-tgt, a, b = f"zz-vq-validate-{sfx}", f"zz_vq_a_{sfx}", f"zz_vq_b_{sfx}"
+tgt, a, b = f"zz-vq-validate-{sfx}", "zz_vq_validate_a", "zz_vq_validate_b"
 n = int(sfx[:6], 16)
 ref = f"zz/vq#{n}"
 for ag in (a, b):

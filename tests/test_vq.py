@@ -108,3 +108,31 @@ async def test_next_skips_a_row_locked_by_another_transaction(client):
             conn.execute("DELETE FROM vq_items WHERE target=%s", (tgt,))
             conn.execute("DELETE FROM agents WHERE agent_id = ANY(%s)", ([a, b],))
             conn.commit()
+
+
+@pytest.mark.anyio
+async def test_purge_only_removes_zz_test_targets(client):
+    from app import db
+
+    sfx = uuid4().hex[:8]
+    agent, test_tgt, real_tgt = f"vqp_{sfx}", f"zz-vqp-{sfx}", f"vqp-real-{sfx}"
+    await client.post("/api/agents", json={"agent_id": agent, "owner": "test", "repo": "test"})
+    try:
+        for t in (test_tgt, real_tgt):
+            await client.post("/api/vq/items", json={"issue_ref": "zz/vqp#1", "target": t, "agent_id": agent})
+        await client.post("/api/vq/runs", json={"issue_ref": "zz/vqp#1", "target": test_tgt, "agent_id": agent, "exit_code": 0})
+        # NEGATIVE: a real target's history is never purged
+        r = await client.delete("/api/vq/items", params={"target": real_tgt})
+        assert r.status_code == 409
+        assert len((await client.get("/api/vq/items", params={"target": real_tgt})).json()) == 1
+        # POSITIVE: the zz- target goes, runs with it
+        r = await client.delete("/api/vq/items", params={"target": test_tgt})
+        assert r.status_code == 200 and r.json()["deleted_items"] == 1
+        assert (await client.get("/api/vq/items", params={"target": test_tgt})).json() == []
+        with db.get_pool().connection() as conn:
+            assert conn.execute("SELECT count(*) AS n FROM vq_runs r JOIN vq_items i ON i.id=r.item_id WHERE i.target=%s", (test_tgt,)).fetchone()["n"] == 0
+    finally:
+        with db.get_pool().connection() as conn:
+            conn.execute("DELETE FROM vq_items WHERE target = ANY(%s)", ([test_tgt, real_tgt],))
+            conn.execute("DELETE FROM agents WHERE agent_id=%s", (agent,))
+            conn.commit()
