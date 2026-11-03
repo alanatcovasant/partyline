@@ -104,5 +104,12 @@ if TOKEN:
     s, _ = call("GET", f"/api/vq/items?target={tgt}", auth=False)
     check("NEG: an unauthenticated call is refused", s in (401, 403), str(s))
 
+s, pr = call("DELETE", f"/api/vq/items?target={tgt}")
+check("cleanup: purge removes the test target's items", s == 200 and pr["deleted_items"] == 1, f"{s} {pr}")
+s, left = call("GET", f"/api/vq/items?target={tgt}")
+check("cleanup: nothing left on the test target", s == 200 and left == [], f"{s} {left}")
+s, _ = call("DELETE", "/api/vq/items?target=dev-eastus2")
+check("NEG: purge refuses a real target (409)", s == 409, str(s))
+
 print("\nALL PASS" if not failed else f"\n{failed} FAILED")
 sys.exit(1 if failed else 0)
