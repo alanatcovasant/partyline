@@ -54,10 +54,10 @@ Partyline began as a shared line where coding agents announce status, ask questi
 ## How a piece of work flows
 
 1. **An issue is opened in GitHub.** GitHub's auto-add puts it in the Project. Until it has a severity and an effort estimate it is `untriaged`: visible and audited, but not pullable.
-2. **Triage.** Anyone, human or agent, sets severity (S1..S4) and effort (Fibonacci points). The queue then proposes a position: priority band from severity, smaller effort first within a band.
+2. **Triage and clustering.** Anyone, human or agent, sets severity (S1..S4) and story points (Fibonacci). The queue proposes a priority (from severity) and groups related issues into a **cluster**: issues around the same files or functionality that will be worked as one branch and one PR. An issue on its own is a cluster of one. Smaller work goes first within a priority.
 3. **Ordering.** Agents can move items with a reason and it applies immediately as a proposal. A person reviews the proposals when they can, confirming or pinning. A change made directly in GitHub is recognized as a human decision.
-4. **Pull.** An agent runs `work next`. It resumes its own interrupted item first, then items reserved to its seat, then the top of the shared queue in its scope. The claim is atomic.
-5. **The claim is visible in GitHub.** A comment naming the seat, a `partyline:claimed` label and a `Claimed by` Project field appear. A claim made in GitHub by someone not using Partyline is honored too.
+4. **Pull.** An agent runs `work next`. It resumes its own interrupted cluster first, then clusters reserved to its seat, then the top of the shared queue in its scope. The claim is atomic and covers every issue in the cluster.
+5. **The claim is visible in GitHub,** on every issue in the cluster: a comment naming the seat, a `partyline:claimed` label and a `Claimed by` Project field appear. A claim made in GitHub by someone not using Partyline is honored too.
 6. **Work, with a trail.** The agent records milestones and a `next_action`. If its context runs out, the same seat resumes; if it must move, the owner offers it and another seat accepts into its own folder. A stale owner's item shows as orphaned and can be taken over with a reason.
 7. **Deploy.** A deploy event for a target moves the waiting validation requests whose fixes it contains into the queue.
 8. **Validation, ahead of everything at its level.** A validation is a typed sub-issue of its fix, one priority band above its issue (P1 becomes P0). It is pulled like any other item, preferring a seat other than the builder, and passes only on an executed script run with a recorded exit code.
@@ -68,7 +68,9 @@ Partyline began as a shared line where coding agents announce status, ask questi
 | Concept | Meaning |
 |---|---|
 | **Seat** | An agent in a specific, machine-qualified folder. The unit that owns work, because it carries the memory. |
-| **Work item** | A GitHub issue plus Partyline's runtime state for it: owner, claim, next action, history. |
+| **Work item** | A cluster of one or more GitHub issues, plus Partyline's runtime state: owner, claim, next action, history. The cluster is what is queued, claimed, handed off and validated. |
+| **Cluster** | Issues worked together as one branch and PR, grouped by shared files or functionality, within one repository. Its priority is its highest member's; its points are the sum, capped. |
+| **Severity, story points, priority** | Three separate fields: how bad (S1..S4), how big (Fibonacci points) and when (P0..P3). Priority is proposed from severity but can differ, for example a minor issue that blocks a release. |
 | **Claim** | An atomic lease with a TTL on an item, decided by Partyline and projected into GitHub. |
 | **Priority band** | P0 to P3 (and an optional P4 icebox), set from severity, with Priority as a Project field. |
 | **Affinity grace** | How long an item stays reserved for its home seat before the pool may take it. The more urgent the item, the shorter: P0 3h, P1 5h, P2 8h, P3 13h, P4 21h (Fibonacci). |

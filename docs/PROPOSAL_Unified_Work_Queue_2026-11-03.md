@@ -130,11 +130,40 @@ Someone not using Partyline, or a person, can claim an issue in GitHub by any of
 
 ## 3. The unclaimed queue, populated from GitHub Issues
 
+### 3.0 Vocabulary: severity, story points, priority, cluster (decided 2026-11-03)
+
+Four different things, kept as four different fields:
+
+| Term | Answers | Values | Set | Lives in |
+|---|---|---|---|---|
+| **Severity** | How bad is the problem if left alone? Intrinsic impact. | S1..S4 | At triage; rarely changes | Project single-select `Severity` |
+| **Story points** | How big is the work? | Fibonacci 1, 2, 3, 5, 8, 13 | At triage | Project number `Story points` (called "effort" elsewhere in this document) |
+| **Priority** | When should it be worked? Urgency, the thing the queue sorts by. | P0..P3 (P4 icebox) | **Proposed from severity**, then adjustable with a reason (blocks a release, deadline, blocks another issue) | Project single-select `Priority` |
+| **Cluster** | Which issues travel together in one branch and one PR? | A name per cluster, within one repository | Proposed by agents, reviewed by a human | Project field `Cluster` |
+
+Severity and priority are deliberately separate: a cosmetic S4 that blocks a release is P0, and an S1 that already has a workaround may not be. The earlier rule that the starting band comes from severity remains the **default proposal**, not a constraint.
+
+#### 3.0.1 Clusters: the unit of work
+
+To minimize branches and PRs, similar or related issues are worked as a unit: grouped around **the files involved or the functionality**. The cluster, not the single issue, is therefore the unit that is queued, claimed, handed off and (with its fixes) validated. Rules:
+
+- **Every issue is in exactly one cluster; the default is a cluster of one.** There is then one model, not two: the queue is a queue of clusters, and an unclustered issue is simply a singleton.
+- **One cluster = one branch and one PR** in one repository, whose description closes every member (GitHub links a PR to several issues natively). A cluster never spans repositories.
+- **Formation.** Agents propose membership with a reason (shared files, same functionality, same component), as they propose ordering: it takes effect at once and a human reviews it without blocking anything. Signals: files touched by the issue's earlier fixes or linked PRs, the area labels, and an agent's own read of the code. Only **triaged** issues can join a cluster.
+- **Cluster priority = the highest priority among its members.** A P3 that rides along with a P1 is worked at P1; that is the point of clustering, and the cost (a low item pulled forward) is visible in the audit.
+- **Cluster points = the sum of its members' points, with a cap** (proposed: 13, the top of the scale), so a cluster stays reviewable as one PR; a cluster over the cap is split.
+- **Pull, claim and affinity act on the cluster.** `work next` hands out a cluster; the claim covers every member issue and writes its marks to **each** member (so someone reading any one of them sees the claim, 2.2); the home seat, the affinity grace and handoff all apply to the cluster, using its priority.
+- **Validation follows the cluster.** All members deploy together, so their validation requests share the cluster's priority band minus one and are taken by one validator as a batch for the same target and commit, instead of one claim per issue.
+- **Membership changes are events** (join, leave, split, merge) with actor and reason. Closing every member closes the cluster. A cluster with a claimed member is not dissolved by an agent without the claim holder's agreement.
+- **Dependencies** (GitHub "blocked by") between members are ignored inside the cluster and between clusters they order it: a cluster is `ready` only when nothing outside it blocks any member.
+
+**Why a Project field, not a sub-issue parent or a label.** GitHub allows an issue only **one** parent, and the parent is already used for epics (and, in this design, for a fix's validation sub-issues), so using it for clusters would force a choice between an epic and a cluster. A label per cluster would sprawl and is repository-scoped. A Project field is visible in board and table views, filterable and groupable, works across the organization's Project, and does not compete with either.
+
 ### 3.1 Model
 
 A **queue** is an ordered set of unowned work items. Named queues: one intake queue per scope (repo or area, for example `aura`, `partyline`), and per-target validation queues (`validation:dev-eastus2`).
 
-**Triage gate** (decided 2026-11-03): an issue is available for the queue only once it has a **severity** and an **effort estimate**. Until then it is `untriaged`: visible in intake and audited, but not pullable by `work next`. Once both are set it is `triaged`, and enters the queue.
+**Triage gate** (decided 2026-11-03): an issue is available for the queue only once it has a **severity** and an **effort estimate** (story points). It then belongs to a cluster, by default its own (3.0.1). Until then it is `untriaged`: visible in intake and audited, but not pullable by `work next`. Once both are set it is `triaged`, and enters the queue.
 
 - **Severity** `S1..S4` (S1 critical: broken or blocking; S2 major; S3 minor; S4 cosmetic or nice-to-have). **Effort** in Fibonacci points `1, 2, 3, 5, 8, 13` (anything larger needs splitting before it is triaged). The scales are proposed; see decision 12.
 - **Who triages:** anyone. A human sets them in GitHub (labels such as `severity:S2`, `effort:5`, read at sync; GitHub wins when present), or an agent estimates them with `partyline queue triage --issue owner/repo#N --severity S2 --effort 5 --why "..."`, which sets the Project fields. Agent estimates carry a `triage_source: agent` marker (a comment or a field) so a human can confirm or correct them.
@@ -249,6 +278,7 @@ Each phase ships a validation script with positive and negative cases (exits non
 7. `work list --mine` shows owned tasks and validations together, and no manual file is consulted to resume.
 10. Claiming an issue through Partyline leaves, in GitHub, the claim comment, the `partyline:claimed` label and the `Claimed by` field naming the seat; releasing removes the label and field and edits the comment; a handoff edits the seat and adds a trail comment.
 11. An issue claimed in GitHub by someone not using Partyline (label, `/claim` or assignee) is not returned by `work next` and appears in `queue audit` as an external claim; removing the label releases it and the seat is notified.
+13. Two triaged issues in one repository that share files are proposed as one cluster; the cluster's priority is its highest member's and its points are the sum; `work next` hands it out as one item, the claim marks appear on every member, and a PR that closes all members closes the cluster. A cluster over the cap, spanning two repositories, or containing an untriaged issue is refused.
 12. If the GitHub write fails, the Partyline claim still stands, is flagged `unprojected`, and a later sync projects it. Two seats claiming the same issue concurrently produce exactly one set of marks.
 9. A validation item is `waiting` and not pullable until a deploy event for its target covers its fix; then it is `ready` at the issue's band minus one (P1 -> P0, P0 stays P0) and sorts ahead of tasks in that band.
 8. A validation item built by seat A is not handed to A by `work next` while another seat can take it; after the band's independence grace it is. A run by A is recorded `independent: false` and still validates; a run by B is `independent: true`; a hand-typed PASS by either still cannot validate.
@@ -265,6 +295,7 @@ Each phase ships a validation script with positive and negative cases (exits non
 8. **Migration of existing `progress_tasks`:** convert in place (folder becomes the seat's workspace-qualified folder) or leave read-only history and start fresh at phase 1.
 9. ~~Affinity grace period~~ **Decided:** by band, Fibonacci: P0 3h, P1 5h, P2 8h, P3 13h, P4 21h (see 2.1). Still open: whether P4 should exist and whether wall-clock hours are acceptable.
 10. ~~Who validates a fix~~ **Decided:** builder allowed, another seat preferred, via the independence grace in section 4. Still open: whether a builder-validated P0/P1 should be automatically re-queued for an independent spot-check, or only flagged.
+16. **Clusters:** where cluster membership is tracked today and what name or marker is used (decides the `Cluster` field's format); the points cap per cluster (proposed 13) and whether a count cap is also needed; whether cluster priority should always be the highest member, or whether a low member may be left out of a high cluster; and who may merge or split clusters while one is claimed.
 15. **Claim marks in GitHub:** **Decided 2026-11-03:** the first version writes them from the client with the agent's own `gh` login. Still open: the label name (`partyline:claimed`), the Project field name (`Claimed by`), the comment marker format, and whether the optional assignee mirror is wanted. Is a human's removal of the label always a release? How often may the comment be edited (the proposal says at most once every few minutes)?
 14. ~~Validation requests as GitHub sub-issues~~ **Decided 2026-11-03: yes**, typed sub-issues of the fix. Still open: the issue type name, how the legacy backlog of about 468 pending validations is brought in (all at once would flood the Project; a staged import by age or band is safer), and the write grant (`issues:write`) the deploy step needs.
 13. **Validation boost details:** is one band always right, or should it depend on the issue (a security fix to P0 regardless)? What is the starvation cap, if any? Which seat capabilities gate a target (profile, identity, deploy-lock)?
