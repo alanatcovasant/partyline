@@ -667,6 +667,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_progress_parser(sub)
     from .vq import add_parser as add_vq_parser
     add_vq_parser(sub)
+    from .workq import add_parser as add_workq_parser
+    add_workq_parser(sub)
 
     sp = sub.add_parser("register", help="Register/refresh an agent")
     sp.add_argument("agent_id")

@@ -31,7 +31,7 @@ from .models import (
 )
 from .targets import infer_resource_type
 from .notify import hub
-from . import handoff, progress, vq
+from . import handoff, progress, vq, workq
 from uuid import UUID
 
 router = APIRouter(prefix="/api", tags=["partyline"])
@@ -115,6 +115,37 @@ async def vq_purge(target: str) -> dict:
 @router.get("/vq/show")
 async def vq_show(issue_ref: str, target: str) -> dict:
     return await run_in_threadpool(_vq_call, vq.show, issue_ref, target)
+
+
+@router.post("/queue/sync")
+async def queue_sync(body: workq.Sync) -> dict:
+    return await run_in_threadpool(_vq_call, workq.sync, body)
+
+
+@router.post("/queue/next")
+async def queue_next(body: workq.Next) -> dict:
+    return await run_in_threadpool(_vq_call, workq.next_item, body)
+
+
+@router.post("/queue/release")
+async def queue_release(body: workq.Release) -> dict:
+    return await run_in_threadpool(_vq_call, workq.release, body)
+
+
+@router.get("/queue")
+async def queue_list(repo: str | None = None, state: str | None = None,
+                     limit: int = Query(200, ge=1, le=1000)) -> list[dict]:
+    return await run_in_threadpool(_vq_call, workq.list_items, repo, state, limit)
+
+
+@router.get("/queue/audit")
+async def queue_audit(repo: str | None = None) -> dict:
+    return await run_in_threadpool(_vq_call, workq.audit, repo)
+
+
+@router.delete("/queue")
+async def queue_purge(repo: str) -> dict:
+    return await run_in_threadpool(_vq_call, workq.purge_test_repo, repo)
 
 
 @router.get("/health")

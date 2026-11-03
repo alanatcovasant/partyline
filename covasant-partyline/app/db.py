@@ -279,6 +279,31 @@ CREATE TABLE IF NOT EXISTS vq_runs (
 );
 CREATE INDEX IF NOT EXISTS vq_runs_item ON vq_runs(item_id, id DESC);
 
+-- Work queue: a read-through MIRROR of GitHub issues (GitHub stays the source). A claim is a live row in
+-- claims keyed issue:owner/repo#N, never a column here. Keep comments semicolon-free: _SCHEMA is split on it.
+CREATE TABLE IF NOT EXISTS work_items (
+    source_ref     TEXT PRIMARY KEY,
+    repo           TEXT NOT NULL,
+    number         INT NOT NULL,
+    title          TEXT NOT NULL,
+    url            TEXT,
+    gh_state       TEXT NOT NULL DEFAULT 'open',
+    labels         JSONB NOT NULL DEFAULT '[]',
+    assignees      JSONB NOT NULL DEFAULT '[]',
+    priority       TEXT,
+    severity       TEXT,
+    points         INT,
+    cluster        TEXT,
+    band           INT,
+    claim_label    BOOLEAN NOT NULL DEFAULT false,
+    external_claim TEXT,
+    gh_created_at  TIMESTAMPTZ,
+    gh_updated_at  TIMESTAMPTZ,
+    first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    synced_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS work_items_queue ON work_items(repo, gh_state, band, points, gh_created_at);
+
 CREATE TABLE IF NOT EXISTS agents (
     agent_id       TEXT PRIMARY KEY,
     owner          TEXT NOT NULL,
