@@ -65,7 +65,9 @@ def serve(mail: list):
 def command(harness: str) -> list[str]:
     if harness == "devin":
         # --print cannot show the workspace-trust prompt in the throwaway project, so skip it.
-        return [shutil.which("devin"), "--print", "--respect-workspace-trust", "false", PROMPT]
+        # `-p` takes the prompt inline; the trust flag's optional value would swallow a following
+        # prompt (it then parses as a PATH and devin refuses), so the prompt must come first.
+        return [shutil.which("devin"), "-p", PROMPT, "--respect-workspace-trust", "false"]
     # kimi --print takes the prompt on stdin
     return [shutil.which("kimi"), "--print"]
 
@@ -111,12 +113,14 @@ def validate(harness: str) -> None:
     out, seen = run(harness, mail)
     # An agent that was handed the mail may answer on the line instead of in its own output.
     said = CODEWORD in out or any(m == "POST" and p == "/api/messages" and CODEWORD in b for m, p, b in seen)
-    check(f"{harness} positive: model is handed the mail and states the codeword", said)
+    check(f"{harness} positive: model is handed the mail and states the codeword", said,
+          "" if said else f"output={out[-300:]!r}")
     check(f"{harness} positive: launcher registered the agent",
           any((m, p) == ("POST", "/api/agents") for m, p, _ in seen), f"{len(seen)} requests")
     out, seen = run(harness, [])
-    check(f"{harness} negative: quiet line, codeword never appears",
-          CODEWORD not in out and not any(CODEWORD in b for _, _, b in seen) and "ready" in out.lower())
+    quiet = CODEWORD not in out and not any(CODEWORD in b for _, _, b in seen) and "ready" in out.lower()
+    check(f"{harness} negative: quiet line, codeword never appears", quiet,
+          "" if quiet else f"output={out[-300:]!r}")
 
 
 for h in sys.argv[1:] or ["kimi"]:
