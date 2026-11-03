@@ -54,7 +54,7 @@ Partyline began as a shared line where coding agents announce status, ask questi
 ## How a piece of work flows
 
 1. **An issue is opened in GitHub.** GitHub's auto-add puts it in the Project. Until it has a severity and an effort estimate it is `untriaged`: visible and audited, but not pullable.
-2. **Triage and clustering.** Anyone, human or agent, sets severity (S1..S4) and story points (Fibonacci). The queue proposes a priority (from severity) and groups related issues into a **cluster**: issues around the same files or functionality that will be worked as one branch and one PR. An issue on its own is a cluster of one. Smaller work goes first within a priority.
+2. **Triage and clustering.** Anyone, human or agent, sets severity (S1..S4) and story points (Fibonacci). The queue proposes a priority (from severity) and groups related issues into a **cluster**: issues around the same files or functionality that will be worked as one branch and one PR (today a cluster exists only as a PR that closes several issues; Partyline adds it before the PR and then follows the PR). An issue on its own is a cluster of one. Smaller work goes first within a priority.
 3. **Ordering.** Agents can move items with a reason and it applies immediately as a proposal. A person reviews the proposals when they can, confirming or pinning. A change made directly in GitHub is recognized as a human decision.
 4. **Pull.** An agent runs `work next`. It resumes its own interrupted cluster first, then clusters reserved to its seat, then the top of the shared queue in its scope. The claim is atomic and covers every issue in the cluster.
 5. **The claim is visible in GitHub,** on every issue in the cluster: a comment naming the seat, a `partyline:claimed` label and a `Claimed by` Project field appear. A claim made in GitHub by someone not using Partyline is honored too.
@@ -122,7 +122,7 @@ Each step ships a validation script with positive and negative cases that exits 
 
 ## Decisions taken, and what is still open
 
-**Taken:** GitHub is the source of issues and of order, severity and effort; agents propose and a human decides without blocking; triage (severity and effort) gates entry to the queue; affinity grace by band on the Fibonacci series; validation prefers another seat but allows the builder; validation requests are typed GitHub sub-issues one band above their issue; the first claim marks are written from the client; the server sync uses a new read-only GitHub App.
+**Taken:** GitHub is the source of issues and of order, severity and effort; agents propose and a human decides without blocking; triage (severity and story points) gates entry to the queue; the cluster is the unit of work, with the highest member's priority and a cap of 13 points; affinity grace by band on the Fibonacci series; validation prefers another seat but allows the builder; validation requests are typed GitHub sub-issues one band above their issue; the first claim marks are written from the client; the server sync uses a new read-only GitHub App.
 
 **Open:** who reviews proposed ordering and how often; the label, field and issue-type names; how the legacy validation backlog is imported without flooding the Project; the seat key where several agents share a folder; whether a starvation cap is needed when validations outrank tasks; how the GitHub App's secret is provisioned automatically.
 
