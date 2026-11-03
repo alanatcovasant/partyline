@@ -14,6 +14,12 @@ def command(args):
         path = f"/api/progress/{urllib.parse.quote(args.task_id, safe='')}/history"
         print(json.dumps(cli._request("GET", args.url, path), indent=2))
         return
+    if args.action == "handoff":
+        return _handoff(args)
+    if args.action == "purge":
+        q = urllib.parse.urlencode({"folder": args.folder})
+        print(json.dumps(cli._request("DELETE", args.url, "/api/progress?" + q), indent=2))
+        return
     folder = (args.folder or Path(args.path).resolve().name).strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", folder):
         raise SystemExit("folder must be a short folder label, such as aura_1")
@@ -39,8 +45,24 @@ def command(args):
         "block": "blocked", "done": "done", "cancel": "cancelled",
     }[args.action], "summary": args.summary, "details": args.details,
         "workstream": args.workstream, "workdir": workdir, "branch": branch,
-        "issue_ref": args.issue, "task_id": args.task, "operation_id": args.operation_id or str(uuid4())}
+        "issue_ref": args.issue, "task_id": args.task, "next_action": args.next,
+        "operation_id": args.operation_id or str(uuid4())}
     print(json.dumps(cli._request("POST", args.url, "/api/progress", body), indent=2))
+
+
+def _handoff(args):
+    """offer/accept/decline/takeover a task. accept and takeover move it into THIS folder."""
+    from . import cli
+
+    agent = args.agent_id or cli.resolve_agent_id()
+    if not agent:
+        raise SystemExit("no agent identity; run partyline init or pass --agent-id")
+    body = {"agent_id": agent, "action": args.handoff_action, "to": args.to, "note": args.note,
+            "next_action": args.next, "operation_id": args.operation_id or str(uuid4())}
+    if args.handoff_action in {"accept", "takeover"}:
+        body["folder"] = (args.folder or Path(args.path).resolve().name).strip().lower()
+    path = f"/api/progress/{urllib.parse.quote(args.task, safe='')}/handoff"
+    print(json.dumps(cli._request("POST", args.url, path, body), indent=2))
 
 
 def add_parser(sub):
@@ -62,5 +84,28 @@ def add_parser(sub):
                 p.add_argument("--task", help="Task ID; otherwise updates target the folder's current task")
                 p.add_argument("--agent-id")
                 p.add_argument("--issue")
+                p.add_argument("--next", help="Next action: what a resuming agent should do first")
                 p.add_argument("--operation-id", help="UUID to reuse when retrying the same update")
+        p.set_defaults(func=command)
+    pg = actions.add_parser("purge", help="Delete a zz- test folder's tasks (refused for real folders)")
+    pg.add_argument("--folder", required=True)
+    pg.set_defaults(func=command)
+    ho = actions.add_parser("handoff", help="Offer, accept, decline or take over a task (ownership change)")
+    ho_actions = ho.add_subparsers(dest="handoff_action", required=True)
+    for name, helptext in (("offer", "Offer your task to an agent (or * for anyone)"),
+                           ("accept", "Accept an offered task into this folder"),
+                           ("decline", "Decline an offer to you, or withdraw your own"),
+                           ("takeover", "Take over a task whose owner is stale (needs --note)")):
+        p = ho_actions.add_parser(name, help=helptext)
+        p.add_argument("--task", required=True, help="Task ID")
+        p.add_argument("--agent-id")
+        p.add_argument("--path", default=".", help="Working directory (accept/takeover use its folder)")
+        p.add_argument("--folder", help="Folder label for accept/takeover (default: current directory name)")
+        p.add_argument("--note", help="Why; required for takeover")
+        p.add_argument("--next", help="Next action for whoever works it next")
+        p.add_argument("--operation-id")
+        if name == "offer":
+            p.add_argument("--to", required=True, help="Agent id, or * for anyone")
+        else:
+            p.set_defaults(to=None)
         p.set_defaults(func=command)

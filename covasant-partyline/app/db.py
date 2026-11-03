@@ -226,6 +226,11 @@ CREATE TABLE IF NOT EXISTS progress_tasks (
     workdir TEXT,
     branch TEXT,
     issue_ref TEXT,
+    next_action TEXT,
+    handoff_to TEXT,
+    handoff_from TEXT,
+    handoff_note TEXT,
+    handoff_offered_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -369,6 +374,12 @@ _REPLICA_IDENTITY = [
 # backfill, CREATE INDEX IF NOT EXISTS). Fresh DBs get conversation_id from the CREATE
 # above; these bring already-provisioned DBs up to date. See docs/adr/2026-07-11-*.
 _MIGRATIONS = [
+    # Work-queue phase 1: ownership handoff on the progress ledger (docs/PROPOSAL_Unified_Work_Queue).
+    "ALTER TABLE progress_tasks ADD COLUMN IF NOT EXISTS next_action TEXT",
+    "ALTER TABLE progress_tasks ADD COLUMN IF NOT EXISTS handoff_to TEXT",
+    "ALTER TABLE progress_tasks ADD COLUMN IF NOT EXISTS handoff_from TEXT",
+    "ALTER TABLE progress_tasks ADD COLUMN IF NOT EXISTS handoff_note TEXT",
+    "ALTER TABLE progress_tasks ADD COLUMN IF NOT EXISTS handoff_offered_at TIMESTAMPTZ",
     "ALTER TABLE messages         ADD COLUMN IF NOT EXISTS conversation_id UUID",
     "ALTER TABLE messages_archive ADD COLUMN IF NOT EXISTS conversation_id UUID",
     # Concise agent-authored summary; payload keeps the full detail. Nullable — existing

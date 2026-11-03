@@ -18,6 +18,7 @@ class ProgressUpdate(BaseModel):
     workdir: str | None = Field(None, max_length=2000)
     branch: str | None = Field(None, max_length=500)
     issue_ref: str | None = Field(None, max_length=2000)
+    next_action: str | None = Field(None, max_length=500)  # what a resuming agent should do first
 
     @field_validator("folder", "summary", "agent_id", mode="before")
     @classmethod
@@ -68,6 +69,10 @@ def record(body: ProgressUpdate, author: str | None = None) -> dict:
                 raise ValueError("no current task for this folder; start one or specify task_id")
         if task and task["status"] in {"done", "cancelled"}:
             raise ValueError("task is completed; start a new task")
+        from .config import settings
+
+        if task and settings.progress_fencing and task["agent_id"] != body.agent_id:
+            raise ValueError(f"task is owned by {task['agent_id']}; ask for a handoff (offer/accept) or take over if it is stale")
         state = {"started": "active", "progress": "active"}.get(body.status, body.status)
         task_id_value = str(task["id"]) if task else str(uuid4())
         if state in {"active", "blocked"}:
@@ -76,16 +81,17 @@ def record(body: ProgressUpdate, author: str | None = None) -> dict:
                 raise ValueError("folder already has a current task; update or finish it first")
         if not task:
             conn.execute("""INSERT INTO progress_tasks (id, folder, title, status, agent_id, summary,
-                details, workstream, workdir, branch, issue_ref)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                details, workstream, workdir, branch, issue_ref, next_action)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (task_id_value, body.folder, body.summary, state, body.agent_id, body.summary,
-                 body.details, body.workstream, body.workdir, body.branch, body.issue_ref))
+                 body.details, body.workstream, body.workdir, body.branch, body.issue_ref, body.next_action))
         else:
             conn.execute("""UPDATE progress_tasks SET status=%s, agent_id=%s, summary=%s,
                 details=%s, workstream=COALESCE(%s,workstream), workdir=COALESCE(%s,workdir),
-                branch=COALESCE(%s,branch), issue_ref=COALESCE(%s,issue_ref), updated_at=now()
+                branch=COALESCE(%s,branch), issue_ref=COALESCE(%s,issue_ref),
+                next_action=COALESCE(%s,next_action), updated_at=now()
                 WHERE id=%s""", (state, body.agent_id, body.summary, body.details, body.workstream,
-                body.workdir, body.branch, body.issue_ref, task_id_value))
+                body.workdir, body.branch, body.issue_ref, body.next_action, task_id_value))
         from psycopg.types.json import Jsonb
 
         row = conn.execute("""INSERT INTO progress_updates (operation_id, task_id, folder,
@@ -112,7 +118,46 @@ def list_tasks(folder: str | None = None, include_done: bool = False, workstream
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     args.append(max(1, min(limit, 1000)))
     with db.get_pool().connection() as conn:
-        return conn.execute("SELECT id, folder, title, status, agent_id, summary, workstream, workdir, branch, issue_ref, created_at, updated_at FROM progress_tasks" + where + " ORDER BY (status IN ('done','cancelled')), folder, created_at DESC, id LIMIT %s", args).fetchall()
+        rows = conn.execute(
+            "SELECT t.id, t.folder, t.title, t.status, t.agent_id, t.summary, t.workstream, t.workdir, t.branch,"
+            " t.issue_ref, t.next_action, t.handoff_to, t.handoff_from, t.handoff_note, t.handoff_offered_at,"
+            " t.created_at, t.updated_at,"
+            " EXTRACT(EPOCH FROM (now() - a.last_heartbeat)) AS owner_heartbeat_age"
+            " FROM progress_tasks t LEFT JOIN agents a ON a.agent_id = t.agent_id"
+            + where.replace("folder", "t.folder").replace("status", "t.status").replace("workstream", "t.workstream")
+            + " ORDER BY (t.status IN ('done','cancelled')), t.folder, t.created_at DESC, t.id LIMIT %s", args).fetchall()
+    return [_with_owner_presence(r) for r in rows]
+
+
+def _with_owner_presence(row: dict) -> dict:
+    """Label the owner live/idle/stale and flag an unfinished task whose owner has gone stale as orphaned.
+    Never changes the task: an orphan is shown, not reassigned (takeover is explicit)."""
+    from . import presence
+    from .config import settings
+
+    age = row.pop("owner_heartbeat_age", None)
+    label = presence.classify(None if age is None else float(age), None, settings.presence_live_seconds,
+                              settings.presence_idle_seconds)["status"]
+    row["owner_status"] = label
+    row["orphaned"] = label == presence.STALE and row["status"] in {"active", "blocked"}
+    return row
+
+
+TEST_PREFIX = "zz-"
+
+
+def purge_test_folder(folder: str) -> dict:
+    """Delete a reserved test folder's tasks (history cascades). The ledger is otherwise append-only,
+    so only `zz-` folders, used by validation scripts, may be purged."""
+    from . import db
+
+    folder = folder.strip().lower()
+    if not folder.startswith(TEST_PREFIX):
+        raise ValueError(f"only test folders starting with '{TEST_PREFIX}' can be purged")
+    with db.get_pool().connection() as conn:
+        n = conn.execute("DELETE FROM progress_tasks WHERE folder = %s", (folder,)).rowcount
+        conn.commit()
+        return {"folder": folder, "deleted_tasks": n}
 
 
 def history(task_id: UUID, limit: int = 100) -> list[dict]:

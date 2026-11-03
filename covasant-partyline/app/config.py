@@ -49,6 +49,10 @@ class Settings:
     # An agent within live_seconds is 'live', within idle_seconds is 'idle', beyond that
     # 'stale'. Identity and read cursors survive all three: a returning agent must never
     # re-read its whole backlog.
+    # Work-queue ownership fencing: when true, only a progress task's owner may update it (others
+    # get a 409 naming the owner) until it is handed off. Off by default: several agents share some
+    # folders today and would be refused.
+    progress_fencing: bool = os.getenv("PARTYLINE_PROGRESS_FENCING", "").lower() in ("true", "1", "yes")
     presence_live_seconds: int = int(os.getenv("PARTYLINE_PRESENCE_LIVE", "300"))
     # Agents remain active for a day by default so a workday's roster is useful even
     # when an agent has not made a call recently. The DAB variable

@@ -31,7 +31,7 @@ from .models import (
 )
 from .targets import infer_resource_type
 from .notify import hub
-from . import progress, vq
+from . import handoff, progress, vq
 from uuid import UUID
 
 router = APIRouter(prefix="/api", tags=["partyline"])
@@ -50,6 +50,24 @@ async def record_progress(body: progress.ProgressUpdate, request: Request) -> di
 async def get_progress(folder: str | None = None, include_done: bool = False,
                        workstream: str | None = None, limit: int = Query(200, ge=1, le=1000)) -> list[dict]:
     return await run_in_threadpool(progress.list_tasks, folder, include_done, workstream, limit)
+
+
+@router.delete("/progress")
+async def purge_progress(folder: str) -> dict:
+    try:
+        return await run_in_threadpool(progress.purge_test_folder, folder)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.post("/progress/{task_id}/handoff")
+async def progress_handoff(task_id: UUID, body: handoff.Handoff) -> dict:
+    try:
+        return await run_in_threadpool(handoff.handoff, task_id, body)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
 
 
 @router.get("/progress/{task_id}/history")
