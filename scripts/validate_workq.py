@@ -167,6 +167,24 @@ s, r = call("POST", "/api/queue/sync", {"agent_id": a, "repo": REPO, "viewer": "
                                         "complete": True, "force_close": True})
 check("a large closure is applied when confirmed", s == 200 and r["closed_upstream"] == 8, f"{s} {r}")
 
+# --- clusters: issues sharing a `cluster:` label are handed out as one unit ---
+call("DELETE", f"/api/queue?repo={REPO}")
+sync([iss(1, ["P3", "sp-2", "cluster:retry"]), iss(2, ["P1", "sp-3", "cluster:retry"]), iss(3, ["P2", "sp-1"]),
+      iss(4, ["P3", "sp-8", "cluster:big"]), iss(5, ["P3", "sp-8", "cluster:big"])])
+s, got = nxt(drain[1], queue=REPO)
+refs = [m["source_ref"].split("#")[1] for m in got["members"]] if s == 200 else []
+check("a cluster is handed out whole, led by its highest-priority member (P1 #2, with the P3 #1 riding along)",
+      s == 200 and refs == ["2", "1"] and got["cluster_priority"] == 1 and got["cluster_points"] == 5, f"{s} {got}")
+check("every member is claimed", states()["1"] == states()["2"] == "claimed", str(states()))
+s, got = nxt(drain[1], queue=REPO)
+check("the holder resumes the same unit", s == 200 and got["resumed"] and len(got["members"]) == 2, f"{s} {got}")
+s, got = nxt(drain[2], queue=REPO)
+check("NEG: another seat is never given half of a held cluster (gets the single #3)",
+      s == 200 and [m["source_ref"].split("#")[1] for m in got["members"]] == ["3"], f"{s} {got}")
+s, got = nxt(drain[0], queue=REPO)
+check("NEG: a 16-point cluster is split at the 13-point cap (one member, not both)",
+      s == 200 and len(got["members"]) == 1 and got["members"][0]["source_ref"].split("#")[1] in ("4", "5"), f"{s} {got}")
+
 s, pr = call("DELETE", f"/api/queue?repo={REPO}")
 check("cleanup: purge removes the test repo's entries", s == 200 and pr["deleted_items"] >= 1, f"{s} {pr}")
 check("cleanup: nothing left", call("GET", f"/api/queue?repo={REPO}")[1] == [], "")

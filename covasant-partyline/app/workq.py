@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
@@ -29,7 +29,9 @@ EXCLUDE_LABELS = frozenset(x.strip().lower() for x in os.getenv(
     "epic,spike,question,discussion,needs-decision,wontfix,duplicate,invalid,deferred,on-hold,blocked,use-case,"
     "in-progress,completed,pending-deploy,deployed").split(",") if x.strip())
 CLOSE_GUARD_MIN = 5       # a complete sync that would close more than this many entries ...
-CLOSE_GUARD_FRACTION = 0.2  # ... and more than this share of the repo's open entries is refused unless forced
+_FAR = datetime(9999, 1, 1, tzinfo=timezone.utc)  # sorts rows with no timestamp last
+CLUSTER_CAP_POINTS = 13  # a cluster is one branch and one PR, so it is capped at the top of the scale
+CLOSE_GUARD_FRACTION = 0.2 # ... and more than this share of the repo's open entries is refused unless forced
 STATES = ("ready", "untriaged", "claimed", "excluded", "external", "closed")
 _REPO = r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
 _REF = r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$"
@@ -188,29 +190,67 @@ def _scope_sql(queue: str | None, agent_repo: str) -> tuple[str, list]:
     return " AND lower(split_part(w.repo, '/', 2)) = %s", [scope]
 
 
+def _key(r):
+    return (r["band"], r["points"], r["gh_created_at"] or _FAR, r["source_ref"])
+
+
+def form_clusters(ready: list[dict]) -> list[list[dict]]:
+    """Group ready issues into the units `work next` hands out. Issues sharing a `cluster:` label in one repo
+    travel together; an unlabelled issue is a cluster of one. A cluster's priority is its best member's, and
+    its points are capped at CLUSTER_CAP_POINTS (the overflow stays ready and forms the next unit)."""
+    groups: dict = {}
+    for r in ready:
+        groups.setdefault((r["repo"].lower(), r["cluster"]) if r["cluster"] else ("single", r["source_ref"]), []).append(r)
+    units = []
+    for members in groups.values():
+        members.sort(key=_key)
+        unit, total = [], 0
+        for m in members:
+            if unit and total + m["points"] > CLUSTER_CAP_POINTS:
+                units.append(unit)
+                unit, total = [], 0
+            unit.append(m)
+            total += m["points"]
+        units.append(unit)
+    # cluster priority = best member's band; then the cheaper unit first, as single issues are ordered
+    units.sort(key=lambda u: (u[0]["band"], sum(m["points"] for m in u), _key(u[0])))
+    return units
+
+
+def _unit(members: list[dict], resumed: bool, conn) -> dict:
+    refs = [m["source_ref"] for m in members]
+    rows = conn.execute(_SELECT + " WHERE w.source_ref = ANY(%s)", (refs,)).fetchall()
+    rows.sort(key=_key)
+    lead = rows[0]
+    return {**lead, "resumed": resumed,
+            "cluster_priority": min(r["band"] for r in rows), "cluster_points": sum(r["points"] or 0 for r in rows),
+            "members": [{k: r[k] for k in ("source_ref", "title", "url", "band", "points", "state")} for r in rows]}
+
+
 def next_item(body: Next) -> dict:
-    """Resume this seat's own claimed issue, else claim the best ready one in scope."""
+    """Resume this seat's own claimed unit, else claim the best ready cluster in scope (all members, or none)."""
     from . import db
 
     with db.get_pool().connection() as conn:
         agent = _registered(conn, body.agent_id)
         own = conn.execute(
-            _SELECT + " WHERE w.gh_state='open' AND c.agent_id = %s" + _ORDER + " LIMIT 1", (body.agent_id,)).fetchone()
+            _SELECT + " WHERE w.gh_state='open' AND c.agent_id = %s" + _ORDER, (body.agent_id,)).fetchall()
+        if own:
+            out = _unit(own, True, conn)
+            conn.commit()
+            return out
         scope_sql, scope_args = _scope_sql(body.queue, agent["repo"])
-        cands = [] if own else conn.execute(
+        ready = conn.execute(
             _SELECT + " WHERE w.gh_state='open' AND c.agent_id IS NULL AND w.external_claim IS NULL AND w.excluded_by IS NULL"
-            " AND w.band IS NOT NULL AND w.points IS NOT NULL" + scope_sql + _ORDER + " LIMIT 25",
-            scope_args).fetchall()
+            " AND w.band IS NOT NULL AND w.points IS NOT NULL" + scope_sql, scope_args).fetchall()
         conn.commit()
-    pick = [own] if own else cands
-    for item in pick:
+    for unit in form_clusters(ready)[:25]:
         ok, _rows, _blocker = db.claim_targets(
-            body.agent_id, item["repo"], body.branch, [("issue:" + item["source_ref"], "issue")],
+            body.agent_id, unit[0]["repo"], body.branch, [("issue:" + m["source_ref"], "issue") for m in unit],
             "exclusive", "work next", WORK_TTL_SECONDS)
         if ok:
             with db.get_pool().connection() as conn:
-                out = conn.execute(_SELECT + " WHERE w.source_ref = %s", (item["source_ref"],)).fetchone()
-            return {**out, "resumed": bool(own)}
+                return _unit(unit, False, conn)
     raise LookupError("nothing ready in this queue")
 
 
@@ -262,7 +302,7 @@ def audit(repo: str | None = None) -> dict:
             _SELECT + " WHERE w.gh_state='closed' AND c.agent_id IS NOT NULL").fetchall()
     return {
         "counts": {s: sum(1 for r in rows if r["state"] == s) for s in STATES},
-        "untriaged": [brief(r) for r in sorted(open_rows, key=lambda r: r["gh_created_at"] or datetime.max.astimezone())
+        "untriaged": [brief(r) for r in sorted(open_rows, key=lambda r: r["gh_created_at"] or _FAR)
                       if r["state"] == "untriaged"],
         "external_claims": [brief(r) for r in open_rows if r["state"] == "external"],
         "excluded": [{**brief(r), "excluded_by": r["excluded_by"]} for r in open_rows if r["state"] == "excluded"],

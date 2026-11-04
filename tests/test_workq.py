@@ -207,3 +207,35 @@ async def test_an_implausibly_large_closure_is_held_back_unless_forced(line):
     # POSITIVE: the same large closure goes through when the caller confirms it
     r = await line.sync(full[:3], complete=True, force_close=True)
     assert r["closed_upstream"] == 8
+
+
+def _r(n, band, pts, cluster=None, repo="zz/x"):
+    return {"source_ref": f"{repo}#{n}", "repo": repo, "band": band, "points": pts, "cluster": cluster, "gh_created_at": None}
+
+
+def test_clusters_take_the_best_member_priority_and_split_at_the_point_cap():
+    from app.workq import form_clusters
+
+    units = form_clusters([_r(1, 3, 2, "ingest"), _r(2, 1, 5, "ingest"), _r(3, 2, 1),          # P3+P1 cluster, a P2 single
+                           _r(4, 3, 8, "big"), _r(5, 3, 8, "big"),                              # 16 points: split at 13
+                           _r(6, 2, 2, "ingest", repo="zz/other")])                              # same name, other repo
+    refs = [[m["source_ref"].split("#")[1] for m in u] for u in units]
+    assert refs[0] == ["2", "1"]                       # P1 cluster first, led by its highest member; the P3 rides along
+    assert ["3"] in refs and ["6"] in refs             # a single stays single; a cluster never spans repositories
+    assert sorted(m for u in refs if u[0] in "45" for m in u) == ["4", "5"] and ["4", "5"] not in refs  # over the cap: split
+
+
+@pytest.mark.anyio
+async def test_work_next_claims_a_whole_cluster_or_nothing(line):
+    c, a, b = line.client, line.ag["a"], line.ag["b"]
+    await line.sync([line.iss(1, ["P3", "sp-2", "cluster:retry"]), line.iss(2, ["P1", "sp-3", "cluster:retry"]),
+                     line.iss(3, ["P2", "sp-1"])])
+    r = (await c.post("/api/queue/next", json={"agent_id": a, "queue": line.repo})).json()
+    assert [m["source_ref"].split("#")[1] for m in r["members"]] == ["2", "1"]      # POSITIVE: both members, P1 leads
+    assert r["cluster_priority"] == 1 and r["cluster_points"] == 5
+    st = await line.states()
+    assert st["1"] == st["2"] == "claimed" and st["3"] == "ready"
+    # the holder resumes the same unit; NEGATIVE: the other seat gets the single, never a half cluster
+    assert (await c.post("/api/queue/next", json={"agent_id": a, "queue": line.repo})).json()["resumed"] is True
+    other = (await c.post("/api/queue/next", json={"agent_id": b, "queue": line.repo})).json()
+    assert [m["source_ref"].split("#")[1] for m in other["members"]] == ["3"]

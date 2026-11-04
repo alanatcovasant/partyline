@@ -91,8 +91,10 @@ def command(args):
             from . import cli as _cli, ghclaim
             from pathlib import Path
 
-            _cli._gh_report(ghclaim.project_claim(ghclaim.Gh(), "issue:" + item["source_ref"], agent,
-                                                  Path.cwd().name.lower(), args.branch))
+            # every member of a cluster carries the claim marks, so any one of them shows who holds the work
+            for m in item.get("members") or [item]:
+                _cli._gh_report(ghclaim.project_claim(ghclaim.Gh(), "issue:" + m["source_ref"], agent,
+                                                      Path.cwd().name.lower(), args.branch))
         return
     if scope == "work" and act == "release":
         res = cli._request("POST", args.url, "/api/queue/release", {"agent_id": agent, "issue_ref": args.issue})
