@@ -196,12 +196,28 @@ def install_cursor_hooks(path: Path = CURSOR_HOOKS) -> bool:
     return _write_json(path, data)
 
 
+def which_cli(names: tuple[str, ...]) -> str | None:
+    """Find a harness CLI. In WSL, `agy` is `agy.exe` on the imported Windows PATH.
+
+    Linux `shutil.which` does not append PATHEXT, so the bare name misses.
+    """
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+        if os.name != "nt" and not name.endswith(".exe"):
+            found = shutil.which(name + ".exe")
+            if found:
+                return found
+    return None
+
+
 def cursor_executable() -> str | None:
     """The generic `agent` name can belong to Grok; verify it before using it."""
-    exe = shutil.which("cursor-agent")
+    exe = which_cli(("cursor-agent",))
     if exe:
         return exe
-    exe = shutil.which("agent")
+    exe = which_cli(("agent",))
     if exe:
         try:
             result = subprocess.run([exe, "--help"], capture_output=True, text=True,
@@ -254,7 +270,7 @@ HARNESSES = {
 def launch(harness: str, argv: list[str] | None = None) -> None:
     exe_names, install = HARNESSES[harness]
     args = list(sys.argv[1:] if argv is None else argv)
-    exe = cursor_executable() if harness == "cursor" else next(filter(None, map(shutil.which, exe_names)), None)
+    exe = cursor_executable() if harness == "cursor" else which_cli(exe_names)
     if not exe:
         name = "cursor-agent-pl" if harness == "cursor" else f"{harness}-pl"
         sys.exit(f"{name}: `{exe_names[0]}` not found on PATH (or fallback is not this CLI)")

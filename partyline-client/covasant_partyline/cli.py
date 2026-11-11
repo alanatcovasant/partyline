@@ -863,6 +863,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=_setup.cmd_setup)
 
     sp = sub.add_parser(
+        "install-wsl-launchers",
+        help="Write Linux claude-pl/grok-pl/agy-pl/... into the default WSL distro's ~/.local/bin",
+    )
+    sp.set_defaults(func=_setup.cmd_install_wsl_launchers)
+
+    sp = sub.add_parser(
         "init", help="Once per clone: write .partyline/config.json with the next free agent id"
     )
     sp.add_argument("--owner", help="Override the remembered owner")

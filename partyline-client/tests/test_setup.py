@@ -88,7 +88,7 @@ def test_ensure_login_exits_if_login_did_not_complete(monkeypatch):
 def test_launchers_write_every_harness(tmp_path, monkeypatch):
     monkeypatch.setattr(setup.sys, "executable", r"C:\py\python.exe")
     names = sorted(p.name for p in setup._launchers(tmp_path))
-    assert names == sorted(f"{n}{ext}" for n in ("agy-pl", "claude-pl", "codex-pl", "grok-pl", "kimi-pl", "cmdc-pl", "cursor-agent-pl", "devin-pl") for ext in ("", ".cmd"))
+    assert names == sorted(f"{n}{ext}" for n in ("agy-pl", "claude-pl", "codex-pl", "grok-pl", "kimi-pl", "cmdc-pl", "cursor-agent-pl", "devin-pl", "omni-pl") for ext in ("", ".cmd"))
     assert '-m covasant_partyline.harness_runner cursor "$@"' in (tmp_path / "cursor-agent-pl").read_text()
     assert '-m covasant_partyline.harness_runner cmdc "$@"' in (tmp_path / "cmdc-pl").read_text()
     assert '-m covasant_partyline.harness_runner devin "$@"' in (tmp_path / "devin-pl").read_text()
@@ -97,3 +97,22 @@ def test_launchers_write_every_harness(tmp_path, monkeypatch):
     assert "-m covasant_partyline.codex_runner" in (tmp_path / "codex-pl.cmd").read_text()
     assert r"C:\py\python.exe" in (tmp_path / "codex-pl").read_text()
     assert "server:partyline-channel" in (tmp_path / "claude-pl.cmd").read_text()
+    agy = (tmp_path / "agy-pl").read_bytes()
+    assert b"\r" not in agy
+    assert b"/mnt/c/py/python.exe" in agy
+    assert b"WSL_DISTRO_NAME" in agy
+    assert b"\r\r\n" not in (tmp_path / "agy-pl.cmd").read_bytes()
+    assert b"\r" not in (tmp_path / "claude-pl").read_bytes()
+
+
+def test_posix_python_launcher_has_no_wsl_branch(tmp_path, monkeypatch):
+    monkeypatch.setattr(setup.sys, "executable", "/usr/bin/python3")
+    setup._launchers(tmp_path)
+    text = (tmp_path / "grok-pl").read_bytes().decode()
+    assert "WSL_DISTRO_NAME" not in text
+    assert 'exec "/usr/bin/python3" -m covasant_partyline.harness_runner grok "$@"' in text
+
+
+def test_windows_path_to_wsl():
+    assert setup._windows_path_to_wsl(r"C:\Python314\python.exe") == "/mnt/c/Python314/python.exe"
+    assert setup._windows_path_to_wsl("/usr/bin/python3") is None

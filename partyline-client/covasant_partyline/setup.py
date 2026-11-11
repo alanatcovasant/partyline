@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -81,11 +82,52 @@ def ensure_login(profile: str, host: str | None) -> None:
         sys.exit(f"partyline: login for profile '{profile}' did not complete; re-run `partyline setup`")
 
 
+def _windows_path_to_wsl(path: str) -> str | None:
+    """Map `C:\\Python314\\python.exe` to `/mnt/c/Python314/python.exe`.
+
+    A drive-letter path is not an executable name inside WSL. Git Bash can run the
+    Windows spelling; WSL has to use the mount point.
+    """
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", path)
+    if not match:
+        return None
+    rest = match.group(2).replace("\\", "/")
+    return f"/mnt/{match.group(1).lower()}/{rest}"
+
+
+def _shell_launcher(executable: str | None, command: str) -> str:
+    """POSIX launcher body. Always LF: a CR in the shebang makes WSL look up `/bin/sh\\r`.
+
+    `executable` is the interpreter that has this package, or None when `command` is
+    already the program to exec (the claude wrapper). A Windows interpreter gets a
+    WSL branch so the same file works from Git Bash and from WSL.
+    """
+    if executable is None:
+        return f'#!/bin/sh\nexec {command} "$@"\n'
+    wsl = _windows_path_to_wsl(executable)
+    if wsl is None:
+        return f'#!/bin/sh\nexec "{executable}" {command} "$@"\n'
+    return (
+        "#!/bin/sh\n"
+        'if [ -n "${WSL_DISTRO_NAME-}" ]; then\n'
+        f'  exec "{wsl}" {command} "$@"\n'
+        "fi\n"
+        f'exec "{executable}" {command} "$@"\n'
+    )
+
+
+def _write_text(path: Path, text: str, newline: str) -> None:
+    path.write_text(text, encoding="utf-8", newline=newline)
+
+
 def _launchers(bin_dir: Path) -> list[Path]:
     cmd = bin_dir / "claude-pl.cmd"
     sh = bin_dir / "claude-pl"
-    cmd.write_text(f"@echo off\r\nclaude --dangerously-load-development-channels {CHANNEL_FLAG} %*\r\n")
-    sh.write_text(f'#!/bin/sh\nexec claude --dangerously-load-development-channels {CHANNEL_FLAG} "$@"\n')
+    claude_args = f"claude --dangerously-load-development-channels {CHANNEL_FLAG}"
+    # newline= is required. The default translator turns `\n` into `\r\n` on Windows, and a
+    # shebang of `#!/bin/sh\r` is the WSL error "cannot execute: required file not found".
+    _write_text(cmd, f"@echo off\n{claude_args} %*\n", "\r\n")
+    _write_text(sh, _shell_launcher(None, claude_args), "\n")
     # The other launchers run under the interpreter that has this package (a pipx venv is not the
     # system python), so each pins sys.executable rather than relying on a console script.
     py = sys.executable
@@ -98,10 +140,11 @@ def _launchers(bin_dir: Path) -> list[Path]:
         ("cmdc-pl", "covasant_partyline.harness_runner", " cmdc"),
         ("cursor-agent-pl", "covasant_partyline.harness_runner", " cursor"),
         ("devin-pl", "covasant_partyline.harness_runner", " devin"),
+        ("omni-pl", "covasant_partyline.omni_runner", ""),
     ):
         bat, script = bin_dir / f"{name}.cmd", bin_dir / name
-        bat.write_text(f'@echo off\r\n"{py}" -m {module}{extra} %*\r\n')
-        script.write_text(f'#!/bin/sh\nexec "{py}" -m {module}{extra} "$@"\n')
+        _write_text(bat, f'@echo off\n"{py}" -m {module}{extra} %*\n', "\r\n")
+        _write_text(script, _shell_launcher(py, f"-m {module}{extra}"), "\n")
         written += [bat, script]
     for p in written:
         if p.suffix != ".cmd":
@@ -110,6 +153,99 @@ def _launchers(bin_dir: Path) -> list[Path]:
             except OSError:
                 pass
     return written
+
+
+def _wsl_install_script(client_wsl_path: str) -> str:
+    """Bash that pipx-installs the client in the default WSL distro and writes Linux launchers.
+
+    The scripts land in ~/.local/bin, which a normal Ubuntu login puts ahead of the
+    imported Windows PATH. Those copies pin the Linux pipx interpreter, so WSL runs
+    Linux `agy` / `grok` / `claude` rather than `python.exe`.
+    """
+    src = shlex.quote(client_wsl_path)
+    return f"""set -euo pipefail
+if ! command -v pipx >/dev/null 2>&1; then
+  echo "pipx is not installed in the default WSL distro" >&2
+  exit 1
+fi
+pipx install --force {src}
+PY="$HOME/.local/share/pipx/venvs/covasant-partyline/bin/python"
+if [ ! -x "$PY" ]; then
+  echo "pipx venv python not found at $PY" >&2
+  exit 1
+fi
+mkdir -p "$HOME/.local/bin"
+"$PY" - <<'PY'
+from pathlib import Path
+from covasant_partyline.setup import _launchers
+for p in _launchers(Path.home() / ".local" / "bin"):
+    print(p)
+PY
+"""
+
+
+def install_wsl_launchers(*, strict: bool) -> bool:
+    """Install Linux `*-pl` launchers into the default WSL distro. No-op off Windows.
+
+    Windows `partyline setup` writes launchers next to the Windows interpreter. WSL
+    imports that directory onto PATH and then refuses the CRLF shebang. This puts a
+    real Linux copy on ~/.local/bin, which sorts first.
+    """
+    if os.name != "nt":
+        return False
+    if not shutil.which("wsl"):
+        msg = "wsl.exe not on PATH; Linux launchers not installed"
+        if strict:
+            sys.exit(f"partyline: {msg}")
+        print(f"note: {msg}")
+        return False
+    client = Path(__file__).resolve().parents[1]
+    src = _windows_path_to_wsl(str(client.resolve()))
+    if not src:
+        msg = f"cannot map {client} into a WSL path"
+        if strict:
+            sys.exit(f"partyline: {msg}")
+        print(f"note: {msg}")
+        return False
+    # Bytes, not text mode: on Windows text stdin turns `\n` into `\r\n`, and bash
+    # then rejects `set -o pipefail\r`. The source file may already contain CR too.
+    script = _wsl_install_script(src).replace("\r\n", "\n").replace("\r", "\n").encode()
+    result = subprocess.run(
+        ["wsl", "-e", "bash", "-s"],
+        input=script,
+        capture_output=True,
+    )
+    out = result.stdout.decode(errors="replace")
+    err = result.stderr.decode(errors="replace")
+    if out.strip():
+        print(out.strip())
+    if result.returncode != 0:
+        detail = (err or out or "wsl exited non-zero").strip()
+        if strict:
+            sys.exit(f"partyline: WSL launcher install failed\n{detail}")
+        print(f"note: WSL launcher install failed\n{detail}")
+        return False
+    print("Linux launchers are on ~/.local/bin in the default WSL distro (ahead of the Windows copies).")
+    return True
+
+
+def cmd_install_wsl_launchers(a: argparse.Namespace | None = None) -> None:
+    """Write Linux launchers. Inside WSL this uses the current interpreter.
+
+    On Windows, also rewrite the launchers beside `partyline` so the Git Bash copies
+    use LF shebangs. WSL still prefers the ~/.local/bin copies installed below.
+    """
+    if os.name != "nt":
+        dest = Path.home() / ".local" / "bin"
+        dest.mkdir(parents=True, exist_ok=True)
+        for p in _launchers(dest):
+            print(f"wrote launcher {p}")
+        return
+    exe = shutil.which("partyline")
+    if exe:
+        for p in _launchers(Path(exe).parent):
+            print(f"wrote launcher {p}")
+    install_wsl_launchers(strict=True)
 
 
 def cmd_setup(a: argparse.Namespace) -> None:
@@ -146,7 +282,12 @@ def cmd_setup(a: argparse.Namespace) -> None:
             print(f"wrote launcher {p}")
     else:
         print("note: `partyline` not on PATH, skipped the claude-pl launcher")
-    print(f"\nNext: in each clone run `partyline init`, then start Claude with `claude-pl` (or `codex-pl` / `grok-pl` / `agy-pl` / `kimi-pl` / `cmdc-pl` / `cursor-agent-pl` / `devin-pl`).")
+    install_wsl_launchers(strict=False)
+    print(
+        "\nNext: in each clone run `partyline init`, then start Claude with `claude-pl` "
+        "(or `codex-pl` / `grok-pl` / `agy-pl` / `kimi-pl` / `cmdc-pl` / `cursor-agent-pl` / `devin-pl` / `omni-pl`). "
+        "From WSL those commands are the Linux copies on ~/.local/bin."
+    )
 
 
 def _repo_root() -> Path:
