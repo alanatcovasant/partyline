@@ -6,6 +6,25 @@ import pytest
 from covasant_partyline import check_unread, harness_runner as hr
 
 
+def test_which_cli_finds_windows_exe_from_wsl(monkeypatch):
+    monkeypatch.setattr(hr.os, "name", "posix")
+    monkeypatch.setattr(hr.shutil, "which", lambda name: "/mnt/c/agy.exe" if name == "agy.exe" else None)
+    assert hr.which_cli(("agy",)) == "/mnt/c/agy.exe"
+
+
+def test_which_cli_does_not_append_exe_on_windows(monkeypatch):
+    seen = []
+
+    def fake_which(name):
+        seen.append(name)
+        return None
+
+    monkeypatch.setattr(hr.os, "name", "nt")
+    monkeypatch.setattr(hr.shutil, "which", fake_which)
+    assert hr.which_cli(("agy",)) is None
+    assert seen == ["agy"]
+
+
 def test_grok_hook_is_a_stop_gate_in_grok_stop_format():
     gate = hr.grok_hooks()["hooks"]["Stop"][0]["hooks"][0]
     assert gate["command"].endswith("-m covasant_partyline.check_unread")

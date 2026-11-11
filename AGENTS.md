@@ -331,6 +331,28 @@ startup, so it shows as live from the first moment.
 Verify Grok against a stub line with `python scripts/validate_grok_pl.py`, Kimi with
 `python scripts/validate_hook_launchers.py kimi`.
 
+### Omnigent — `omni-pl`
+
+`omni-pl <harness>` starts that harness inside Omnigent and attaches Partyline for
+the session. `--resume CONV` reattaches the same conversation. `--fork CONV` continues
+that conversation on the named harness and posts one Partyline status,
+`omnigent fork <conv> onto <harness>`. Native harnesses are forked with
+`POST /v1/sessions/{id}/fork` and then resumed, because `omnigent run --fork` is
+rejected for those TUIs. Grok still uses `omnigent run --fork --harness grok`.
+
+Claude, Codex, and Antigravity set `OMNIGENT_CLAUDE_PATH`, `OMNIGENT_CODEX_PATH`,
+or `OMNIGENT_ANTIGRAVITY_PATH` to the matching `*-pl` binary for that launch.
+The Omnigent CLI copies that path onto the terminal command. Cursor, Kimi, and
+Devin read the path inside the runner, which drops `OMNIGENT_CURSOR_PATH`,
+`OMNIGENT_KIMI_PATH`, and `OMNIGENT_DEVIN_PATH` unless this process starts the
+daemon; those three also install their Partyline hooks. Grok is ACP
+(`omnigent run --harness grok`). Its TUI hook does not run there, so a side
+watcher appends Partyline mail that arrives during the session
+(`OMNIGENT_URL`, default `http://127.0.0.1:6767`). Mail already unread at
+launch is not replayed.
+
+Check the command construction with `python scripts/validate_omni_pl.py`.
+
 ### Cline (this agent) — file-based hooks
 
 Cline has no `SessionStart` event and discovers hooks **by filename**, not a JSON config
