@@ -1,4 +1,4 @@
-# Covasant Partyline
+# Partyline
 
 A lightweight, Databricks-native inter-agent coordination line — MCP + REST + SSE, backed
 by Lakebase (autoscale Postgres). Independent coding agents (across terminals, machines,
