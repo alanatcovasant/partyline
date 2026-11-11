@@ -1,10 +1,12 @@
 """Check omni-pl command construction.
 
-Positive: `omni-pl claude --fork` builds an Omnigent fork onto claude-native and
-points that launch at claude-pl. `omni-pl grok` starts the ACP harness and the
-session watcher.
-Negative: grok is not pointed at grok-pl, --fork with --resume is rejected, and
-an unknown harness is rejected.
+Positive: `omni-pl claude --fork` forks through the sessions API and resumes
+the new session, and points that launch at claude-pl. `omni-pl grok` starts
+the ACP harness and the session watcher. `omni-pl grok --fork` stays on
+`omnigent run --fork`.
+Negative: a native fork is not sent as `run --fork`, grok is not pointed at
+grok-pl, agy is not pinned with `OMNIGENT_AGY_PATH`, --fork with --resume is
+rejected, and an unknown harness is rejected.
 
     python scripts/validate_omni_pl.py
 """
@@ -29,14 +31,21 @@ def which(name: str) -> str | None:
     return {
         "omnigent": "/bin/omnigent",
         "claude-pl": "/bin/claude-pl",
+        "agy-pl": "/bin/agy-pl",
         "grok-pl": "/bin/grok-pl",
     }.get(name)
 
 
 fork = prepare(["claude", "--fork", "conv_abc"], which)
 check(
-    "positive: claude fork runs omnigent run --fork onto claude-native",
-    fork.command == ("/bin/omnigent", "run", "--fork", "conv_abc", "--harness", "claude-native"),
+    "positive: claude fork resumes a session created by the fork API",
+    fork.api_fork
+    and fork.fork_agent == "claude-native-ui"
+    and fork.command == ("/bin/omnigent", "claude", "--resume"),
+)
+check(
+    "negative: native fork is not sent as omnigent run --fork",
+    "--fork" not in fork.command and "claude-native" not in fork.command,
 )
 check(
     "positive: claude launch pins OMNIGENT_CLAUDE_PATH to claude-pl",
@@ -50,6 +59,21 @@ check(
 check(
     "negative: grok is not redirected to grok-pl",
     "OMNIGENT_GROK_PATH" not in dict(grok.env_updates) and "/bin/grok-pl" not in grok.command,
+)
+grok_fork = prepare(["grok", "--fork", "conv_g"], which)
+check(
+    "positive: grok fork stays on omnigent run --fork",
+    grok_fork.api_fork is False
+    and grok_fork.command == ("/bin/omnigent", "run", "--fork", "conv_g", "--harness", "grok"),
+)
+agy = prepare(["agy"], which)
+check(
+    "positive: agy pins OMNIGENT_ANTIGRAVITY_PATH to agy-pl",
+    dict(agy.env_updates).get("OMNIGENT_ANTIGRAVITY_PATH") == "/bin/agy-pl",
+)
+check(
+    "negative: agy is not pinned with OMNIGENT_AGY_PATH",
+    "OMNIGENT_AGY_PATH" not in dict(agy.env_updates),
 )
 try:
     prepare(["claude", "--fork", "a", "--resume", "b"], which)

@@ -22,25 +22,26 @@ def test_fresh_claude_points_omnigent_at_claude_pl():
     assert plan.hooks is None
 
 
-def test_fork_uses_native_harness_id_and_passes_extra_args():
+def test_fork_uses_the_api_then_resumes_and_passes_extra_args():
     plan = omni.prepare(["claude", "--fork", "conv_abc", "--", "--permission-mode", "bypass"], which_ok)
-    assert plan.command == (
-        "/bin/omnigent",
-        "run",
-        "--fork",
-        "conv_abc",
-        "--harness",
-        "claude-native",
-        "--permission-mode",
-        "bypass",
-    )
+    assert plan.api_fork is True
+    assert plan.fork_agent == "claude-native-ui"
+    assert plan.command == ("/bin/omnigent", "claude", "--resume")
+    assert plan.extra == ("--permission-mode", "bypass")
     assert plan.fork_id == "conv_abc"
+    assert "--fork" not in plan.command
 
 
 def test_resume_stays_on_the_shortcut():
     plan = omni.prepare(["codex", "--resume", "conv_9"], which_ok)
     assert plan.command == ("/bin/omnigent", "codex", "--resume", "conv_9")
     assert dict(plan.env_updates)["OMNIGENT_CODEX_PATH"] == "/bin/codex-pl"
+
+
+def test_grok_fork_stays_on_the_cli():
+    plan = omni.prepare(["grok", "--fork", "conv_g"], which_ok)
+    assert plan.api_fork is False
+    assert plan.command == ("/bin/omnigent", "run", "--fork", "conv_g", "--harness", "grok")
 
 
 def test_grok_uses_acp_and_does_not_replace_the_binary():
@@ -73,6 +74,27 @@ def test_missing_omnigent_is_rejected():
         omni.prepare(["grok"], lambda name: None)
 
 
+def test_wsl_finds_omnigent_exe(monkeypatch):
+    monkeypatch.setattr(omni.os, "name", "posix")
+
+    def which(name: str) -> str | None:
+        return "/mnt/c/omnigent.exe" if name == "omnigent.exe" else None
+
+    plan = omni.prepare(["grok"], which)
+    assert plan.command[0] == "/mnt/c/omnigent.exe"
+
+
+def test_cursor_forwards_the_path_the_runner_would_drop():
+    def which(name: str) -> str | None:
+        return {"omnigent": "/bin/omnigent", "cursor-agent-pl": "/bin/cursor-agent-pl"}.get(name)
+
+    plan = omni.prepare(["cursor"], which)
+    env = dict(plan.env_updates)
+    assert env["OMNIGENT_CURSOR_PATH"] == "/bin/cursor-agent-pl"
+    assert "OMNIGENT_CURSOR_PATH" in env["OMNIGENT_RUNNER_ENV_PASSTHROUGH"]
+    assert any("runner drops" in warning for warning in plan.warnings)
+
+
 def test_choose_session_skips_the_fork_source_and_old_sessions():
     sessions = [
         {"id": "conv_old", "created_at": 10},
@@ -82,6 +104,12 @@ def test_choose_session_skips_the_fork_source_and_old_sessions():
     assert omni.choose_session(sessions, started=150, resume_id=None, fork_id="conv_source") == "conv_new"
     assert omni.choose_session(sessions, started=150, resume_id="conv_source", fork_id=None) == "conv_source"
     assert omni.choose_session(sessions, started=500, resume_id=None, fork_id=None) is None
+    assert (
+        omni.choose_session(
+            sessions, resume_id=None, fork_id="conv_source", known_ids={"conv_old", "conv_source"}
+        )
+        == "conv_new"
+    )
 
 
 def test_old_unread_is_not_new_mail():
@@ -90,6 +118,25 @@ def test_old_unread_is_not_new_mail():
     fresh = "2026-11-11T21:00:02+00:00"
     started = omni.datetime.fromisoformat(fresh).timestamp()
     assert omni.message_is_new({"event_time": fresh}, started=started) is True
+
+
+def test_fork_session_binds_the_named_agent(monkeypatch):
+    def fake(method, url, body=None):
+        if method == "GET":
+            return 200, {"data": [{"name": "claude-native-ui", "id": "ag_claude"}]}
+        assert method == "POST"
+        assert url.endswith("/v1/sessions/conv_src/fork")
+        assert body == {"agent_id": "ag_claude"}
+        return 201, {"id": "conv_new"}
+
+    monkeypatch.setattr(omni, "_request_json", fake)
+    assert omni.fork_session("http://127.0.0.1:6767", "conv_src", "claude-native-ui") == "conv_new"
+
+
+def test_fork_session_rejects_a_missing_agent(monkeypatch):
+    monkeypatch.setattr(omni, "_request_json", lambda method, url, body=None: (200, {"data": []}))
+    with pytest.raises(SystemExit, match="no agent"):
+        omni.fork_session("http://127.0.0.1:6767", "conv_src", "claude-native-ui")
 
 
 def test_mail_becomes_an_omnigent_user_message():
@@ -111,6 +158,7 @@ def test_launch_posts_the_fork_and_runs_omnigent(monkeypatch):
         posted["notice"] = (harness, conv_id)
 
     monkeypatch.setattr(omni, "post_fork_notice", fake_post)
+    monkeypatch.setattr(omni, "fork_session", lambda base, source, agent: "conv_new")
 
     class Result:
         returncode = 0
@@ -130,5 +178,5 @@ def test_launch_posts_the_fork_and_runs_omnigent(monkeypatch):
     )
     assert omni.launch(["agy", "--fork", "conv_z"]) == 0
     assert posted["notice"] == ("agy", "conv_z")
-    assert ran["cmd"][:6] == ("/bin/omnigent", "run", "--fork", "conv_z", "--harness", "antigravity-native")
-    assert ran["env"]["OMNIGENT_AGY_PATH"] == "/bin/agy-pl"
+    assert ran["cmd"] == ("/bin/omnigent", "agy", "--resume", "conv_new")
+    assert ran["env"]["OMNIGENT_ANTIGRAVITY_PATH"] == "/bin/agy-pl"

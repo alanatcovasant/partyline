@@ -335,15 +335,21 @@ Verify Grok against a stub line with `python scripts/validate_grok_pl.py`, Kimi 
 
 `omni-pl <harness>` starts that harness inside Omnigent and attaches Partyline for
 the session. `--resume CONV` reattaches the same conversation. `--fork CONV` continues
-that conversation on the named harness (Omnigent will not rebind a session in place)
-and posts one Partyline status, `omnigent fork <conv> onto <harness>`.
+that conversation on the named harness and posts one Partyline status,
+`omnigent fork <conv> onto <harness>`. Native harnesses are forked with
+`POST /v1/sessions/{id}/fork` and then resumed, because `omnigent run --fork` is
+rejected for those TUIs. Grok still uses `omnigent run --fork --harness grok`.
 
-Native harnesses (`claude`, `codex`, `cursor`, `kimi`, `devin`, `agy`) set
-`OMNIGENT_<BINARY>_PATH` to the matching `*-pl` binary for that launch only, so
-Omnigent starts the wired CLI. Grok is ACP (`omnigent run --harness grok`); the
-TUI hook file does not run there, so `omni-pl grok` installs the hooks anyway and
-a side watcher appends Partyline mail that arrives during the session into the
-live Omnigent conversation (`OMNIGENT_URL`, default `http://127.0.0.1:6767`).
+Claude, Codex, and Antigravity set `OMNIGENT_CLAUDE_PATH`, `OMNIGENT_CODEX_PATH`,
+or `OMNIGENT_ANTIGRAVITY_PATH` to the matching `*-pl` binary for that launch.
+The Omnigent CLI copies that path onto the terminal command. Cursor, Kimi, and
+Devin read the path inside the runner, which drops `OMNIGENT_CURSOR_PATH`,
+`OMNIGENT_KIMI_PATH`, and `OMNIGENT_DEVIN_PATH` unless this process starts the
+daemon; those three also install their Partyline hooks. Grok is ACP
+(`omnigent run --harness grok`). Its TUI hook does not run there, so a side
+watcher appends Partyline mail that arrives during the session
+(`OMNIGENT_URL`, default `http://127.0.0.1:6767`). Mail already unread at
+launch is not replayed.
 
 Check the command construction with `python scripts/validate_omni_pl.py`.
 
