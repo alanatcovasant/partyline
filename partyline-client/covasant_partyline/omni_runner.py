@@ -1,21 +1,22 @@
 """`omni-pl <harness>`: start an agent inside Omnigent with Partyline notification.
 
-Native terminal harnesses (Claude, Codex, Cursor, Kimi, Devin, Antigravity) are
-started by Omnigent itself. For that one launch, Omnigent's harness executable
-is pointed at the matching `*-pl` binary, so the existing channel, watcher, or
-hooks run inside the process Omnigent owns.
+Every harness is a native Omnigent terminal harness (Claude, Codex, Cursor,
+Kimi, Devin, Antigravity, Grok, Command Code, Cline). For that one launch,
+Omnigent's harness executable is pointed at the matching `*-pl` binary, so the
+existing channel, watcher, or hooks run inside the process Omnigent owns.
 
-Grok is different. Omnigent drives `grok agent stdio` over ACP, which does not
-load `~/.grok/hooks/partyline.json`. `omni-pl grok` still installs those hooks
-for a direct `grok` launch, and a side watcher appends Partyline mail that
+Cline is different. It has no `*-pl` launcher and its hooks are per-clone
+files in `.clinerules/hooks/`, so a side watcher appends Partyline mail that
 arrives during the session into the live Omnigent conversation.
 
 A change of agent type is an Omnigent fork. Native harnesses are forked
 through the sessions API, then resumed, because `run --fork` is rejected
-for those TUIs. Grok stays on `omnigent run --fork`. `--resume` stays on
-the same session. `--fork` and `--resume` cannot be combined.
+for those TUIs. `--resume` stays on the same session. `--fork` and `--resume`
+cannot be combined.
 
     omni-pl grok
+    omni-pl cline
+    omni-pl cmdc
     omni-pl claude --fork conv_abc123
     omni-pl codex --resume conv_abc123 -- --sandbox workspace-write
 """
@@ -30,7 +31,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -44,7 +45,7 @@ Which = Callable[[str], str | None]
 OMNIGENT_URL = "http://127.0.0.1:6767"
 USAGE = """omni-pl <harness> [--fork CONV] [--resume CONV] [-- extra args]
 
-harness: grok, claude, codex, cursor, kimi, devin, agy
+harness: claude, codex, cursor, kimi, devin, agy, grok, cmdc, cline
 
 --fork CONV    continue that Omnigent conversation on this harness
 --resume CONV  reattach the same conversation
@@ -63,8 +64,8 @@ class Spec:
     pl_bin: str | None
     hooks: str | None
     watch: bool
-    # Built-in agent name for POST /v1/sessions/{id}/fork. None for ACP grok,
-    # which still accepts `omnigent run --fork`.
+    # Built-in agent name for POST /v1/sessions/{id}/fork. None means the
+    # harness still accepts `omnigent run --fork`.
     agent_name: str | None
     # The runner reads this env var. The CLI does not put it on the terminal command.
     runner_reads_path: bool
@@ -77,8 +78,10 @@ SPECS: dict[str, Spec] = {
     "kimi": Spec(("kimi",), "kimi-native", ("kimi", "--resume"), "OMNIGENT_KIMI_PATH", "kimi-pl", "kimi", False, "kimi-native-ui", True),
     "devin": Spec(("devin",), "devin-native", ("devin", "--resume"), "OMNIGENT_DEVIN_PATH", "devin-pl", "devin", False, "devin-native-ui", True),
     "agy": Spec(("agy",), "antigravity-native", ("agy", "--resume"), "OMNIGENT_ANTIGRAVITY_PATH", "agy-pl", "agy", False, "antigravity-native-ui", False),
-    # ACP. Do not point Omnigent at grok-pl: that binary is the TUI wrapper.
-    "grok": Spec(("run", "--harness", "grok"), "grok", ("run", "--harness", "grok", "--resume"), None, None, "grok", True, None, False),
+    "grok": Spec(("grok",), "grok-native", ("grok", "--resume"), "OMNIGENT_GROK_PATH", "grok-pl", "grok", False, "grok-native-ui", True),
+    "cmdc": Spec(("cmdc",), "commandcode-native", ("cmdc", "--resume"), "OMNIGENT_COMMANDCODE_PATH", "cmdc-pl", "cmdc", False, "commandcode-native-ui", True),
+    # No cline-pl and no global hook file: the watcher delivers mail.
+    "cline": Spec(("cline",), "cline-native", ("cline", "--resume"), None, None, None, True, "cline-native-ui", False),
 }
 
 
@@ -116,7 +119,7 @@ def prepare(argv: list[str], which: Which | None = None) -> Plan:
     if not omni:
         sys.exit("omni-pl: `omnigent` not found on PATH")
     # `run --harness *-native --fork` is rejected by Omnigent. Fork through the
-    # API, then resume the new session. Grok is ACP and still accepts --fork.
+    # API, then resume the new session.
     api_fork = bool(fork_id and spec.agent_name)
     if api_fork:
         command = (omni, *spec.resume_prefix)
@@ -494,6 +497,9 @@ def launch(argv: list[str] | None = None) -> int:
     if plan.api_fork and plan.fork_id and plan.fork_agent:
         new_id = fork_session(_omnigent_base(), plan.fork_id, plan.fork_agent)
         command = (*plan.command, new_id, *plan.extra)
+        # The new session exists before the watcher snapshots the list, so
+        # it would never look new. Watch it by id.
+        plan = replace(plan, resume_id=new_id)
     if plan.fork_id:
         post_fork_notice(plan.harness, plan.fork_id)
     stop = threading.Event()
@@ -510,7 +516,7 @@ def launch(argv: list[str] | None = None) -> int:
                 daemon=True,
             ).start()
         else:
-            print("omni-pl: no .partyline/config.json agentId; Grok session watcher not started", file=sys.stderr)
+            print(f"omni-pl: no .partyline/config.json agentId; {plan.harness} session watcher not started", file=sys.stderr)
     env = os.environ.copy()
     env.update(dict(plan.env_updates))
     try:

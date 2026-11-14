@@ -38,18 +38,44 @@ def test_resume_stays_on_the_shortcut():
     assert dict(plan.env_updates)["OMNIGENT_CODEX_PATH"] == "/bin/codex-pl"
 
 
-def test_grok_fork_stays_on_the_cli():
-    plan = omni.prepare(["grok", "--fork", "conv_g"], which_ok)
-    assert plan.api_fork is False
-    assert plan.command == ("/bin/omnigent", "run", "--fork", "conv_g", "--harness", "grok")
-
-
-def test_grok_uses_acp_and_does_not_replace_the_binary():
-    plan = omni.prepare(["grok", "--always-approve"], which_ok)
-    assert plan.command == ("/bin/omnigent", "run", "--harness", "grok", "--always-approve")
-    assert "OMNIGENT_GROK_PATH" not in dict(plan.env_updates)
-    assert plan.watch is True
+def test_grok_is_native_and_points_at_grok_pl():
+    plan = omni.prepare(["grok"], which_ok)
+    assert plan.command == ("/bin/omnigent", "grok")
+    env = dict(plan.env_updates)
+    assert env["OMNIGENT_GROK_PATH"] == "/bin/grok-pl"
+    assert "OMNIGENT_GROK_PATH" in env["OMNIGENT_RUNNER_ENV_PASSTHROUGH"]
     assert plan.hooks == "grok"
+    assert plan.watch is False
+
+
+def test_grok_fork_uses_the_api():
+    plan = omni.prepare(["grok", "--fork", "conv_g"], which_ok)
+    assert plan.api_fork is True
+    assert plan.fork_agent == "grok-native-ui"
+    assert plan.command == ("/bin/omnigent", "grok", "--resume")
+
+
+def test_cmdc_points_omnigent_at_cmdc_pl():
+    def which(name: str) -> str | None:
+        return {"omnigent": "/bin/omnigent", "cmdc-pl": "/bin/cmdc-pl"}.get(name)
+
+    plan = omni.prepare(["cmdc", "--resume", "conv_c"], which)
+    assert plan.command == ("/bin/omnigent", "cmdc", "--resume", "conv_c")
+    assert dict(plan.env_updates)["OMNIGENT_COMMANDCODE_PATH"] == "/bin/cmdc-pl"
+    assert plan.hooks == "cmdc"
+    assert plan.watch is False
+
+
+def test_cline_watches_the_session_and_pins_no_binary():
+    plan = omni.prepare(["cline"], which_ok)
+    assert plan.command == ("/bin/omnigent", "cline")
+    assert plan.env_updates == ()
+    assert plan.warnings == ()
+    assert plan.hooks is None
+    assert plan.watch is True
+    fork = omni.prepare(["cline", "--fork", "conv_x"], which_ok)
+    assert fork.api_fork is True
+    assert fork.fork_agent == "cline-native-ui"
 
 
 def test_missing_pl_binary_warns_and_still_launches():
@@ -180,3 +206,34 @@ def test_launch_posts_the_fork_and_runs_omnigent(monkeypatch):
     assert posted["notice"] == ("agy", "conv_z")
     assert ran["cmd"] == ("/bin/omnigent", "agy", "--resume", "conv_new")
     assert ran["env"]["OMNIGENT_ANTIGRAVITY_PATH"] == "/bin/agy-pl"
+
+
+def test_cline_fork_watches_the_forked_session(monkeypatch):
+    """The API fork creates the session before the watcher snapshots the list,
+    so the watcher must be handed the new id rather than discover it."""
+    monkeypatch.setattr(omni, "register_self", lambda harness: "alan_partyline_1")
+    monkeypatch.setattr(omni, "post_fork_notice", lambda harness, conv_id: None)
+    monkeypatch.setattr(omni, "fork_session", lambda base, source, agent: "conv_new")
+    monkeypatch.setattr(omni.cli, "_load_config", lambda: {})
+    monkeypatch.setattr(omni.cli, "resolve_agent_id", lambda cfg=None: "alan_partyline_1")
+    monkeypatch.setattr(omni.cli, "resolve_url", lambda cfg=None: "http://line")
+    monkeypatch.setattr(omni, "prime_delivered", lambda agent_id, url: set())
+    monkeypatch.setattr(omni, "snapshot_session_ids", lambda base: {"conv_x", "conv_new"})
+    watched = {}
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            watched["plan"] = args[1]
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(omni.threading, "Thread", FakeThread)
+
+    class Result:
+        returncode = 0
+
+    monkeypatch.setattr(omni.subprocess, "run", lambda cmd, env: Result())
+    monkeypatch.setattr(omni.shutil, "which", lambda name: "/bin/omnigent" if name == "omnigent" else None)
+    assert omni.launch(["cline", "--fork", "conv_x"]) == 0
+    assert watched["plan"].resume_id == "conv_new"
