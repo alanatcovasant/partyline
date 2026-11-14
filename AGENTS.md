@@ -334,24 +334,38 @@ Verify Grok against a stub line with `python scripts/validate_grok_pl.py`, Kimi 
 ### Omnigent — `omni-pl`
 
 `omni-pl <harness>` starts that harness inside Omnigent and attaches Partyline for
-the session. `--resume CONV` reattaches the same conversation. `--fork CONV` continues
-that conversation on the named harness and posts one Partyline status,
-`omnigent fork <conv> onto <harness>`. Native harnesses are forked with
-`POST /v1/sessions/{id}/fork` and then resumed, because `omnigent run --fork` is
-rejected for those TUIs. Grok still uses `omnigent run --fork --harness grok`.
+the session. omni-pl does not keep a list of valid harnesses: Omnigent's registry is
+extensible, so the name goes to Omnigent. A CLI name (`claude`, `cmdc`, `cline`,
+`goose`, ...) runs `omnigent <name>`; a harness id (`cline-native`, `native-grok`)
+runs `omnigent run --harness <id>`. A CLI name Partyline has no launcher for is
+checked once with `omnigent <name> --help` before anything is registered or posted,
+so a typo exits with Omnigent's own "No such command" message. Successes are cached
+per Omnigent install in `~/.partyline/omni-harnesses.json`.
 
-Claude, Codex, and Antigravity set `OMNIGENT_CLAUDE_PATH`, `OMNIGENT_CODEX_PATH`,
-or `OMNIGENT_ANTIGRAVITY_PATH` to the matching `*-pl` binary for that launch.
-The Omnigent CLI copies that path onto the terminal command. Cursor, Kimi, and
-Devin read the path inside the runner, which drops `OMNIGENT_CURSOR_PATH`,
-`OMNIGENT_KIMI_PATH`, and `OMNIGENT_DEVIN_PATH` unless this process starts the
-daemon; those three also install their Partyline hooks. Grok is ACP
-(`omnigent run --harness grok`). Its TUI hook does not run there, so a side
-watcher appends Partyline mail that arrives during the session
-(`OMNIGENT_URL`, default `http://127.0.0.1:6767`). Mail already unread at
-launch is not replayed.
+`--resume CONV` reattaches the same conversation. `--fork CONV` continues that
+conversation on the named harness and posts one Partyline status,
+`omnigent fork <conv> onto <harness>`. A fork is `POST /v1/sessions/{id}/fork` onto
+the harness's built-in `<name>-native-ui` agent, followed by a resume, because
+`omnigent run --fork` is rejected for the native TUIs. Omnigent's HTTP error body is
+printed as-is, so a stale server's "invalid agent spec ... got 'cline-native'" reads
+as Omnigent's error, not as a Partyline one. Restart the Omnigent server
+(`omnigent stop`) to clear that one.
 
-Check the command construction with `python scripts/validate_omni_pl.py`.
+`ATTACH` in `omni_runner.py` is an alias layer, not a gate. Claude, Codex, and
+Antigravity set `OMNIGENT_CLAUDE_PATH`, `OMNIGENT_CODEX_PATH`, or
+`OMNIGENT_ANTIGRAVITY_PATH` to the matching `*-pl` binary for that launch.
+The Omnigent CLI copies that path onto the terminal command. Cursor, Kimi, Devin,
+Grok, and Command Code (`cmdc`, `cmd`, `commandcode`) read the path inside the runner
+(`OMNIGENT_CURSOR_PATH`, `OMNIGENT_KIMI_PATH`, `OMNIGENT_DEVIN_PATH`,
+`OMNIGENT_GROK_PATH`, `OMNIGENT_COMMANDCODE_PATH`), which drops it unless this
+process starts the daemon; those five also install their Partyline hooks, so the
+stock CLI still gets them. The `-native` spellings get the same attachment. Cline,
+and any harness with no row, gets a side watcher that appends Partyline mail
+arriving during the session (`OMNIGENT_URL`, default `http://127.0.0.1:6767`).
+Mail already unread at launch is not replayed.
+
+Check it with `python scripts/validate_omni_pl.py` (offline), or add `--live` to also ask
+the installed omnigent (read-only `--help` probes).
 
 ### Cline (this agent) — file-based hooks
 

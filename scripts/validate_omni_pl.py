@@ -1,24 +1,35 @@
-"""Check omni-pl command construction.
+"""Check that omni-pl passes harness names to Omnigent instead of gating them.
 
-Positive: `omni-pl claude --fork` forks through the sessions API and resumes
-the new session, and points that launch at claude-pl. `omni-pl grok` starts
-the ACP harness and the session watcher. `omni-pl grok --fork` stays on
-`omnigent run --fork`.
-Negative: a native fork is not sent as `run --fork`, grok is not pointed at
-grok-pl, agy is not pinned with `OMNIGENT_AGY_PATH`, --fork with --resume is
-rejected, and an unknown harness is rejected.
+Offline (default) checks command construction with a stubbed Omnigent.
+`--live` also asks the omnigent on PATH, read-only (`omnigent <name> --help`
+only, nothing is launched, registered or posted).
 
-    python scripts/validate_omni_pl.py
+Positive: cmdc, cline and grok (and their -native spellings) build an omnigent
+command without a probe; a harness Partyline has no launcher for (goose) is
+confirmed by Omnigent and launched with the session watcher; a native fork goes
+through the sessions API and resumes; the alias layer still pins *-pl binaries.
+Negative: a typo exits with Omnigent's own "No such command" text (no local
+"Known:" list), a native fork is never sent as `run --fork`, --fork with
+--resume is rejected, and a stale server's fork error reaches the user verbatim.
+
+    python scripts/validate_omni_pl.py           # offline
+    python scripts/validate_omni_pl.py --live    # plus the installed omnigent
 """
+import contextlib
+import io
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "partyline-client"))
 
-from covasant_partyline.omni_runner import prepare  # noqa: E402
+from covasant_partyline import omni_runner as omni
 
 failed = 0
+cache_dir = Path(tempfile.mkdtemp(prefix="omni-pl-validate-"))
+omni._cache_path = lambda: cache_dir / "omni-harnesses.json"
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -33,59 +44,106 @@ def which(name: str) -> str | None:
         "claude-pl": "/bin/claude-pl",
         "agy-pl": "/bin/agy-pl",
         "grok-pl": "/bin/grok-pl",
+        "cmdc-pl": "/bin/cmdc-pl",
     }.get(name)
 
 
-fork = prepare(["claude", "--fork", "conv_abc"], which)
+def no_probe(o: str, name: str) -> tuple[int, str]:
+    raise AssertionError(f"probed {name}")
+
+
+def exit_of(fn) -> tuple[object, str]:
+    """Run fn; return (SystemExit code or None, captured stderr)."""
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        try:
+            fn()
+        except SystemExit as exc:
+            return exc.code, err.getvalue()
+    return None, err.getvalue()
+
+
+# --- passthrough ----------------------------------------------------------
+for name in ("cmdc", "cline", "grok"):
+    plan = omni.prepare([name, "--yolo"], which, no_probe)
+    check(f"positive: omni-pl {name} --yolo reaches omnigent", plan.command == ("/bin/omnigent", name, "--yolo"))
+for name in ("cline-native", "commandcode-native", "grok-native", "native-grok"):
+    plan = omni.prepare([name, "--yolo"], which, no_probe)
+    check(
+        f"positive: omni-pl {name} --yolo reaches omnigent run --harness",
+        plan.command == ("/bin/omnigent", "run", "--harness", name, "--yolo"),
+    )
+goose = omni.prepare(["goose"], which, lambda o, n: (0, ""))
+check(
+    "positive: a harness Partyline has no launcher for is confirmed by Omnigent and watched",
+    goose.command == ("/bin/omnigent", "goose") and goose.watch and goose.env_updates == (),
+)
+code, err = exit_of(lambda: omni.prepare(["goose"], which, no_probe))
+check("positive: the Omnigent answer is cached (no second probe)", code is None, err.strip())
+
+typo_msg = "Error: No such command 'clien'. (Did you mean one of: 'cline', 'login'?)\n"
+code, err = exit_of(lambda: omni.prepare(["clien", "--yolo"], which, lambda o, n: (2, typo_msg)))
+check("negative: a typo exits non-zero with Omnigent's message verbatim", code == 2 and err == typo_msg, repr(err))
+check("negative: no partyline-local harness list in the error", "Known:" not in err and "unknown harness" not in err)
+
+# --- alias layer still attaches Partyline ---------------------------------
+grok = omni.prepare(["grok"], which, no_probe)
+check(
+    "positive: grok pins OMNIGENT_GROK_PATH to grok-pl and installs hooks",
+    dict(grok.env_updates).get("OMNIGENT_GROK_PATH") == "/bin/grok-pl" and grok.hooks == "grok",
+)
+cmdc = omni.prepare(["commandcode-native"], which, no_probe)
+check(
+    "positive: commandcode-native keeps the cmdc-pl attachment",
+    dict(cmdc.env_updates).get("OMNIGENT_COMMANDCODE_PATH") == "/bin/cmdc-pl" and cmdc.hooks == "cmdc",
+)
+agy = omni.prepare(["agy"], which, no_probe)
+check(
+    "negative: agy is pinned with OMNIGENT_ANTIGRAVITY_PATH, not OMNIGENT_AGY_PATH",
+    dict(agy.env_updates).get("OMNIGENT_ANTIGRAVITY_PATH") == "/bin/agy-pl"
+    and "OMNIGENT_AGY_PATH" not in dict(agy.env_updates),
+)
+
+# --- forks ----------------------------------------------------------------
+fork = omni.prepare(["claude", "--fork", "conv_abc"], which, no_probe)
 check(
     "positive: claude fork resumes a session created by the fork API",
-    fork.api_fork
-    and fork.fork_agent == "claude-native-ui"
-    and fork.command == ("/bin/omnigent", "claude", "--resume"),
+    fork.api_fork and fork.fork_agent == "claude-native-ui" and fork.command == ("/bin/omnigent", "claude", "--resume"),
 )
+nfork = omni.prepare(["cline-native", "--fork", "conv_x"], which, no_probe)
 check(
-    "negative: native fork is not sent as omnigent run --fork",
-    "--fork" not in fork.command and "claude-native" not in fork.command,
+    "positive: a -native fork resumes through run --harness",
+    nfork.fork_agent == "cline-native-ui"
+    and nfork.command == ("/bin/omnigent", "run", "--harness", "cline-native", "--resume"),
 )
-check(
-    "positive: claude launch pins OMNIGENT_CLAUDE_PATH to claude-pl",
-    dict(fork.env_updates).get("OMNIGENT_CLAUDE_PATH") == "/bin/claude-pl",
-)
-grok = prepare(["grok"], which)
-check(
-    "positive: grok starts omnigent run --harness grok and watches the session",
-    grok.command == ("/bin/omnigent", "run", "--harness", "grok") and grok.watch is True,
-)
-check(
-    "negative: grok is not redirected to grok-pl",
-    "OMNIGENT_GROK_PATH" not in dict(grok.env_updates) and "/bin/grok-pl" not in grok.command,
-)
-grok_fork = prepare(["grok", "--fork", "conv_g"], which)
-check(
-    "positive: grok fork stays on omnigent run --fork",
-    grok_fork.api_fork is False
-    and grok_fork.command == ("/bin/omnigent", "run", "--fork", "conv_g", "--harness", "grok"),
-)
-agy = prepare(["agy"], which)
-check(
-    "positive: agy pins OMNIGENT_ANTIGRAVITY_PATH to agy-pl",
-    dict(agy.env_updates).get("OMNIGENT_ANTIGRAVITY_PATH") == "/bin/agy-pl",
-)
-check(
-    "negative: agy is not pinned with OMNIGENT_AGY_PATH",
-    "OMNIGENT_AGY_PATH" not in dict(agy.env_updates),
-)
-try:
-    prepare(["claude", "--fork", "a", "--resume", "b"], which)
-except SystemExit as exc:
-    check("negative: --fork and --resume together are rejected", "only one" in str(exc))
-else:
-    check("negative: --fork and --resume together are rejected", False, "no SystemExit")
-try:
-    prepare(["not-a-harness"], which)
-except SystemExit as exc:
-    check("negative: unknown harness is rejected", "unknown harness" in str(exc))
-else:
-    check("negative: unknown harness is rejected", False, "no SystemExit")
+check("negative: a native fork is never sent as run --fork", "--fork" not in fork.command + nfork.command)
+code, _ = exit_of(lambda: omni.prepare(["claude", "--fork", "a", "--resume", "b"], which, no_probe))
+check("negative: --fork and --resume together are rejected", code is not None and "only one" in str(code))
 
+stale = "invalid agent spec synthesized from omnigent YAML: must be one of [...], got 'cline-native'"
+real_request = omni._request_json
+omni._request_json = lambda method, url, body=None: (
+    (200, {"data": [{"name": "cline-native-ui", "id": "ag"}]}) if method == "GET" else (400, {"detail": stale})
+)
+code, _ = exit_of(lambda: omni.fork_session("http://127.0.0.1:6767", "conv_src", "cline-native-ui"))
+omni._request_json = real_request
+check("negative: a stale server's fork error reaches the user verbatim", stale in str(code), str(code))
+
+# --- live: ask the installed omnigent (read-only) -------------------------
+if "--live" in sys.argv:
+    real = shutil.which("omnigent") or shutil.which("omni")
+    if not real:
+        check("live: omnigent on PATH", False, "not found")
+    else:
+        for name in ("cmdc", "cline", "grok", "goose"):
+            code, out = omni._run_probe(real, name)
+            check(f"live positive: installed omnigent accepts `{name}`", code == 0, out.strip()[:120])
+        code, err = exit_of(lambda: omni.confirm_with_omnigent(real, "clien"))
+        check(
+            "live negative: installed omnigent rejects `clien` with its own message",
+            code not in (None, 0) and "No such command" in err,
+            err.strip()[:160],
+        )
+
+shutil.rmtree(cache_dir, ignore_errors=True)
 sys.exit(1 if failed else 0)
