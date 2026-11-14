@@ -3,6 +3,7 @@
   "displayName": "Covasant Partyline",
   "description": "Real-time inter-agent coordination notifications for Covasant Partyline",
   "version": "0.1.11",
+  "license": "Apache-2.0",
   "publisher": "covasant",
   "engines": { "vscode": "^1.95.0" },
   "categories": ["Other"],
