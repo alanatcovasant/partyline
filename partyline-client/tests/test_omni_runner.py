@@ -1,7 +1,6 @@
 """`omni-pl` command construction, fork selection, and mail injection."""
 
 import pytest
-
 from covasant_partyline import omni_runner as omni
 
 
@@ -90,9 +89,102 @@ def test_fork_and_resume_together_are_rejected():
         omni.prepare(["claude", "--fork", "a", "--resume", "b"], which_ok)
 
 
-def test_unknown_harness_is_rejected():
-    with pytest.raises(SystemExit, match="unknown harness"):
-        omni.prepare(["nope"], which_ok)
+def no_probe(omni: str, name: str) -> tuple[int, str]:
+    raise AssertionError(f"probed {name}; names in the alias layer must not shell out")
+
+
+@pytest.fixture
+def cache(tmp_path, monkeypatch):
+    path = tmp_path / "omni-harnesses.json"
+    monkeypatch.setattr(omni, "_cache_path", lambda: path)
+    return path
+
+
+@pytest.mark.parametrize("name", ["cmdc", "cmd", "commandcode", "cline", "grok", "agy", "kimi"])
+def test_alias_layer_names_reach_omnigent_without_a_probe(name, cache):
+    plan = omni.prepare([name, "--yolo"], which_ok, no_probe)
+    assert plan.command == ("/bin/omnigent", name, "--yolo")
+
+
+@pytest.mark.parametrize(
+    "name", ["cline-native", "native-cline", "commandcode-native", "grok-native", "pi-native", "opencode-native"]
+)
+def test_native_ids_pass_through_to_run_harness(name, cache):
+    plan = omni.prepare([name, "--yolo"], which_ok, no_probe)
+    assert plan.command == ("/bin/omnigent", "run", "--harness", name, "--yolo")
+
+
+def test_native_spelling_keeps_the_partyline_attachment(cache):
+    def which(name: str) -> str | None:
+        return {"omnigent": "/bin/omnigent", "cmdc-pl": "/bin/cmdc-pl"}.get(name)
+
+    plan = omni.prepare(["commandcode-native"], which, no_probe)
+    assert dict(plan.env_updates)["OMNIGENT_COMMANDCODE_PATH"] == "/bin/cmdc-pl"
+    assert plan.hooks == "cmdc"
+    cline = omni.prepare(["native-cline"], which_ok, no_probe)
+    assert cline.watch is True and cline.env_updates == ()
+
+
+def test_a_harness_partyline_never_heard_of_launches_with_the_watcher(cache):
+    asked = []
+
+    def probe(o, name):
+        asked.append(name)
+        return 0, ""
+
+    plan = omni.prepare(["goose", "--yolo"], which_ok, probe)
+    assert plan.command == ("/bin/omnigent", "goose", "--yolo")
+    assert plan.watch is True and plan.env_updates == () and plan.hooks is None
+    assert asked == ["goose"]
+    # Cached per Omnigent install: the second launch does not shell out.
+    omni.prepare(["goose"], which_ok, no_probe)
+
+
+def test_a_typo_fails_with_omnigents_own_message(cache, capsys):
+    message = "Error: No such command 'clien'. (Did you mean one of: 'cline', 'login'?)\n"
+    with pytest.raises(SystemExit) as exc:
+        omni.prepare(["clien", "--yolo"], which_ok, lambda o, name: (2, message))
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert err == message
+    assert "Known:" not in err and "unknown harness" not in err
+    assert not cache.exists()
+
+
+def test_an_unreachable_probe_passes_through(cache):
+    plan = omni.prepare(["hermes"], which_ok, lambda o, name: (-1, "timed out"))
+    assert plan.command == ("/bin/omnigent", "hermes")
+
+
+def test_cache_is_dropped_when_omnigent_changes(cache):
+    cache.write_text('{"stamp": "some-older-install", "names": ["clien"]}')
+    with pytest.raises(SystemExit):
+        omni.prepare(["clien"], which_ok, lambda o, name: (2, "Error: No such command 'clien'.\n"))
+
+
+def test_fork_agent_follows_omnigents_naming():
+    assert omni.fork_agent_for("goose") == "goose-native-ui"
+    assert omni.fork_agent_for("native-pi") == "pi-native-ui"
+    assert omni.fork_agent_for("agy-native") == "antigravity-native-ui"
+    assert omni.fork_agent_for("cmd") == "commandcode-native-ui"
+
+
+def test_native_fork_resumes_through_run_harness(cache):
+    plan = omni.prepare(["cline-native", "--fork", "conv_x"], which_ok, no_probe)
+    assert plan.api_fork and plan.fork_agent == "cline-native-ui"
+    assert plan.command == ("/bin/omnigent", "run", "--harness", "cline-native", "--resume")
+
+
+def test_a_flag_in_place_of_the_harness_is_rejected():
+    with pytest.raises(SystemExit, match="harness name comes first"):
+        omni.prepare(["--fork", "conv_x"], which_ok, no_probe)
+
+
+def test_launch_source_has_no_frozen_harness_gate():
+    import inspect
+
+    source = inspect.getsource(omni.prepare) + inspect.getsource(omni._parse)
+    assert "not in ATTACH" not in source and "Known:" not in source
 
 
 def test_missing_omnigent_is_rejected():
@@ -191,7 +283,7 @@ def test_launch_posts_the_fork_and_runs_omnigent(monkeypatch):
 
     ran = {}
 
-    def fake_run(cmd, env):
+    def fake_run(cmd, env, check=False):
         ran["cmd"] = cmd
         ran["env"] = env
         return Result()
@@ -214,7 +306,7 @@ def test_cline_fork_watches_the_forked_session(monkeypatch):
     monkeypatch.setattr(omni, "register_self", lambda harness: "alan_partyline_1")
     monkeypatch.setattr(omni, "post_fork_notice", lambda harness, conv_id: None)
     monkeypatch.setattr(omni, "fork_session", lambda base, source, agent: "conv_new")
-    monkeypatch.setattr(omni.cli, "_load_config", lambda: {})
+    monkeypatch.setattr(omni.cli, "_load_config", dict)
     monkeypatch.setattr(omni.cli, "resolve_agent_id", lambda cfg=None: "alan_partyline_1")
     monkeypatch.setattr(omni.cli, "resolve_url", lambda cfg=None: "http://line")
     monkeypatch.setattr(omni, "prime_delivered", lambda agent_id, url: set())
@@ -233,7 +325,38 @@ def test_cline_fork_watches_the_forked_session(monkeypatch):
     class Result:
         returncode = 0
 
-    monkeypatch.setattr(omni.subprocess, "run", lambda cmd, env: Result())
+    monkeypatch.setattr(omni.subprocess, "run", lambda cmd, env, check=False: Result())
     monkeypatch.setattr(omni.shutil, "which", lambda name: "/bin/omnigent" if name == "omnigent" else None)
     assert omni.launch(["cline", "--fork", "conv_x"]) == 0
     assert watched["plan"].resume_id == "conv_new"
+
+
+def test_fork_failure_surfaces_omnigents_error(monkeypatch):
+    detail = "invalid agent spec synthesized from omnigent YAML: must be one of [...], got 'cline-native'"
+
+    def fake(method, url, body=None):
+        if method == "GET":
+            return 200, {"data": [{"name": "cline-native-ui", "id": "ag_cline"}]}
+        return 400, {"detail": detail}
+
+    monkeypatch.setattr(omni, "_request_json", fake)
+    with pytest.raises(SystemExit) as exc:
+        omni.fork_session("http://127.0.0.1:6767", "conv_src", "cline-native-ui")
+    assert "HTTP 400" in str(exc.value) and detail in str(exc.value)
+
+
+def test_unreachable_omnigent_is_named(monkeypatch):
+    monkeypatch.setattr(omni, "_request_json", lambda method, url, body=None: (0, None))
+    with pytest.raises(SystemExit, match="not reachable at http://127.0.0.1:6767"):
+        omni.fork_session("http://127.0.0.1:6767", "conv_src", "claude-native-ui")
+
+
+def test_http_error_body_is_kept(monkeypatch):
+    import io
+    import urllib.error
+
+    def boom(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 400, "Bad Request", {}, io.BytesIO(b'{"detail": "got \'cline-native\'"}'))
+
+    monkeypatch.setattr(omni.urllib.request, "urlopen", boom)
+    assert omni._request_json("POST", "http://x/v1/sessions/a/fork", {}) == (400, {"detail": "got 'cline-native'"})

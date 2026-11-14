@@ -1,22 +1,35 @@
 """`omni-pl <harness>`: start an agent inside Omnigent with Partyline notification.
 
-Every harness is a native Omnigent terminal harness (Claude, Codex, Cursor,
-Kimi, Devin, Antigravity, Grok, Command Code, Cline). For that one launch,
-Omnigent's harness executable is pointed at the matching `*-pl` binary, so the
-existing channel, watcher, or hooks run inside the process Omnigent owns.
+omni-pl does not decide which harnesses exist. Omnigent's harness registry is
+extensible (plugin and new native harnesses appear without Partyline knowing),
+so whatever name you type goes to Omnigent:
 
-Cline is different. It has no `*-pl` launcher and its hooks are per-clone
-files in `.clinerules/hooks/`, so a side watcher appends Partyline mail that
-arrives during the session into the live Omnigent conversation.
+- a CLI name (`claude`, `cmdc`, `cline`, `goose`, ...) runs `omnigent <name>`;
+- a harness id spelled `<x>-native` or `native-<x>` runs
+  `omnigent run --harness <id>`.
 
-A change of agent type is an Omnigent fork. Native harnesses are forked
-through the sessions API, then resumed, because `run --fork` is rejected
-for those TUIs. `--resume` stays on the same session. `--fork` and `--resume`
+`ATTACH` below is an alias layer, not a gate. It only says how Partyline
+reaches a harness it has a launcher for: Omnigent's harness executable is
+pointed at the matching `*-pl` binary for that one launch, and some harnesses
+also get their Partyline hooks installed. A name with no row still launches,
+and a side watcher appends Partyline mail that arrives during the session into
+the live Omnigent conversation (Cline works this way on purpose: its hooks are
+per-clone files and it has no `*-pl` launcher).
+
+A CLI name with no row is checked once with `omnigent <name> --help` before
+anything is registered or posted, so a typo dies with Omnigent's own
+"No such command" message. A success is cached per Omnigent install in
+`~/.partyline/omni-harnesses.json`.
+
+A change of agent type is an Omnigent fork: `POST /v1/sessions/{id}/fork`,
+then a resume of the new session, because `run --fork` is rejected for the
+native TUIs. `--resume` stays on the same session. `--fork` and `--resume`
 cannot be combined.
 
     omni-pl grok
     omni-pl cline
     omni-pl cmdc
+    omni-pl cline-native
     omni-pl claude --fork conv_abc123
     omni-pl codex --resume conv_abc123 -- --sandbox workspace-write
 """
@@ -31,10 +44,10 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 from urllib.parse import quote
 
 from . import cli
@@ -42,10 +55,15 @@ from .autoregister import register_self
 from .harness_runner import HARNESSES
 
 Which = Callable[[str], str | None]
+# Runs `omnigent <name> --help`. Returns (exit code, combined output).
+Probe = Callable[[str, str], tuple[int, str]]
 OMNIGENT_URL = "http://127.0.0.1:6767"
 USAGE = """omni-pl <harness> [--fork CONV] [--resume CONV] [-- extra args]
 
-harness: claude, codex, cursor, kimi, devin, agy, grok, cmdc, cline
+harness: any harness the installed Omnigent knows. Either a CLI name from
+         `omnigent --help` (claude, codex, cursor, kimi, devin, agy, grok, cmdc,
+         cline, goose, opencode, pi, qwen, ...) or a harness id such as
+         cline-native or native-grok. Omnigent validates it, not omni-pl.
 
 --fork CONV    continue that Omnigent conversation on this harness
 --resume CONV  reattach the same conversation
@@ -54,35 +72,38 @@ extra args     appended to the omnigent command
 
 
 @dataclass(frozen=True)
-class Spec:
-    """How one harness is launched and how Partyline mail reaches it."""
+class Attach:
+    """How Partyline reaches one harness. Absence never blocks a launch."""
 
-    fresh: tuple[str, ...]
-    fork_harness: str
-    resume_prefix: tuple[str, ...]
     path_env: str | None
     pl_bin: str | None
     hooks: str | None
     watch: bool
-    # Built-in agent name for POST /v1/sessions/{id}/fork. None means the
-    # harness still accepts `omnigent run --fork`.
-    agent_name: str | None
     # The runner reads this env var. The CLI does not put it on the terminal command.
     runner_reads_path: bool
+    # Built-in Omnigent agent for the API fork, when it does not follow the
+    # `<name>-native-ui` convention every other native harness uses.
+    agent_name: str | None = None
 
 
-SPECS: dict[str, Spec] = {
-    "claude": Spec(("claude",), "claude-native", ("claude", "--resume"), "OMNIGENT_CLAUDE_PATH", "claude-pl", None, False, "claude-native-ui", False),
-    "codex": Spec(("codex",), "codex-native", ("codex", "--resume"), "OMNIGENT_CODEX_PATH", "codex-pl", None, False, "codex-native-ui", False),
-    "cursor": Spec(("cursor",), "cursor-native", ("cursor", "--resume"), "OMNIGENT_CURSOR_PATH", "cursor-agent-pl", "cursor", False, "cursor-native-ui", True),
-    "kimi": Spec(("kimi",), "kimi-native", ("kimi", "--resume"), "OMNIGENT_KIMI_PATH", "kimi-pl", "kimi", False, "kimi-native-ui", True),
-    "devin": Spec(("devin",), "devin-native", ("devin", "--resume"), "OMNIGENT_DEVIN_PATH", "devin-pl", "devin", False, "devin-native-ui", True),
-    "agy": Spec(("agy",), "antigravity-native", ("agy", "--resume"), "OMNIGENT_ANTIGRAVITY_PATH", "agy-pl", "agy", False, "antigravity-native-ui", False),
-    "grok": Spec(("grok",), "grok-native", ("grok", "--resume"), "OMNIGENT_GROK_PATH", "grok-pl", "grok", False, "grok-native-ui", True),
-    "cmdc": Spec(("cmdc",), "commandcode-native", ("cmdc", "--resume"), "OMNIGENT_COMMANDCODE_PATH", "cmdc-pl", "cmdc", False, "commandcode-native-ui", True),
+# Non-authoritative: names Partyline has a launcher or hooks for. Omnigent
+# decides which harnesses exist.
+ATTACH: dict[str, Attach] = {
+    "claude": Attach("OMNIGENT_CLAUDE_PATH", "claude-pl", None, False, False),
+    "codex": Attach("OMNIGENT_CODEX_PATH", "codex-pl", None, False, False),
+    "cursor": Attach("OMNIGENT_CURSOR_PATH", "cursor-agent-pl", "cursor", False, True),
+    "kimi": Attach("OMNIGENT_KIMI_PATH", "kimi-pl", "kimi", False, True),
+    "devin": Attach("OMNIGENT_DEVIN_PATH", "devin-pl", "devin", False, True),
+    "agy": Attach("OMNIGENT_ANTIGRAVITY_PATH", "agy-pl", "agy", False, False, "antigravity-native-ui"),
+    "grok": Attach("OMNIGENT_GROK_PATH", "grok-pl", "grok", False, True),
+    "cmdc": Attach("OMNIGENT_COMMANDCODE_PATH", "cmdc-pl", "cmdc", False, True, "commandcode-native-ui"),
     # No cline-pl and no global hook file: the watcher delivers mail.
-    "cline": Spec(("cline",), "cline-native", ("cline", "--resume"), None, None, None, True, "cline-native-ui", False),
+    "cline": Attach(None, None, None, True, False),
 }
+# Other spellings Omnigent accepts for a harness in ATTACH. Lookup only.
+SYNONYMS = {"cmd": "cmdc", "commandcode": "cmdc", "antigravity": "agy"}
+# Any harness Partyline has no launcher for: the session watcher delivers mail.
+WATCH_ONLY = Attach(None, None, None, True, False)
 
 
 @dataclass(frozen=True)
@@ -110,61 +131,147 @@ def _which(which: Which, name: str) -> str | None:
     return None
 
 
-def prepare(argv: list[str], which: Which | None = None) -> Plan:
+def native_base(name: str) -> str | None:
+    """`cline` for `cline-native` or `native-cline`; None for a CLI name."""
+    if name.endswith("-native") and len(name) > len("-native"):
+        return name[: -len("-native")]
+    if name.startswith("native-") and len(name) > len("native-"):
+        return name[len("native-") :]
+    return None
+
+
+def resolve_attach(name: str) -> tuple[str, Attach]:
+    """The ATTACH key for a typed name and how Partyline reaches it."""
+    base = native_base(name) or name
+    key = SYNONYMS.get(base, base)
+    return key, ATTACH.get(key, WATCH_ONLY)
+
+
+def fork_agent_for(name: str) -> str:
+    key, attach = resolve_attach(name)
+    return attach.agent_name or f"{key}-native-ui"
+
+
+def _cache_path() -> Path:
+    return Path.home() / ".partyline" / "omni-harnesses.json"
+
+
+def _install_stamp(omni: str) -> str:
+    try:
+        st = Path(omni).resolve().stat()
+    except OSError:
+        return omni
+    return f"{Path(omni).resolve()}:{st.st_mtime_ns}:{st.st_size}"
+
+
+def _load_known(stamp: str) -> set[str]:
+    try:
+        raw = json.loads(_cache_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(raw, dict) or raw.get("stamp") != stamp:
+        return set()
+    names = raw.get("names")
+    return {n for n in names if isinstance(n, str)} if isinstance(names, list) else set()
+
+
+def _save_known(stamp: str, names: set[str]) -> None:
+    try:
+        path = _cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"stamp": stamp, "names": sorted(names)}), encoding="utf-8")
+    except OSError:
+        pass  # the cache only saves a probe next time
+
+
+def _run_probe(omni: str, name: str) -> tuple[int, str]:
+    try:
+        done = subprocess.run(
+            [omni, name, "--help"], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return -1, str(exc)
+    return done.returncode, (done.stderr or "") + (done.stdout if done.returncode else "")
+
+
+def confirm_with_omnigent(omni: str, name: str, probe: Probe | None = None) -> None:
+    """Exit with Omnigent's own error when it has no `omnigent <name>` command.
+
+    Not a list check: Omnigent answers. Names in ATTACH/SYNONYMS and harness
+    ids (`*-native`) skip the probe; Omnigent still rejects a bad one at launch.
+    """
+    if name in ATTACH or name in SYNONYMS or native_base(name):
+        return
+    stamp = _install_stamp(omni)
+    known = _load_known(stamp)
+    if name in known:
+        return
+    code, output = (probe or _run_probe)(omni, name)
+    if code == 0:
+        _save_known(stamp, known | {name})
+        return
+    if code == -1:
+        # Could not ask (timeout, exec failure). Pass through; Omnigent reports.
+        return
+    sys.stderr.write(output if output.endswith("\n") or not output else output + "\n")
+    sys.exit(code)
+
+
+def prepare(argv: list[str], which: Which | None = None, probe: Probe | None = None) -> Plan:
     """Resolve argv to an Omnigent command. Exits on a bad invocation."""
     which = shutil.which if which is None else which
     harness, fork_id, resume_id, extra = _parse(argv)
-    spec = SPECS[harness]
+    _, attach = resolve_attach(harness)
     omni = _which(which, "omnigent") or _which(which, "omni")
     if not omni:
         sys.exit("omni-pl: `omnigent` not found on PATH")
-    # `run --harness *-native --fork` is rejected by Omnigent. Fork through the
-    # API, then resume the new session.
-    api_fork = bool(fork_id and spec.agent_name)
+    confirm_with_omnigent(omni, harness, probe)
+    launcher = (omni, "run", "--harness", harness) if native_base(harness) else (omni, harness)
+    # `run --fork` is rejected for the native TUIs. Fork through the API,
+    # then resume the new session.
+    api_fork = bool(fork_id)
     if api_fork:
-        command = (omni, *spec.resume_prefix)
-    elif fork_id:
-        command = (omni, "run", "--fork", fork_id, "--harness", spec.fork_harness, *extra)
+        command = (*launcher, "--resume")
     elif resume_id:
-        command = (omni, *spec.resume_prefix, resume_id, *extra)
+        command = (*launcher, "--resume", resume_id, *extra)
     else:
-        command = (omni, *spec.fresh, *extra)
+        command = (*launcher, *extra)
     env: list[tuple[str, str]] = []
     warnings: list[str] = []
-    if spec.path_env and spec.pl_bin:
-        path = _which(which, spec.pl_bin)
+    if attach.path_env and attach.pl_bin:
+        path = _which(which, attach.pl_bin)
         if path:
-            env.append((spec.path_env, path))
-            if spec.runner_reads_path:
+            env.append((attach.path_env, path))
+            if attach.runner_reads_path:
                 # The runner allowlist drops this name. Forward it when this
                 # process is the one that spawns the daemon. A daemon that is
                 # already up keeps the environment it was started with.
                 current = os.environ.get("OMNIGENT_RUNNER_ENV_PASSTHROUGH", "")
                 names = [part.strip() for part in current.split(",") if part.strip()]
-                if spec.path_env not in names:
-                    names.append(spec.path_env)
+                if attach.path_env not in names:
+                    names.append(attach.path_env)
                 env.append(("OMNIGENT_RUNNER_ENV_PASSTHROUGH", ",".join(names)))
                 warnings.append(
-                    f"omni-pl: Omnigent's runner drops {spec.path_env} when a daemon is already "
+                    f"omni-pl: Omnigent's runner drops {attach.path_env} when a daemon is already "
                     "running, so this launch may start the stock CLI. Partyline hooks are "
                     "installed either way."
                 )
         else:
             warnings.append(
-                f"omni-pl: `{spec.pl_bin}` not on PATH; Omnigent will start the stock CLI "
+                f"omni-pl: `{attach.pl_bin}` not on PATH; Omnigent will start the stock CLI "
                 "and Partyline will not be attached to this session"
             )
     return Plan(
         harness,
         command,
         tuple(env),
-        spec.hooks,
-        spec.watch,
+        attach.hooks,
+        attach.watch,
         fork_id,
         resume_id,
         extra,
         api_fork,
-        spec.agent_name if api_fork else None,
+        fork_agent_for(harness) if api_fork else None,
         tuple(warnings),
     )
 
@@ -173,9 +280,8 @@ def _parse(argv: list[str]) -> tuple[str, str | None, str | None, tuple[str, ...
     if not argv or argv[0] in ("-h", "--help"):
         sys.exit(USAGE)
     harness = argv[0]
-    if harness not in SPECS:
-        known = ", ".join(sorted(SPECS))
-        sys.exit(f"omni-pl: unknown harness {harness!r}. Known: {known}")
+    if harness.startswith("-"):
+        sys.exit(f"omni-pl: the harness name comes first, got {harness!r}\n\n{USAGE}")
     fork_id = resume_id = None
     extra: list[str] = []
     i = 1
@@ -346,8 +452,18 @@ def _request_json(method: str, url: str, body: dict | None = None) -> tuple[int,
             raw = response.read()
             status = response.status
     except urllib.error.HTTPError as exc:
-        exc.close()
-        return exc.code, None
+        # Keep Omnigent's error body: it names the problem (e.g. a stale
+        # server's "invalid agent spec ... got 'cline-native'").
+        try:
+            raw = exc.read()
+        except OSError:
+            raw = b""
+        finally:
+            exc.close()
+        try:
+            return exc.code, json.loads(raw.decode()) if raw else None
+        except ValueError:
+            return exc.code, {"detail": raw.decode(errors="replace").strip()}
     except (OSError, urllib.error.URLError):
         return 0, None
     if not raw:
@@ -386,10 +502,35 @@ def snapshot_session_ids(base: str) -> set[str] | None:
     return ids
 
 
+def omnigent_detail(payload: object) -> str:
+    """Omnigent's own error text from a response body, verbatim where possible."""
+    if isinstance(payload, dict):
+        for key in ("detail", "error", "message"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+            if isinstance(value, dict):
+                inner = value.get("message") or value.get("detail")
+                if isinstance(inner, str) and inner:
+                    return inner
+            if value:
+                return json.dumps(value)
+    if payload is None:
+        return ""
+    return json.dumps(payload)
+
+
+def _omnigent_failure(what: str, base: str, status: int, payload: object) -> str:
+    if status == 0:
+        return f"omni-pl: {what}: Omnigent server not reachable at {base} (set OMNIGENT_URL)"
+    detail = omnigent_detail(payload)
+    return f"omni-pl: {what}: Omnigent returned HTTP {status}" + (f": {detail}" if detail else "")
+
+
 def find_agent_id(base: str, agent_name: str) -> str | None:
     status, payload = _request_json(method="GET", url=f"{base}/v1/agents?limit=100")
     if status != 200:
-        return None
+        sys.exit(_omnigent_failure("listing agents", base, status, payload))
     for agent in sessions_from_payload(payload):
         if agent.get("name") == agent_name and isinstance(agent.get("id"), str):
             return agent["id"]
@@ -400,7 +541,10 @@ def fork_session(base: str, source_id: str, agent_name: str) -> str:
     """Copy a conversation onto a built-in agent. Returns the new session id."""
     agent_id = find_agent_id(base, agent_name)
     if not agent_id:
-        sys.exit(f"omni-pl: Omnigent has no agent named {agent_name}")
+        sys.exit(
+            f"omni-pl: Omnigent has no agent named {agent_name}, so this harness cannot "
+            "take a fork. Check `omnigent agent` or fork with omnigent directly."
+        )
     status, payload = _request_json(
         method="POST",
         url=f"{base}/v1/sessions/{quote(source_id)}/fork",
@@ -408,7 +552,7 @@ def fork_session(base: str, source_id: str, agent_name: str) -> str:
     )
     new_id = payload.get("id") if isinstance(payload, dict) else None
     if status != 201 or not isinstance(new_id, str) or not new_id:
-        sys.exit(f"omni-pl: fork of {source_id} onto {agent_name} failed (HTTP {status})")
+        sys.exit(_omnigent_failure(f"fork of {source_id} onto {agent_name}", base, status, payload))
     return new_id
 
 
@@ -522,7 +666,7 @@ def launch(argv: list[str] | None = None) -> int:
     try:
         while True:
             try:
-                rc = subprocess.run(command, env=env).returncode
+                rc = subprocess.run(command, env=env, check=False).returncode
                 break
             except KeyboardInterrupt:
                 continue
