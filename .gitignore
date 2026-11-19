@@ -52,3 +52,4 @@ deploy-run.log
 .handoff/
 .claude/settings.local.json
 .commandcode/
+underwright.db*
