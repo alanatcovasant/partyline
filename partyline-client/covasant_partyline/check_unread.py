@@ -227,7 +227,10 @@ def main() -> None:
     if (os.getenv("PARTYLINE_HOOK_FORMAT") or "") in ("cursor_stop", "grok_stop", "kimi_stop", "cmdc_stop", "devin_stop"):
         lines.insert(
             1,
-            "Partyline wake: handle these, ack them, then stop — do not start unrelated work.",
+            os.getenv("PARTYLINE_WAKE_TAIL")
+            or "Partyline wake: handle these, ack them — then return to your assigned "
+               "work (check your task queue or inbox for the next item) and stop only "
+               "when it is genuinely empty. Do not start unrelated work.",
         )
     _emit("\n".join(lines), hook_event_name)
 
