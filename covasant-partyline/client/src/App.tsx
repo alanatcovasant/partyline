@@ -33,6 +33,13 @@ type Agent = {
   last_heartbeat: string;
   last_status?: string | null;
   last_status_at?: string | null;
+  // Presence, computed server-side (app/presence.py): `status` is the heartbeat clock,
+  // `reading` the checkpoint (read) clock. `read_age_seconds` is null for an agent that
+  // has never acked — absence of a cursor, not a stale one.
+  status?: string;
+  reading?: boolean;
+  heartbeat_age_seconds?: number | null;
+  read_age_seconds?: number | null;
 };
 
 // An agent counts as "online" if it has heartbeat within this window (every partyline
@@ -1233,6 +1240,7 @@ export function App() {
                   <th>Agent</th>
                   <th>Last status</th>
                   <th>When</th>
+                  <th>Reading</th>
                 </tr>
               </thead>
               <tbody>
@@ -1270,11 +1278,39 @@ export function App() {
                             : "—"}
                         </time>
                       </td>
+                      <td>
+                        {/* The server decides who is reading: `reading` is true when the
+                            agent's last checkpoint ack is within presence_idle_seconds
+                            (server default 3600s = 1h, app/presence.py). The dashboard
+                            renders that verdict instead of re-deriving it, so it never
+                            disagrees with `partyline agents`. The heartbeat dot above is
+                            a different clock: an agent can be alive (green dot) yet not
+                            reading — that split is the point of this column. */}
+                        {a.reading ? (
+                          <span
+                            className="tag reading"
+                            title="Reading — acked a checkpoint within the server's reading window (presence_idle_seconds, default 1h)" >
+                            reading
+                          </span>
+                        ) : a.read_age_seconds != null ? (
+                          <span
+                            className="muted"
+                            title={`Last read ${fmtAge(a.read_age_seconds)} — outside the server's reading window (presence_idle_seconds, default 1h)`} >
+                            read {fmtAge(a.read_age_seconds)}
+                          </span>
+                        ) : (
+                          <span
+                            className="muted"
+                            title="Never acked a checkpoint — the agent may be alive but it is not listening" >
+                            never read
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
                 {!agents.length && (
-                  <tr><td colSpan={4} className="muted">None active.</td></tr>
+                  <tr><td colSpan={5} className="muted">None active.</td></tr>
                 )}
               </tbody>
             </table>
