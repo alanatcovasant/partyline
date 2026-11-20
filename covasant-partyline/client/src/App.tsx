@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { splitRoster } from "./agentRoster";
 import { ProgressBoard, taskLink, type Task } from "./ProgressBoard";
 
 type Message = {
@@ -33,6 +34,9 @@ type Agent = {
   last_heartbeat: string;
   last_status?: string | null;
   last_status_at?: string | null;
+  /** live|idle|stale from the server (presence.classify). Absent on older servers —
+   *  treated as active so a row is never silently hidden. */
+  status?: string | null;
 };
 
 // An agent counts as "online" if it has heartbeat within this window (every partyline
@@ -982,6 +986,11 @@ export function App() {
   }, []);
   const [messages, setMessages] = useState<Message[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  // Full roster (include_stale=true) — the Active agents panel trims client-side so the
+  // trim is visible ("N registered — M stale hidden") instead of reading as "not
+  // registered". agents stays the active-only list for Compose/Overview/ProgressBoard.
+  const [roster, setRoster] = useState<Agent[]>([]);
+  const [showAllAgents, setShowAllAgents] = useState(false);
   const [claims, setClaims] = useState<Claim[]>([]);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [diag, setDiag] = useState<Diagnostics | null>(null);
@@ -1040,8 +1049,12 @@ export function App() {
     const refresh = () => {
       refreshProgress();
       pullNew(); // self-heal: tail messages even if the SSE push never reaches the browser
-      getJSON<Agent[]>("/api/agents").then(rows => setAgents(rows.sort((a, b) =>
-        a.agent_id.localeCompare(b.agent_id, "en", { numeric: true, sensitivity: "base" }) || a.agent_id.localeCompare(b.agent_id, "en")))).catch(() => {});
+      getJSON<Agent[]>("/api/agents?include_stale=true").then(rows => {
+        setRoster(rows);
+        const { active } = splitRoster(rows);
+        setAgents(active.sort((a, b) =>
+          a.agent_id.localeCompare(b.agent_id, "en", { numeric: true, sensitivity: "base" }) || a.agent_id.localeCompare(b.agent_id, "en")));
+      }).catch(() => {});
       getJSON<Claim[]>("/api/claims").then(setClaims).catch(() => {});
       getJSON<Metrics>("/api/metrics").then(setMetrics).catch(() => {});
       getJSON<Diagnostics>("/api/diagnostics/agents?sample_size=25")
@@ -1087,6 +1100,17 @@ export function App() {
     };
     return () => es.close();
   }, [pullNew]);
+
+  // Agent panel: the roster is complete (include_stale); the visible trim is client-side
+  // and labelled in the header, so "not shown" never reads as "not registered".
+  const staleAgents = useMemo(() => splitRoster(roster).stale, [roster]);
+  const shownAgents = useMemo(() => {
+    if (!showAllAgents) return agents;
+    const staleByRecency = [...staleAgents].sort(
+      (a, b) => new Date(b.last_heartbeat).getTime() - new Date(a.last_heartbeat).getTime()
+    );
+    return [...agents, ...staleByRecency];
+  }, [showAllAgents, agents, staleAgents]);
 
   return (
     <div className="wrap">
@@ -1225,7 +1249,26 @@ export function App() {
           </section>
 
           <section style={{ order: 1 }}>
-            <h2>Active agents ({agents.length})</h2>
+            <h2>
+              {showAllAgents ? `Registered agents (${roster.length})` : `Active agents (${agents.length})`}
+              {!!staleAgents.length && (
+                <span className="muted">
+                  {showAllAgents
+                    ? ` · ${agents.length} active, ${staleAgents.length} stale`
+                    : ` · ${roster.length} registered — ${staleAgents.length} stale hidden`}
+                </span>
+              )}
+              {!!staleAgents.length && (
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() => setShowAllAgents(!showAllAgents)}
+                  title={showAllAgents ? "Show only agents active within the server window" : "Show every registered agent, stale ones dimmed"}
+                >
+                  {showAllAgents ? "active only" : "show all"}
+                </button>
+              )}
+            </h2>
             <table className="agent-grid">
               <thead>
                 <tr>
@@ -1236,11 +1279,11 @@ export function App() {
                 </tr>
               </thead>
               <tbody>
-                {agents.map((a) => {
+                {shownAgents.map((a) => {
                   const ageSec = Math.floor((nowMs - new Date(a.last_heartbeat).getTime()) / 1000);
                   const online = ageSec < ONLINE_WITHIN_SECS;
                   return (
-                    <tr key={a.agent_id}>
+                    <tr key={a.agent_id} className={a.status === "stale" ? "stale" : undefined}>
                       <td>
                         <span
                           className={online ? "dot on" : "dot off"}
@@ -1273,8 +1316,8 @@ export function App() {
                     </tr>
                   );
                 })}
-                {!agents.length && (
-                  <tr><td colSpan={4} className="muted">None active.</td></tr>
+                {!shownAgents.length && (
+                  <tr><td colSpan={4} className="muted">{showAllAgents ? "None registered." : "None active."}</td></tr>
                 )}
               </tbody>
             </table>

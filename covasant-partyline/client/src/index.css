@@ -191,6 +191,12 @@ ul { list-style: none; margin: 0; padding: 0; }
   vertical-align: bottom;
 }
 .agent-grid time { color: var(--muted); font-size: 0.9em; white-space: nowrap; }
+/* Stale rows behind "show all" — present but visibly not-current. */
+.agent-grid tbody tr.stale td { opacity: 0.45; }
+h2 button.link {
+  background: none; border: none; color: var(--accent); cursor: pointer;
+  font: inherit; font-size: 0.7em; padding: 0; margin-left: 0.6rem; text-decoration: underline;
+}
 
 /* View tabs (Dashboard | Connect an agent) + right-aligned header cluster */
 .view-tabs { display: inline-flex; gap: 0.25rem; }
