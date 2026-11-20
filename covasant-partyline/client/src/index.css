@@ -146,7 +146,7 @@ ul { list-style: none; margin: 0; padding: 0; }
 .search-row button:disabled { opacity: 0.5; cursor: default; }
 .search-results, .search-thread ul { list-style: none; margin: 0.5rem 0 0; padding: 0; }
 .search-results li, .search-thread li { padding: 0.25rem 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem; }
-.search button.link {
+.search button.link, .stream button.link {
   background: none; border: none; color: var(--accent); cursor: pointer;
   font: inherit; padding: 0; text-decoration: underline;
 }
