@@ -1,4 +1,4 @@
-"""`grok-pl`, `agy-pl`, `kimi-pl`, `cmdc-pl`, `cursor-agent-pl`, `devin-pl`: Partyline launchers.
+"""`grok-pl`, `agy-pl`, `kimi-pl`, `cmdc-pl`, `cursor-agent-pl`, `devin-pl`, `cline-pl`: Partyline launchers.
 
 None of these CLIs has an inbound push into a live session (Codex's `queue --thread`, Claude Code's
 `claude/channel`), so awareness comes from hooks, and a hook only runs when the agent does:
@@ -17,6 +17,13 @@ None of these CLIs has an inbound push into a live session (Codex's `queue --thr
   clone identity from the workspace payload because global hooks run from `~/.cursor`.
 - **Devin**: `SessionStart` and `Stop` hooks merged into the user-level config. The adapter
   resolves clone identity from `DEVIN_PROJECT_DIR` because the hooks live in a global config.
+- **Cline**: file-based hooks discovered by filename in the clone's gitignored
+  `.clinerules/hooks/` — `TaskStart` (the SessionStart analog: traffic digest + roster +
+  territory warning) and `UserPromptSubmit` (the per-turn unread peek). `cline-pl` installs
+  the pair into the clone it launches from; both shims emit Cline's
+  `{"cancel": false, "contextModification": ...}` envelope via `PARTYLINE_HOOK_FORMAT=cline`.
+  Hooks fire around a turn, not while idle — the idle wake is the VS Code extension's SSE
+  toast, so watch the line in another terminal when waiting on mail.
 
 None of them wakes an idle session. For that, watch the line in another terminal.
 
@@ -34,6 +41,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import cli
 from .autoregister import register_self
 
 HOME = Path.home()
@@ -256,6 +264,93 @@ def install_devin_hooks(path: Path = DEVIN_CONFIG) -> bool:
     return _write_json(path, data)
 
 
+def _cline_shims(agent_id: str, nt: bool | None = None) -> dict[str, str]:
+    """Contents for the clone's `.clinerules/hooks/` pair, keyed by host-OS filename.
+
+    Cline runs hooks through PowerShell on Windows and by extensionless executable on
+    Unix, so the filename and command spelling both follow the host OS. Both shims set
+    the cline envelope format and the stamped agent id, then delegate to the shared
+    modules that already emit `{"cancel": false, "contextModification": ...}`.
+    `nt` overrides the host OS so tests can generate the other variant's files.
+    """
+    py = _portable_py()
+
+    def ps1(module: str) -> str:
+        return (
+            "# Partyline Cline hook - written by cline-pl; .clinerules/hooks/ is gitignored.\n"
+            "$env:PARTYLINE_HOOK_FORMAT = 'cline'\n"
+            f"$env:PARTYLINE_AGENT_ID = '{agent_id}'\n"
+            "if (-not $env:PARTYLINE_AGENT_ID) { exit 0 }\n"
+            f"& {py} -m {module}\n"
+            "exit 0\n"
+        )
+
+    def sh(module: str) -> str:
+        return (
+            "#!/bin/sh\n"
+            "# Partyline Cline hook - written by cline-pl; .clinerules/hooks/ is gitignored.\n"
+            "export PARTYLINE_HOOK_FORMAT=cline\n"
+            f"export PARTYLINE_AGENT_ID='{agent_id}'\n"
+            "[ -n \"$PARTYLINE_AGENT_ID\" ] || exit 0\n"
+            f"{py} -m {module}\n"
+            "exit 0\n"
+        )
+
+    if (nt if nt is not None else os.name == "nt"):
+        return {
+            "TaskStart.ps1": ps1("covasant_partyline.hook"),
+            "UserPromptSubmit.ps1": ps1("covasant_partyline.check_unread"),
+        }
+    return {
+        "TaskStart": sh("covasant_partyline.hook"),
+        "UserPromptSubmit": sh("covasant_partyline.check_unread"),
+    }
+
+
+def _config_from(root: Path) -> dict:
+    """`.partyline/config.json` found walking up from `root` — `cli._load_config`
+    starts at the process cwd, but the shims belong to the clone being installed into."""
+    d = root.resolve()
+    while True:
+        cfg = d / ".partyline" / "config.json"
+        if cfg.is_file():
+            try:
+                return json.loads(cfg.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return {}
+        if d.parent == d:
+            return {}
+        d = d.parent
+
+
+def install_cline_hooks(cwd: Path | str | None = None, nt: bool | None = None) -> bool:
+    """Write the Cline hook shims into `<cwd>/.clinerules/hooks/`.
+
+    Cline discovers hooks by filename, not a JSON config, so the pair lives in the clone
+    (gitignored) rather than a global file. `PARTYLINE_AGENT_ID` is stamped from
+    `cli.resolve_agent_id()` (`.partyline/config.json`); when no identity resolves the
+    shims still install but refuse gracefully at runtime — exit 0, no output. Idempotent:
+    an unchanged config is a no-op, a changed identity re-stamps the files.
+    """
+    root = Path.cwd() if cwd is None else Path(cwd)
+    agent_id = cli.resolve_agent_id(cfg=_config_from(root)) or ""
+    hooks = root / ".clinerules" / "hooks"
+    changed = False
+    for name, text in _cline_shims(agent_id, nt).items():
+        path = hooks / name
+        try:
+            if path.read_text(encoding="utf-8") == text:
+                continue
+        except OSError:
+            pass
+        hooks.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+        if os.name != "nt":
+            path.chmod(0o755)
+        changed = True
+    return changed
+
+
 # harness -> (executable names to look for, hook installer)
 HARNESSES = {
     "grok": (("grok",), install_grok_hooks),
@@ -264,6 +359,7 @@ HARNESSES = {
     "cmdc": (("cmdc", "command-code"), install_cmdc_hooks),
     "cursor": (("cursor-agent", "agent"), install_cursor_hooks),
     "devin": (("devin",), install_devin_hooks),
+    "cline": (("cline",), install_cline_hooks),
 }
 
 
@@ -305,6 +401,10 @@ def launch_cursor(argv: list[str] | None = None) -> None:
 
 def launch_devin(argv: list[str] | None = None) -> None:
     launch("devin", argv)
+
+
+def launch_cline(argv: list[str] | None = None) -> None:
+    launch("cline", argv)
 
 
 if __name__ == "__main__":

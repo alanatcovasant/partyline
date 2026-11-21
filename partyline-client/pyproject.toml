@@ -22,6 +22,7 @@ kimi-pl = "covasant_partyline.harness_runner:launch_kimi"
 cmdc-pl = "covasant_partyline.harness_runner:launch_cmdc"
 cursor-agent-pl = "covasant_partyline.harness_runner:launch_cursor"
 devin-pl = "covasant_partyline.harness_runner:launch_devin"
+cline-pl = "covasant_partyline.harness_runner:launch_cline"
 omni-pl = "covasant_partyline.omni_runner:launch"
 partyline-teams = "covasant_partyline.teams_mirror:main"
 

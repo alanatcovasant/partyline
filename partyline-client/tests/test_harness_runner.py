@@ -288,3 +288,66 @@ def test_kimi_stop_denies_once_with_the_mail_as_the_reason(monkeypatch, tmp_path
     hook = out["hookSpecificOutput"]
     assert hook["permissionDecision"] == "deny" and "addressed to you" in hook["permissionDecisionReason"]
     assert _run_peek(monkeypatch, tmp_path, {}, MAIL, fmt="kimi_stop") == ""  # deduped, no re-block loop
+
+
+def _install_cline(tmp_path, monkeypatch, agent_id="alan_partyline_cline_1", nt=False):
+    # nt is threaded through rather than patching os.name: flipping the real os.name
+    # mid-test re-dispatches pathlib to WindowsPath and breaks tmp_path.
+    monkeypatch.setattr(hr.cli, "resolve_agent_id", lambda *a, **k: agent_id)
+    return hr.install_cline_hooks(tmp_path, nt=nt)
+
+
+def test_cline_install_writes_unix_shims_and_is_idempotent(tmp_path, monkeypatch):
+    assert _install_cline(tmp_path, monkeypatch) is True
+    hooks = tmp_path / ".clinerules" / "hooks"
+    start, peek = hooks / "TaskStart", hooks / "UserPromptSubmit"
+    for shim, module in ((start, "covasant_partyline.hook"), (peek, "covasant_partyline.check_unread")):
+        text = shim.read_text(encoding="utf-8")
+        assert shim.suffix == ""  # Unix: extensionless, discovered by filename
+        assert os.access(shim, os.X_OK)
+        assert "PARTYLINE_HOOK_FORMAT=cline" in text
+        assert "PARTYLINE_AGENT_ID='alan_partyline_cline_1'" in text
+        assert f"-m {module}" in text
+    assert _install_cline(tmp_path, monkeypatch) is False  # unchanged config: no-op
+    # a changed identity re-stamps the shims
+    assert _install_cline(tmp_path, monkeypatch, agent_id="alan_partyline_cline_2") is True
+    assert "alan_partyline_cline_2" in (tmp_path / ".clinerules" / "hooks" / "TaskStart").read_text()
+
+
+def test_cline_install_writes_powershell_shims_on_windows(tmp_path, monkeypatch):
+    assert _install_cline(tmp_path, monkeypatch, nt=True) is True
+    hooks = tmp_path / ".clinerules" / "hooks"
+    for name in ("TaskStart.ps1", "UserPromptSubmit.ps1"):
+        text = (hooks / name).read_text(encoding="utf-8")
+        assert "$env:PARTYLINE_HOOK_FORMAT = 'cline'" in text
+        assert "$env:PARTYLINE_AGENT_ID = 'alan_partyline_cline_1'" in text
+        assert "exit 0" in text
+    assert not (hooks / "TaskStart").exists()  # only the .ps1 pair on Windows
+    assert _install_cline(tmp_path, monkeypatch, nt=True) is False
+
+
+def test_cline_shims_refuse_gracefully_without_an_identity(tmp_path, monkeypatch):
+    assert _install_cline(tmp_path, monkeypatch, agent_id=None) is True
+    hooks = tmp_path / ".clinerules" / "hooks"
+    assert '[ -n "$PARTYLINE_AGENT_ID" ] || exit 0' in (hooks / "TaskStart").read_text()
+    # both unix shims carry the guard and still end silent-success
+    for shim in ("TaskStart", "UserPromptSubmit"):
+        text = (hooks / shim).read_text()
+        assert "exit 0" in text.splitlines()[-1]
+
+
+def test_cline_is_registered_as_a_harness():
+    assert hr.HARNESSES["cline"][0] == ("cline",)
+    assert hr.HARNESSES["cline"][1] is hr.install_cline_hooks
+
+
+def test_cline_install_stamps_identity_from_the_clone_config(tmp_path, monkeypatch):
+    # the installer must read .partyline/config.json next to the shims, not the
+    # process cwd's config — a caller may install into another clone.
+    monkeypatch.delenv("PARTYLINE_AGENT_ID", raising=False)
+    cfg_dir = tmp_path / ".partyline"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text('{"agentId": "alan_partyline_cline_9"}', encoding="utf-8")
+    assert hr.install_cline_hooks(tmp_path) is True
+    text = (tmp_path / ".clinerules" / "hooks" / "TaskStart").read_text(encoding="utf-8")
+    assert "PARTYLINE_AGENT_ID='alan_partyline_cline_9'" in text

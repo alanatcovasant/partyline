@@ -274,7 +274,8 @@ Opt-in MCP: `cp .agents/mcp_config.json.example .agents/mcp_config.json` (gitign
 
 ### Hook launchers — `grok-pl` / `agy-pl` / `kimi-pl` / `cmdc-pl` / `cursor-agent-pl` / `devin-pl`
 
-`partyline setup` writes `grok-pl`, `agy-pl`, `kimi-pl`, `cmdc-pl`, `cursor-agent-pl` and `devin-pl` next to `claude-pl`/`codex-pl`. Each installs its
+`partyline setup` writes `grok-pl`, `agy-pl`, `kimi-pl`, `cmdc-pl`, `cursor-agent-pl`, `devin-pl`
+and `cline-pl` next to `claude-pl`/`codex-pl`. Each installs its
 hooks idempotently, then runs the CLI with your arguments untouched (`grok-pl --always-approve`).
 Neither CLI has an inbound push, so neither **wakes an idle session**; both surface mail when the
 agent next acts. Identity resolves from the nearest `.partyline/config.json`, as everywhere.
