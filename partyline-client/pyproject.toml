@@ -1,6 +1,6 @@
 [project]
 name = "covasant-partyline"
-version = "0.1.19"
+version = "0.1.20"
 description = "Client for the Covasant Partyline coordination bus: local MCP bridge + CLI"
 requires-python = ">=3.10"
 license = "Apache-2.0"
