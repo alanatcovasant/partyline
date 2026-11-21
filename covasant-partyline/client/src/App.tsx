@@ -102,6 +102,25 @@ function fmtAge(seconds: number): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
+// Tiny inline trend line over the client-side metrics history (one point per poll tick).
+// Min→max normalized and axis-free: it answers "rising / falling / flat", not "how much".
+// A flat series renders as a mid-height line rather than an empty box.
+function Sparkline({ data, width = 72, height = 18 }: { data: number[]; width?: number; height?: number }) {
+  if (data.length < 2) return null;
+  const min = Math.min(...data);
+  const span = Math.max(...data) - min;
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * width;
+    const y = span === 0 ? height / 2 : height - 1 - ((v - min) / span) * (height - 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  return (
+    <svg className="sparkline" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+      <polyline points={pts.join(" ")} fill="none" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 // Compact conversation-id chip: shows the first 8 chars, full id on hover, and copies the
 // full id to the clipboard on click (agents paste it into get_conversation to read a thread).
 function ConversationId({ id }: { id: string }) {
@@ -1143,6 +1162,11 @@ export function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [claims, setClaims] = useState<Claim[]>([]);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [metricsAt, setMetricsAt] = useState<number | null>(null);
+  // Client-side ring buffer of one sample per successful /api/metrics fetch. At the
+  // default 30s poll, 240 samples ≈ 2h of trend for the KPI sparklines — enough to see
+  // bursts and quiet stretches without any new backend endpoint.
+  const [metricsHistory, setMetricsHistory] = useState<Array<{ t: number; msgs5m: number; agents5m: number }>>([]);
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [connected, setConnected] = useState(false);
@@ -1202,7 +1226,7 @@ export function App() {
       getJSON<Agent[]>("/api/agents").then(rows => setAgents(rows.sort((a, b) =>
         a.agent_id.localeCompare(b.agent_id, "en", { numeric: true, sensitivity: "base" }) || a.agent_id.localeCompare(b.agent_id, "en")))).catch(() => {});
       getJSON<Claim[]>("/api/claims").then(setClaims).catch(() => {});
-      getJSON<Metrics>("/api/metrics").then(setMetrics).catch(() => {});
+      getJSON<Metrics>("/api/metrics").then((m) => { setMetrics(m); setMetricsAt(Date.now()); }).catch(() => {});
       getJSON<Diagnostics>("/api/diagnostics/agents?sample_size=25")
         .then(setDiag).catch(() => {});
       getJSON<Health>("/api/health").then(setHealth).catch(() => {});
@@ -1268,6 +1292,19 @@ export function App() {
     };
     return () => es.close();
   }, [pullNew]);
+
+  // Append each successful metrics fetch to the trend buffer. The 4s guard dedupes the
+  // double refresh that fires when a hidden tab becomes visible again (arm() runs once,
+  // then the interval fires on schedule).
+  useEffect(() => {
+    if (!metrics) return;
+    setMetricsHistory((h) => {
+      const last = h[h.length - 1];
+      const now = Date.now();
+      if (last && now - last.t < 4000) return h;
+      return [...h.slice(-239), { t: now, msgs5m: metrics.messages_last_5m, agents5m: metrics.active_agents_5m }];
+    });
+  }, [metrics]);
 
   const activeAgentsCount = useMemo(() => {
     return agents.filter((a) => {
@@ -1340,9 +1377,15 @@ export function App() {
             title="Switch to live message stream"
           >
             <div className="kpi-label">💬 Messages</div>
-            <div className="kpi-value">{metrics ? metrics.total_messages : messages.length}</div>
+            <div className="kpi-value">
+              {metrics ? metrics.messages_last_5m : messages.length}
+              <span className="kpi-denom"> /5m</span>
+              <Sparkline data={metricsHistory.map((s) => s.msgs5m)} />
+            </div>
             <div className="kpi-sub">
-              {metrics?.messages_last_5m !== undefined ? `${metrics.messages_last_5m} in last 5m` : "live stream"}
+              {metrics?.last_message_at
+                ? `last ${fmtAge(Math.floor((nowMs - new Date(metrics.last_message_at).getTime()) / 1000))} · ${metrics.total_messages.toLocaleString()} total`
+                : "live stream"}
             </div>
           </button>
 
@@ -1356,6 +1399,7 @@ export function App() {
             <div className="kpi-value">
               <span className={activeAgentsCount > 0 ? "text-success" : ""}>{activeAgentsCount}</span>
               <span className="kpi-denom"> / {agents.length}</span>
+              <Sparkline data={metricsHistory.map((s) => s.agents5m)} />
             </div>
             <div className="kpi-sub">
               {diag && diag.stale_agents > 0 ? `${diag.stale_agents} stale` : "online now"}
@@ -1589,16 +1633,29 @@ export function App() {
           <div className="diag-grid">
             <section className="metrics-panel">
               <h2>📊 Live Metrics</h2>
+              <div className="kpi-fresh muted">
+                {metricsAt
+                  ? `updated ${fmtAge(Math.floor((nowMs - metricsAt) / 1000))}${pollMs <= 0 ? " — poll off, refresh manually" : ""}`
+                  : "no sample yet"}
+              </div>
+              {metricsHistory.length > 1 && (
+                <div className="metrics-trend" title="Message rate (5m window) and active agents, one point per poll">
+                  <Sparkline data={metricsHistory.map((s) => s.msgs5m)} width={200} height={32} />
+                  <span className="muted">msgs/5m trend ({metricsHistory.length} samples)</span>
+                </div>
+              )}
               {metrics ? (
                 <dl className="metrics">
-                  <dt>Messages/min</dt>
+                  <dt>Msgs/min (5m avg)</dt>
+                  <dd>{(metrics.messages_last_5m / 5).toFixed(1)}</dd>
+                  <dt>Messages (1m)</dt>
                   <dd>{metrics.messages_last_1m}</dd>
                   <dt>Messages (5m)</dt>
                   <dd>{metrics.messages_last_5m}</dd>
                   <dt>Messages (1h)</dt>
-                  <dd>{metrics.messages_last_1h}</dd>
+                  <dd>{metrics.messages_last_1h.toLocaleString()}</dd>
                   <dt>Total messages</dt>
-                  <dd>{metrics.total_messages}</dd>
+                  <dd>{metrics.total_messages.toLocaleString()}</dd>
                   <dt>Active agents (5m)</dt>
                   <dd>{metrics.active_agents_5m}</dd>
                   <dt>Active agents (1h)</dt>
@@ -1610,7 +1667,11 @@ export function App() {
                   <dt>Unique posters (1h)</dt>
                   <dd>{metrics.unique_posters_1h}</dd>
                   <dt>Last message</dt>
-                  <dd>{metrics.last_message_at ? new Date(metrics.last_message_at).toLocaleTimeString() : "—"}</dd>
+                  <dd>
+                    {metrics.last_message_at
+                      ? fmtAge(Math.floor((nowMs - new Date(metrics.last_message_at).getTime()) / 1000))
+                      : "—"}
+                  </dd>
                 </dl>
               ) : (
                 <p className="muted">Loading…</p>

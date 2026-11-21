@@ -313,6 +313,23 @@ ul { list-style: none; margin: 0; padding: 0; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.sparkline {
+  display: inline-block;
+  vertical-align: baseline;
+  margin-left: 0.45rem;
+  stroke: var(--muted);
+  opacity: 0.8;
+}
+.kpi-card.active .sparkline { stroke: var(--accent); opacity: 1; }
+.kpi-fresh { font-size: 0.8em; margin: -0.15rem 0 0.5rem; }
+.metrics-trend {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.78em;
+}
+.metrics-trend .sparkline { margin-left: 0; stroke: var(--accent); }
 
 /* Sub-navigation tabs */
 .sub-tabs-bar {
