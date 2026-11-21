@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ProgressBoard, taskLink, type Task } from "./ProgressBoard";
+import { ValidationQueue, type VqCounts } from "./ValidationQueue";
+import { DocsView } from "./DocsView";
+
+type DashboardTab = "stream" | "tasks" | "vq" | "fleet" | "diag";
 
 type Message = {
   id: number;
@@ -699,8 +703,8 @@ function Snippet({ code, lang }: { code: string; lang?: string }) {
 // Conceptual onboarding view: what Partyline is, the mental model, and how to think about
 // coordinating on it — the explainer a developer reads before the copy-paste mechanics on
 // the Connect page. Deliberately does NOT duplicate install commands; section 5 hands off
-// to <ConnectAgent/>. `onConnect` switches the in-app view (there is no router).
-function Overview({ onConnect }: { onConnect: () => void }) {
+// to <ConnectAgent/>. `onNavigate` switches the in-app view (there is no router).
+function Overview({ onNavigate }: { onNavigate: (view: ViewTab) => void }) {
   const url = window.location.origin;
   // Each concept: the term, and a one-line "what it means on the line" gloss. Kept as data
   // so the definition list stays a simple map — add a concept here and it renders.
@@ -773,7 +777,7 @@ function Overview({ onConnect }: { onConnect: () => void }) {
           <code>databricks auth token</code>, you have everything.
         </p>
         <p>
-          <button type="button" className="link" onClick={onConnect}>
+          <button type="button" className="link" onClick={() => onNavigate("connect")}>
             Get the copy-paste command on “Connect an agent” →
           </button>
         </p>
@@ -795,11 +799,128 @@ function Overview({ onConnect }: { onConnect: () => void }) {
         </p>
       </section>
 
+      {/* Embedded State and Tag Information Table */}
+      <section className="connect-step">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: "0.5rem" }}>
+          <h3 style={{ margin: 0 }}>Item Lifecycle, States &amp; Tags</h3>
+          <button type="button" className="link" onClick={() => onNavigate("docs")}>
+            Open full Lifecycle &amp; Aura Walkthrough in Docs →
+          </button>
+        </div>
+        <p>
+          Every work item moves from creation through triage, development, pull request, deployment, and post-deploy verification. State is <b>derived from recorded facts</b> (exit codes, leases, commits), never hand-edited.
+        </p>
+
+        <div style={{ overflowX: "auto", margin: "0.8rem 0" }}>
+          <table className="wf-state-table" style={{ fontSize: "0.85rem", width: "100%", background: "var(--card)", borderRadius: "6px", border: "1px solid var(--line)" }}>
+            <thead>
+              <tr style={{ background: "rgba(127,127,127,0.08)", textAlign: "left" }}>
+                <th style={{ padding: "0.5rem" }}>Lifecycle Stage</th>
+                <th style={{ padding: "0.5rem" }}>Folder Task Status</th>
+                <th style={{ padding: "0.5rem" }}>Territory Claim</th>
+                <th style={{ padding: "0.5rem" }}>Validation Queue State</th>
+                <th style={{ padding: "0.5rem" }}>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style={{ padding: "0.45rem 0.5rem" }}><b>1. Backlog / Ingested</b></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><code>queued</code></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">none</td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">not enqueued</td>
+                <td style={{ padding: "0.45rem 0.5rem" }}>Issue logged on GitHub; visible in work queue</td>
+              </tr>
+              <tr>
+                <td style={{ padding: "0.45rem 0.5rem" }}><b>2. Triaged &amp; Assigned</b></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><code>queued</code></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">none</td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">not enqueued</td>
+                <td style={{ padding: "0.45rem 0.5rem" }}>Assigned workstream and target (e.g. <code>dev-eastus2</code>)</td>
+              </tr>
+              <tr>
+                <td style={{ padding: "0.45rem 0.5rem" }}><b>3. Claimed &amp; Active</b></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><span className="tag t-claim">active</span></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><code>leased (1h TTL)</code></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">not enqueued</td>
+                <td style={{ padding: "0.45rem 0.5rem" }}>Agent locks physical path + logical <code>src:</code> namespace</td>
+              </tr>
+              <tr>
+                <td style={{ padding: "0.45rem 0.5rem" }}><b>4. Blocked (Dependency)</b></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><span className="tag t-blocked">blocked</span></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><code>leased (1h TTL)</code></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">not enqueued</td>
+                <td style={{ padding: "0.45rem 0.5rem" }}>Awaiting contract/schema from peer agent (e.g. <code>alan_aura_2</code>)</td>
+              </tr>
+              <tr>
+                <td style={{ padding: "0.45rem 0.5rem" }}><b>5. Fixed &amp; PR Opened</b></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><span className="tag t-done">done</span></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><code>released</code></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">pending enqueue</td>
+                <td style={{ padding: "0.45rem 0.5rem" }}>Local tests pass; PR #98 open; territory unlocked</td>
+              </tr>
+              <tr>
+                <td style={{ padding: "0.45rem 0.5rem" }}><b>6. Pending Deployment</b></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><span className="tag t-done">done</span></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">none</td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><span className="tag opt">pending</span></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}>Enqueued into VQ; waiting for bundle deploy to target</td>
+              </tr>
+              <tr>
+                <td style={{ padding: "0.45rem 0.5rem" }}><b>7. Deployed to Target</b></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><span className="tag t-done">done</span></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">none</td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><span className="tag opt">pending (ready)</span></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}>Target updated with commit; ready for runner execution</td>
+              </tr>
+              <tr>
+                <td style={{ padding: "0.45rem 0.5rem" }}><b>8. Claimed for Validation</b></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">closed/done</td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">none</td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><span className="tag t-claim">claimed</span></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}>Validator holds 1-hour atomic lease to run test</td>
+              </tr>
+              <tr>
+                <td style={{ padding: "0.45rem 0.5rem" }}><b>9a. Passed Validation</b></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">closed</td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">none</td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><span className="tag t-done">✓ validated</span></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="text-success"><b>Pass:</b> Runner executed test on target; exit code 0</td>
+              </tr>
+              <tr>
+                <td style={{ padding: "0.45rem 0.5rem" }}><b>9b. Self-Reported Pass</b></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">closed</td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">none</td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><span className="tag t-warn">⚠ self_reported</span></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="text-warn"><b>Warning:</b> Typed pass without runner capture; unverified</td>
+              </tr>
+              <tr>
+                <td style={{ padding: "0.45rem 0.5rem" }}><b>9c. Failed Validation</b></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><code>reopened</code></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">none</td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><span className="tag t-blocked">✕ failed</span></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="text-danger"><b>Alert:</b> Test failed on live target (exit code 1)</td>
+              </tr>
+              <tr>
+                <td style={{ padding: "0.45rem 0.5rem" }}><b>9d. Inconclusive</b></td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><code>blocked</code></td>
+                <td style={{ padding: "0.45rem 0.5rem" }} className="muted">none</td>
+                <td style={{ padding: "0.45rem 0.5rem" }}><span className="tag t-claim">? inconclusive</span></td>
+                <td style={{ padding: "0.45rem 0.5rem", color: "#d97706" }}><b>Alert:</b> Timeout or environment unreachable (exit code 2)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section className="connect-step">
         <h3>Where to next</h3>
         <ul className="connect-links">
           <li>
-            <button type="button" className="link" onClick={onConnect}>🔌 Connect an agent</button>{" "}
+            <button type="button" className="link" onClick={() => onNavigate("docs")}>📚 Documentation &amp; Architecture Reference</button>{" "}
+            <span className="muted">— complete item state machine, territory claims, and alan_aura_7 walkthrough</span>
+          </li>
+          <li>
+            <button type="button" className="link" onClick={() => onNavigate("connect")}>🔌 Connect an agent</button>{" "}
             <span className="muted">— copy-paste setup for the CLI, MCP, and awareness hooks</span>
           </li>
           <li>
@@ -951,7 +1072,14 @@ function ConnectAgent() {
 // browser, so the tour happens once and the Overview tab stays available afterwards.
 const VISITED_KEY = "partyline.visited";
 
-function initialView(): "overview" | "dashboard" {
+type ViewTab = "overview" | "docs" | "dashboard" | "connect";
+
+function initialView(): ViewTab {
+  const p = new URLSearchParams(window.location.search);
+  const v = p.get("view");
+  if (v && ["overview", "docs", "workflow", "dashboard", "connect"].includes(v)) {
+    return (v === "workflow" ? "docs" : v) as ViewTab;
+  }
   try {
     return localStorage.getItem(VISITED_KEY) ? "dashboard" : "overview";
   } catch {
@@ -960,7 +1088,38 @@ function initialView(): "overview" | "dashboard" {
 }
 
 export function App() {
-  const [view, setView] = useState<"overview" | "dashboard" | "connect">(() => new URLSearchParams(window.location.search).has("task") ? "dashboard" : initialView());
+  const [view, setView] = useState<ViewTab>(() => new URLSearchParams(window.location.search).has("task") ? "dashboard" : initialView());
+  const [subTab, setSubTab] = useState<DashboardTab>(() => {
+    const p = new URLSearchParams(window.location.search);
+    const t = p.get("tab") as DashboardTab;
+    if (t && ["stream", "tasks", "vq", "fleet", "diag"].includes(t)) return t;
+    if (p.has("task") || p.has("folder")) return "tasks";
+    try {
+      const saved = localStorage.getItem("partyline.dashboardTab") as DashboardTab;
+      if (saved && ["stream", "tasks", "vq", "fleet", "diag"].includes(saved)) return saved;
+    } catch {}
+    return "stream";
+  });
+  const [vqCounts, setVqCounts] = useState<VqCounts>({
+    total: 0,
+    validated: 0,
+    pending: 0,
+    inconclusive: 0,
+    failed: 0,
+    self_reported: 0,
+    claimed: 0,
+  });
+
+  const handleSelectSubTab = (tab: DashboardTab) => {
+    setSubTab(tab);
+    try {
+      localStorage.setItem("partyline.dashboardTab", tab);
+    } catch {}
+    const p = new URLSearchParams(window.location.search);
+    p.set("tab", tab);
+    window.history.replaceState(null, "", `?${p.toString()}`);
+  };
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [progressError, setProgressError] = useState("");
   const [progressLoading, setProgressLoading] = useState(true);
@@ -1047,6 +1206,28 @@ export function App() {
       getJSON<Diagnostics>("/api/diagnostics/agents?sample_size=25")
         .then(setDiag).catch(() => {});
       getJSON<Health>("/api/health").then(setHealth).catch(() => {});
+      getJSON<Array<{ state: string }>>("/api/vq/items?limit=1000")
+        .then((rows) => {
+          const counts: VqCounts = {
+            total: rows.length,
+            validated: 0,
+            pending: 0,
+            inconclusive: 0,
+            failed: 0,
+            self_reported: 0,
+            claimed: 0,
+          };
+          for (const r of rows) {
+            if (r.state === "validated") counts.validated++;
+            else if (r.state === "failed") counts.failed++;
+            else if (r.state === "inconclusive") counts.inconclusive++;
+            else if (r.state === "pending") counts.pending++;
+            else if (r.state === "self_reported") counts.self_reported++;
+            else if (r.state === "claimed") counts.claimed++;
+          }
+          setVqCounts(counts);
+        })
+        .catch(() => {});
     };
     refresh(); // one immediate refresh on mount / when the interval changes
     if (pollMs <= 0) return; // polling off — rely on SSE push only
@@ -1088,12 +1269,28 @@ export function App() {
     return () => es.close();
   }, [pullNew]);
 
+  const activeAgentsCount = useMemo(() => {
+    return agents.filter((a) => {
+      const ageSec = Math.floor((nowMs - new Date(a.last_heartbeat).getTime()) / 1000);
+      return ageSec < ONLINE_WITHIN_SECS;
+    }).length;
+  }, [agents, nowMs]);
+
+  const activeTasksCount = useMemo(() => {
+    return tasks.filter((t) => ["active", "in_progress"].includes(t.status.toLowerCase())).length;
+  }, [tasks]);
+
+  const blockedTasksCount = useMemo(() => {
+    return tasks.filter((t) => t.status.toLowerCase() === "blocked").length;
+  }, [tasks]);
+
   return (
     <div className="wrap">
       <header>
         <h1>Covasant Partyline</h1>
         <nav className="view-tabs">
           <button type="button" className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}>Overview</button>
+          <button type="button" className={view === "docs" ? "active" : ""} onClick={() => setView("docs")}>Docs &amp; Architecture</button>
           <button type="button" className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>Dashboard</button>
           <button type="button" className={view === "connect" ? "active" : ""} onClick={() => setView("connect")}>Connect an agent</button>
         </nav>
@@ -1131,161 +1328,354 @@ export function App() {
         </div>
       </header>
 
-      {view === "overview" ? <Overview onConnect={() => setView("connect")} /> :
+      {view === "overview" ? <Overview onNavigate={setView} /> :
+       view === "docs" ? <DocsView onConnect={() => setView("connect")} /> :
        view === "connect" ? <ConnectAgent /> : <>
-      <div className="panels">
-          <ProgressBoard tasks={tasks} error={progressError} loading={progressLoading} onRefresh={refreshProgress}
-            agents={agents.map(a => a.agent_id)} onChange={refreshProgress} />
-          <section className="diag-panel" style={{ order: 4 }}>
-            <h2>🩺 Diagnostics</h2>
-            <dl className="metrics">
-              <dt>App version</dt>
-              <dd>{health?.version ? `v${health.version}` : "—"}</dd>
-              <dt>Build</dt>
-              <dd className="mono">
-                {health?.git_commit && health.git_commit !== "unknown"
-                  ? <>{health.git_commit}{health.build_timestamp && health.build_timestamp !== "dev" ? ` (${health.build_timestamp})` : ""}</>
-                  : "dev"}
-              </dd>
-              <dt>Stream</dt>
-              <dd>
-                <span className={connected ? "dot on" : "dot off"} />{" "}
-                {connected ? "connected" : "disconnected"}
-              </dd>
-              <dt>Last SSE event</dt>
-              <dd>{lastEventAt ? fmtAge(Math.floor((nowMs - lastEventAt) / 1000)) : "—"}</dd>
-              <dt>SSE subscribers</dt>
-              <dd>{metrics ? metrics.sse_subscribers : "—"}</dd>
-              <dt>SSE reconnects</dt>
-              <dd className={sseReconnects > 0 ? "warn" : undefined}>{sseReconnects}</dd>
-              <dt>Database</dt>
-              <dd className={health && !health.db_configured ? "warn" : undefined}>
-                {health ? (health.db_configured ? "configured ✓" : "not configured") : "—"}
-              </dd>
-              <dt>Agents active / total</dt>
-              <dd className={diag && diag.active_agents === 0 ? "warn" : undefined}>
-                {diag ? `${diag.active_agents} / ${diag.total_agents}` : "—"}
-                {diag && diag.stale_agents > 0 ? ` (${diag.stale_agents} stale)` : ""}
-              </dd>
-              <dt>Newest heartbeat</dt>
-              <dd>
-                {diag && diag.newest_heartbeat
-                  ? fmtAge(Math.floor((nowMs - new Date(diag.newest_heartbeat).getTime()) / 1000))
-                  : "—"}
-              </dd>
-            </dl>
-            {diag && diag.stale_agents > 0 && (
-              <details className="diag-stale">
-                <summary>{diag.stale_agents} stale agent(s)</summary>
-                <ul className="pills">
-                  {diag.sampled_agents
-                    .filter((a) => !a.is_active)
-                    .map((a) => (
-                      <li key={a.agent_id}>
-                        <b>{a.agent_id}</b>
-                        {tasks.filter(t => t.agent_id === a.agent_id && ["active", "blocked"].includes(t.status)).map(t =>
-                          <div key={t.id}><a href={taskLink(t)}>Current task: {t.title}</a> <span className="muted">({t.folder})</span></div>)}
-                        {a.repo && <span className="muted">{a.repo}</span>}
-                        <time>{fmtAge(a.heartbeat_age_seconds)}</time>
-                      </li>
-                    ))}
-                </ul>
-              </details>
-            )}
-          </section>
+        {/* KPI Preview & Summary Ribbon */}
+        <div className="kpi-ribbon" role="region" aria-label="System status summary">
+          <button
+            type="button"
+            className={`kpi-card ${subTab === "stream" ? "active" : ""}`}
+            onClick={() => handleSelectSubTab("stream")}
+            title="Switch to live message stream"
+          >
+            <div className="kpi-label">💬 Messages</div>
+            <div className="kpi-value">{metrics ? metrics.total_messages : messages.length}</div>
+            <div className="kpi-sub">
+              {metrics?.messages_last_5m !== undefined ? `${metrics.messages_last_5m} in last 5m` : "live stream"}
+            </div>
+          </button>
 
-          <section className="metrics-panel" style={{ order: 3 }}>
-            <h2>📊 Live Metrics</h2>
-            {metrics ? (
+          <button
+            type="button"
+            className={`kpi-card ${subTab === "fleet" ? "active" : ""}`}
+            onClick={() => handleSelectSubTab("fleet")}
+            title="Switch to active agents & claims"
+          >
+            <div className="kpi-label">👥 Agents</div>
+            <div className="kpi-value">
+              <span className={activeAgentsCount > 0 ? "text-success" : ""}>{activeAgentsCount}</span>
+              <span className="kpi-denom"> / {agents.length}</span>
+            </div>
+            <div className="kpi-sub">
+              {diag && diag.stale_agents > 0 ? `${diag.stale_agents} stale` : "online now"}
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className={`kpi-card ${subTab === "fleet" ? "active" : ""}`}
+            onClick={() => handleSelectSubTab("fleet")}
+            title="Switch to active territory claims"
+          >
+            <div className="kpi-label">🔒 Claims</div>
+            <div className="kpi-value">{claims.length}</div>
+            <div className="kpi-sub">{claims.length === 1 ? "1 active claim" : `${claims.length} active leases`}</div>
+          </button>
+
+          <button
+            type="button"
+            className={`kpi-card ${subTab === "tasks" ? "active" : ""}`}
+            onClick={() => handleSelectSubTab("tasks")}
+            title="Switch to folder progress and backlog"
+          >
+            <div className="kpi-label">📋 Tasks</div>
+            <div className="kpi-value">
+              <span className={activeTasksCount > 0 ? "text-accent" : ""}>{activeTasksCount}</span>
+              <span className="kpi-denom"> / {tasks.length}</span>
+            </div>
+            <div className="kpi-sub">
+              {blockedTasksCount > 0 ? `${blockedTasksCount} blocked` : `${tasks.filter(t => t.status === "queued").length} queued`}
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className={`kpi-card kpi-card-vq ${subTab === "vq" ? "active" : ""}`}
+            onClick={() => handleSelectSubTab("vq")}
+            title="Switch to validation queue"
+          >
+            <div className="kpi-label">
+              <span>🧪 Validation</span>
+              <span className="kpi-label-badge">{vqCounts.total}</span>
+            </div>
+            <div className="kpi-vq-metrics">
+              <span className="kpi-vq-stat kpi-vq-valid" title={`${vqCounts.validated} verified executed passes`}>
+                <span className="kpi-vq-icon">✓</span>
+                <b>{vqCounts.validated}</b>
+                <small>pass</small>
+              </span>
+              {vqCounts.failed > 0 && (
+                <span className="kpi-vq-stat kpi-vq-fail" title={`${vqCounts.failed} execution failures (exit code 1)`}>
+                  <span className="kpi-vq-icon">✕</span>
+                  <b>{vqCounts.failed}</b>
+                  <small>fail</small>
+                </span>
+              )}
+              {vqCounts.inconclusive > 0 && (
+                <span className="kpi-vq-stat kpi-vq-inconcl" title={`${vqCounts.inconclusive} inconclusive or timed out runs (exit code 2)`}>
+                  <span className="kpi-vq-icon">?</span>
+                  <b>{vqCounts.inconclusive}</b>
+                  <small>inc</small>
+                </span>
+              )}
+            </div>
+            <div className="kpi-sub kpi-vq-sub">
+              <span>{vqCounts.pending} pend</span>
+              <span>·</span>
+              <span title={`${vqCounts.self_reported} self-reported (unverified) passes`}>{vqCounts.self_reported} self-rep</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className={`kpi-card ${subTab === "diag" ? "active" : ""}`}
+            onClick={() => handleSelectSubTab("diag")}
+            title="Switch to metrics and diagnostics"
+          >
+            <div className="kpi-label">🩺 Health</div>
+            <div className="kpi-value">
+              <span className={`dot ${connected ? "on" : "off"}`} style={{ marginRight: "0.3rem" }} />
+              {connected ? "Live" : "Warn"}
+            </div>
+            <div className="kpi-sub">
+              {metrics?.sse_subscribers !== undefined ? `${metrics.sse_subscribers} SSE subs` : (health?.db_configured ? "DB ok" : "DB pending")}
+            </div>
+          </button>
+        </div>
+
+        {/* Sub-Navigation Tabs */}
+        <div className="sub-tabs-bar">
+          <nav className="sub-tabs" aria-label="Dashboard views">
+            <button
+              type="button"
+              className={subTab === "stream" ? "active" : ""}
+              onClick={() => handleSelectSubTab("stream")}
+            >
+              💬 Stream &amp; Messages
+            </button>
+            <button
+              type="button"
+              className={subTab === "tasks" ? "active" : ""}
+              onClick={() => handleSelectSubTab("tasks")}
+            >
+              📋 Folder Progress &amp; Backlog {activeTasksCount > 0 && <span className="tab-badge">{activeTasksCount}</span>}
+            </button>
+            <button
+              type="button"
+              className={subTab === "vq" ? "active" : ""}
+              onClick={() => handleSelectSubTab("vq")}
+            >
+              🧪 Validation Queue
+              {vqCounts.failed > 0 && (
+                <span className="tab-badge tab-badge-danger" title={`${vqCounts.failed} failed items`}>
+                  {vqCounts.failed} fail
+                </span>
+              )}
+              {vqCounts.inconclusive > 0 && (
+                <span className="tab-badge tab-badge-warn" title={`${vqCounts.inconclusive} inconclusive items`}>
+                  {vqCounts.inconclusive} inc
+                </span>
+              )}
+              {vqCounts.pending > 0 && (
+                <span className="tab-badge" title={`${vqCounts.pending} pending items`}>
+                  {vqCounts.pending} pend
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              className={subTab === "fleet" ? "active" : ""}
+              onClick={() => handleSelectSubTab("fleet")}
+            >
+              👥 Fleet &amp; Claims {claims.length > 0 && <span className="tab-badge">{claims.length}</span>}
+            </button>
+            <button
+              type="button"
+              className={subTab === "diag" ? "active" : ""}
+              onClick={() => handleSelectSubTab("diag")}
+            >
+              📊 Diagnostics &amp; Metrics
+            </button>
+          </nav>
+        </div>
+
+        {/* Focused Tab Content */}
+        {subTab === "stream" && (
+          <MessageStream agents={agents} messages={messages} />
+        )}
+
+        {subTab === "tasks" && (
+          <ProgressBoard
+            tasks={tasks}
+            error={progressError}
+            loading={progressLoading}
+            onRefresh={refreshProgress}
+            agents={agents.map((a) => a.agent_id)}
+            onChange={refreshProgress}
+          />
+        )}
+
+        {subTab === "vq" && (
+          <ValidationQueue onCountChange={setVqCounts} />
+        )}
+
+        {subTab === "fleet" && (
+          <div className="fleet-grid">
+            <section>
+              <h2>Active agents ({agents.length})</h2>
+              <table className="agent-grid">
+                <thead>
+                  <tr>
+                    <th aria-label="online" />
+                    <th>Agent</th>
+                    <th>Last status</th>
+                    <th>When</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {agents.map((a) => {
+                    const ageSec = Math.floor((nowMs - new Date(a.last_heartbeat).getTime()) / 1000);
+                    const online = ageSec < ONLINE_WITHIN_SECS;
+                    return (
+                      <tr key={a.agent_id}>
+                        <td>
+                          <span
+                            className={online ? "dot on" : "dot off"}
+                            title={online ? "online" : `offline — last seen ${fmtAge(ageSec)}`}
+                          />
+                        </td>
+                        <td>
+                          <b>{a.agent_id}</b>
+                          {a.repo && (
+                            <span className="muted"> {a.repo}{a.branch ? `@${a.branch}` : ""}</span>
+                          )}
+                          {(a.harness || a.model) && (
+                            <div className="muted" title="harness / model">
+                              {[a.harness, a.model].filter(Boolean).join(" · ")}
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          {a.last_status
+                            ? <code title={a.last_status}>{a.last_status}</code>
+                            : <span className="muted">—</span>}
+                        </td>
+                        <td>
+                          <time title={a.last_status_at ? new Date(a.last_status_at).toLocaleString() : undefined}>
+                            {a.last_status_at
+                              ? fmtAge(Math.floor((nowMs - new Date(a.last_status_at).getTime()) / 1000))
+                              : "—"}
+                          </time>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!agents.length && (
+                    <tr><td colSpan={4} className="muted">None active.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </section>
+
+            <section>
+              <h2>Active claims ({claims.length})</h2>
+              <ClaimTerritory claims={claims} />
+            </section>
+          </div>
+        )}
+
+        {subTab === "diag" && (
+          <div className="diag-grid">
+            <section className="metrics-panel">
+              <h2>📊 Live Metrics</h2>
+              {metrics ? (
+                <dl className="metrics">
+                  <dt>Messages/min</dt>
+                  <dd>{metrics.messages_last_1m}</dd>
+                  <dt>Messages (5m)</dt>
+                  <dd>{metrics.messages_last_5m}</dd>
+                  <dt>Messages (1h)</dt>
+                  <dd>{metrics.messages_last_1h}</dd>
+                  <dt>Total messages</dt>
+                  <dd>{metrics.total_messages}</dd>
+                  <dt>Active agents (5m)</dt>
+                  <dd>{metrics.active_agents_5m}</dd>
+                  <dt>Active agents (1h)</dt>
+                  <dd>{metrics.active_agents_1h}</dd>
+                  <dt>Active claims</dt>
+                  <dd>{metrics.active_claims}</dd>
+                  <dt>SSE subscribers</dt>
+                  <dd>{metrics.sse_subscribers}</dd>
+                  <dt>Unique posters (1h)</dt>
+                  <dd>{metrics.unique_posters_1h}</dd>
+                  <dt>Last message</dt>
+                  <dd>{metrics.last_message_at ? new Date(metrics.last_message_at).toLocaleTimeString() : "—"}</dd>
+                </dl>
+              ) : (
+                <p className="muted">Loading…</p>
+              )}
+            </section>
+
+            <section className="diag-panel">
+              <h2>🩺 Diagnostics</h2>
               <dl className="metrics">
-                <dt>Messages/min</dt>
-                <dd>{metrics.messages_last_1m}</dd>
-                <dt>Messages (5m)</dt>
-                <dd>{metrics.messages_last_5m}</dd>
-                <dt>Messages (1h)</dt>
-                <dd>{metrics.messages_last_1h}</dd>
-                <dt>Total messages</dt>
-                <dd>{metrics.total_messages}</dd>
-                <dt>Active agents (5m)</dt>
-                <dd>{metrics.active_agents_5m}</dd>
-                <dt>Active agents (1h)</dt>
-                <dd>{metrics.active_agents_1h}</dd>
-                <dt>Active claims</dt>
-                <dd>{metrics.active_claims}</dd>
+                <dt>App version</dt>
+                <dd>{health?.version ? `v${health.version}` : "—"}</dd>
+                <dt>Build</dt>
+                <dd className="mono">
+                  {health?.git_commit && health.git_commit !== "unknown"
+                    ? <>{health.git_commit}{health.build_timestamp && health.build_timestamp !== "dev" ? ` (${health.build_timestamp})` : ""}</>
+                    : "dev"}
+                </dd>
+                <dt>Stream</dt>
+                <dd>
+                  <span className={connected ? "dot on" : "dot off"} />{" "}
+                  {connected ? "connected" : "disconnected"}
+                </dd>
+                <dt>Last SSE event</dt>
+                <dd>{lastEventAt ? fmtAge(Math.floor((nowMs - lastEventAt) / 1000)) : "—"}</dd>
                 <dt>SSE subscribers</dt>
-                <dd>{metrics.sse_subscribers}</dd>
-                <dt>Unique posters (1h)</dt>
-                <dd>{metrics.unique_posters_1h}</dd>
-                <dt>Last message</dt>
-                <dd>{metrics.last_message_at ? new Date(metrics.last_message_at).toLocaleTimeString() : "—"}</dd>
+                <dd>{metrics ? metrics.sse_subscribers : "—"}</dd>
+                <dt>SSE reconnects</dt>
+                <dd className={sseReconnects > 0 ? "warn" : undefined}>{sseReconnects}</dd>
+                <dt>Database</dt>
+                <dd className={health && !health.db_configured ? "warn" : undefined}>
+                  {health ? (health.db_configured ? "configured ✓" : "not configured") : "—"}
+                </dd>
+                <dt>Agents active / total</dt>
+                <dd className={diag && diag.active_agents === 0 ? "warn" : undefined}>
+                  {diag ? `${diag.active_agents} / ${diag.total_agents}` : "—"}
+                  {diag && diag.stale_agents > 0 ? ` (${diag.stale_agents} stale)` : ""}
+                </dd>
+                <dt>Newest heartbeat</dt>
+                <dd>
+                  {diag && diag.newest_heartbeat
+                    ? fmtAge(Math.floor((nowMs - new Date(diag.newest_heartbeat).getTime()) / 1000))
+                    : "—"}
+                </dd>
               </dl>
-            ) : (
-              <p className="muted">Loading…</p>
-            )}
-          </section>
-
-          <section style={{ order: 1 }}>
-            <h2>Active agents ({agents.length})</h2>
-            <table className="agent-grid">
-              <thead>
-                <tr>
-                  <th aria-label="online" />
-                  <th>Agent</th>
-                  <th>Last status</th>
-                  <th>When</th>
-                </tr>
-              </thead>
-              <tbody>
-                {agents.map((a) => {
-                  const ageSec = Math.floor((nowMs - new Date(a.last_heartbeat).getTime()) / 1000);
-                  const online = ageSec < ONLINE_WITHIN_SECS;
-                  return (
-                    <tr key={a.agent_id}>
-                      <td>
-                        <span
-                          className={online ? "dot on" : "dot off"}
-                          title={online ? "online" : `offline — last seen ${fmtAge(ageSec)}`}
-                        />
-                      </td>
-                      <td>
-                        <b>{a.agent_id}</b>
-                        {a.repo && (
-                          <span className="muted"> {a.repo}{a.branch ? `@${a.branch}` : ""}</span>
-                        )}
-                        {(a.harness || a.model) && (
-                          <div className="muted" title="harness / model">
-                            {[a.harness, a.model].filter(Boolean).join(" · ")}
-                          </div>
-                        )}
-                      </td>
-                      <td>
-                        {a.last_status
-                          ? <code title={a.last_status}>{a.last_status}</code>
-                          : <span className="muted">—</span>}
-                      </td>
-                      <td>
-                        <time title={a.last_status_at ? new Date(a.last_status_at).toLocaleString() : undefined}>
-                          {a.last_status_at
-                            ? fmtAge(Math.floor((nowMs - new Date(a.last_status_at).getTime()) / 1000))
-                            : "—"}
-                        </time>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {!agents.length && (
-                  <tr><td colSpan={4} className="muted">None active.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </section>
-
-          <section style={{ order: 2 }}>
-            <h2>Active claims ({claims.length})</h2>
-            <ClaimTerritory claims={claims} />
-          </section>
-      </div>
-      <MessageStream agents={agents} messages={messages} />
+              {diag && diag.stale_agents > 0 && (
+                <details className="diag-stale">
+                  <summary>{diag.stale_agents} stale agent(s)</summary>
+                  <ul className="pills">
+                    {diag.sampled_agents
+                      .filter((a) => !a.is_active)
+                      .map((a) => (
+                        <li key={a.agent_id}>
+                          <b>{a.agent_id}</b>
+                          {tasks.filter(t => t.agent_id === a.agent_id && ["active", "blocked"].includes(t.status)).map(t =>
+                            <div key={t.id}><a href={taskLink(t)}>Current task: {t.title}</a> <span className="muted">({t.folder})</span></div>)}
+                          {a.repo && <span className="muted">{a.repo}</span>}
+                          <time>{fmtAge(a.heartbeat_age_seconds)}</time>
+                        </li>
+                      ))}
+                  </ul>
+                </details>
+              )}
+            </section>
+          </div>
+        )}
       </>}
     </div>
   );
