@@ -54,9 +54,12 @@ def test_agy_install_survives_a_corrupt_file(tmp_path):
     assert "partyline" in json.loads(path.read_text())
 
 
-@pytest.mark.parametrize("harness,flag", [("grok", "--always-approve"), ("cmdc", "--yolo"), ("cursor", "--yolo"), ("devin", "--permission-mode")])
+@pytest.mark.parametrize("harness,flag", [("grok", "--always-approve"), ("cmdc", "--yolo"), ("cursor", "--yolo"), ("devin", "--permission-mode"), ("cline", "--version")])
 def test_launch_installs_then_runs_the_cli_with_args_untouched(monkeypatch, harness, flag):
     calls = []
+    if harness == "cline":
+        # cline-pl installs hooks only when a clone identity resolves; give it one.
+        monkeypatch.setattr(hr, "_config_from", lambda root: {"agentId": "me_1"})
     monkeypatch.setattr(hr.shutil, "which", lambda n: f"/bin/{n}")
     monkeypatch.setattr(hr, "cursor_executable", lambda: "/bin/cursor")
     monkeypatch.setitem(hr.HARNESSES, harness, ((harness,), lambda: calls.append("install")))
@@ -79,6 +82,52 @@ def test_launch_exits_when_the_cli_is_missing(monkeypatch):
         hr.launch("agy", [])
     except SystemExit as e:
         assert "not found" in str(e.code)
+
+
+def _fake_cline_run(monkeypatch, calls):
+    monkeypatch.setattr(hr.shutil, "which", lambda n: f"/bin/{n}")
+    monkeypatch.setattr(hr, "register_self", lambda h: calls.append(f"register:{h}"))
+
+    class R:
+        returncode = 0
+
+    monkeypatch.setattr(hr.subprocess, "run", lambda cmd: calls.append(cmd) or R())
+
+
+def test_launch_cline_outside_a_clone_skips_hooks_warns_and_runs(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PARTYLINE_AGENT_ID", raising=False)
+    calls = []
+    _fake_cline_run(monkeypatch, calls)
+
+    with pytest.raises(SystemExit) as exc:
+        hr.launch("cline", ["--version"])
+    assert exc.value.code == 0
+
+    assert not (tmp_path / ".clinerules").exists()  # no hooks written
+    assert "register:cline" in calls  # registration degrades quietly, no crash
+    assert calls[-1] == ["/bin/cline", "--version"]
+    err = capsys.readouterr().err
+    assert ".partyline" in err and "hook" in err.lower()
+
+
+def test_launch_cline_in_a_clone_writes_hooks_and_registers(monkeypatch, tmp_path):
+    cfg = tmp_path / ".partyline"
+    cfg.mkdir()
+    (cfg / "config.json").write_text(json.dumps({"agentId": "alan_partyline_cline_1"}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PARTYLINE_AGENT_ID", raising=False)
+    calls = []
+    _fake_cline_run(monkeypatch, calls)
+
+    with pytest.raises(SystemExit) as exc:
+        hr.launch("cline", [])
+    assert exc.value.code == 0
+
+    shims = sorted(p.name for p in (tmp_path / ".clinerules" / "hooks").iterdir())
+    assert shims == ["TaskStart", "UserPromptSubmit"]
+    assert "PARTYLINE_AGENT_ID='alan_partyline_cline_1'" in (tmp_path / ".clinerules" / "hooks" / "TaskStart").read_text()
+    assert calls == ["register:cline", ["/bin/cline"]]
 
 
 def _run_peek(monkeypatch, tmp_path, payload, msgs, fmt="grok_stop"):

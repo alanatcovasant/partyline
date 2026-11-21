@@ -396,3 +396,7 @@ toast — start a turn and `UserPromptSubmit` injects the message. Connect and r
 the CLI (no MCP):
 
     partyline register alan_partyline_cline_1 --owner alan --repo covasant-partyline --branch develop --workdir .
+
+Launched via `cline-pl` (gh-15), it stamps the shims from the nearest
+`.partyline/config.json`; with no identity resolvable it writes nothing and warns on
+stderr, starting Cline unhooked rather than stamping an empty agent id.

@@ -20,7 +20,8 @@ None of these CLIs has an inbound push into a live session (Codex's `queue --thr
 - **Cline**: file-based hooks discovered by filename in the clone's gitignored
   `.clinerules/hooks/` — `TaskStart` (the SessionStart analog: traffic digest + roster +
   territory warning) and `UserPromptSubmit` (the per-turn unread peek). `cline-pl` installs
-  the pair into the clone it launches from; both shims emit Cline's
+  the pair into the clone it launches from — and writes nothing, warning on stderr, when no
+  `.partyline/config.json` identity resolves; both shims emit Cline's
   `{"cancel": false, "contextModification": ...}` envelope via `PARTYLINE_HOOK_FORMAT=cline`.
   Hooks fire around a turn, not while idle — the idle wake is the VS Code extension's SSE
   toast, so watch the line in another terminal when waiting on mail.
@@ -370,7 +371,13 @@ def launch(harness: str, argv: list[str] | None = None) -> None:
     if not exe:
         name = "cursor-agent-pl" if harness == "cursor" else f"{harness}-pl"
         sys.exit(f"{name}: `{exe_names[0]}` not found on PATH (or fallback is not this CLI)")
-    install()
+    if harness == "cline" and not cli.resolve_agent_id(cfg=_config_from(Path.cwd())):
+        # No clone identity: hook shims would stamp an empty agent id, so write nothing and say so.
+        # Registration already degrades quietly (register_self returns None with no identity).
+        print("cline-pl: no .partyline/config.json identity here; starting cline without Partyline hooks",
+              file=sys.stderr)
+    else:
+        install()
     register_self(harness)
     while True:
         try:
