@@ -288,3 +288,47 @@ def test_kimi_stop_denies_once_with_the_mail_as_the_reason(monkeypatch, tmp_path
     hook = out["hookSpecificOutput"]
     assert hook["permissionDecision"] == "deny" and "addressed to you" in hook["permissionDecisionReason"]
     assert _run_peek(monkeypatch, tmp_path, {}, MAIL, fmt="kimi_stop") == ""  # deduped, no re-block loop
+
+
+def test_genie_install_preserves_user_hooks_and_is_idempotent(tmp_path):
+    path = tmp_path / "hooks.json"
+    own = {"matcher": "", "hooks": [{"type": "command", "command": "my-hook"}]}
+    path.write_text(json.dumps({"description": "mine", "hooks": {"PostToolUse": [own]}}))
+    assert hr.install_genie_hooks(path) is True
+    assert hr.install_genie_hooks(path) is False
+    data = json.loads(path.read_text())
+    assert data["description"] == "mine"
+    assert data["hooks"]["PostToolUse"] == [own]
+    for event in ("SessionStart", "UserPromptSubmit", "Stop"):
+        entry = data["hooks"][event][-1]
+        assert entry["matcher"] == ""
+        assert entry["hooks"][0]["command"].endswith("-m covasant_partyline.genie_hook")
+
+
+def test_genie_install_refuses_to_overwrite_invalid_hooks(tmp_path):
+    path = tmp_path / "hooks.json"
+    path.write_text("broken JSON")
+    with pytest.raises(ValueError):
+        hr.install_genie_hooks(path)
+    assert path.read_text() == "broken JSON"
+
+
+def test_genie_hook_dispatches_all_three_events(monkeypatch):
+    from covasant_partyline import genie_hook, hook
+
+    calls = []
+    monkeypatch.setattr(hook, "main", lambda: calls.append(("hook", os.environ["PARTYLINE_HOOK_FORMAT"])))
+    monkeypatch.setattr(check_unread, "main", lambda: calls.append(("peek", os.environ["PARTYLINE_HOOK_FORMAT"])))
+    for event in ("SessionStart", "UserPromptSubmit", "Stop"):
+        monkeypatch.setattr(genie_hook.sys, "stdin", io.StringIO(json.dumps({"hook_event_name": event})))
+        genie_hook.main()
+    assert calls == [("hook", "qwen"), ("peek", "qwen"), ("peek", "devin_stop")]
+
+
+def test_genie_hook_ignores_other_events(monkeypatch):
+    from covasant_partyline import genie_hook, hook
+
+    monkeypatch.setattr(hook, "main", lambda: pytest.fail("hook.main ran"))
+    monkeypatch.setattr(check_unread, "main", lambda: pytest.fail("check_unread.main ran"))
+    monkeypatch.setattr(genie_hook.sys, "stdin", io.StringIO(json.dumps({"hook_event_name": "PreToolUse"})))
+    genie_hook.main()

@@ -140,6 +140,7 @@ def _launchers(bin_dir: Path) -> list[Path]:
         ("cmdc-pl", "covasant_partyline.harness_runner", " cmdc"),
         ("cursor-agent-pl", "covasant_partyline.harness_runner", " cursor"),
         ("devin-pl", "covasant_partyline.harness_runner", " devin"),
+        ("genie-pl", "covasant_partyline.harness_runner", " genie"),
         ("omni-pl", "covasant_partyline.omni_runner", ""),
     ):
         bat, script = bin_dir / f"{name}.cmd", bin_dir / name

@@ -17,6 +17,12 @@ None of these CLIs has an inbound push into a live session (Codex's `queue --thr
   clone identity from the workspace payload because global hooks run from `~/.cursor`.
 - **Devin**: `SessionStart` and `Stop` hooks merged into the user-level config. The adapter
   resolves clone identity from `DEVIN_PROJECT_DIR` because the hooks live in a global config.
+- **Genie Code CLI**: `SessionStart`, `UserPromptSubmit` and `Stop` hooks merged into
+  `$GENIE_HOME/hooks.json` (`~/.genie` by default). The contract is Claude-compatible
+  except that context injection requires `hookEventName` echoed back (the Qwen quirk),
+  and `Stop` blocks on `{"decision": "block"}` — all verified on genie 0.4.1. Genie
+  persists hook trust by content hash, so the first session after install asks once
+  (`/hooks` manages it; `--dangerously-bypass-hook-trust` for `genie exec` automation).
 
 None of them wakes an idle session. For that, watch the line in another terminal.
 
@@ -44,6 +50,8 @@ CMDC_SETTINGS = HOME / ".commandcode" / "settings.json"
 CURSOR_HOOKS = HOME / ".cursor" / "hooks.json"
 DEVIN_CONFIG = (Path(os.environ["APPDATA"]) / "devin" / "config.json") if os.environ.get("APPDATA") \
     else (HOME / ".config" / "devin" / "config.json")
+GENIE_HOOKS = Path(os.environ["GENIE_HOME"]) / "hooks.json" if os.environ.get("GENIE_HOME") \
+    else HOME / ".genie" / "hooks.json"
 KIMI_BEGIN, KIMI_END = "# >>> partyline hooks (managed by kimi-pl)", "# <<< partyline hooks"
 HOOK_TIMEOUT_S = 30
 
@@ -256,6 +264,38 @@ def install_devin_hooks(path: Path = DEVIN_CONFIG) -> bool:
     return _write_json(path, data)
 
 
+def install_genie_hooks(path: Path = GENIE_HOOKS) -> bool:
+    """Merge the three partyline hooks into Genie's hooks.json, keeping user hooks.
+
+    Genie's file is `{"description": ..., "hooks": {<Event>: [{matcher, hooks: [...]}]}}`
+    — the Claude inner shape under a `hooks` key. We replace only our own
+    `genie_hook` invocations in each managed event and leave every other entry alone.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+        raise ValueError(f"genie-pl: invalid hooks.json in {path}")
+    data.setdefault("description", "Partyline session digest, unread peek, and stop gate (managed by genie-pl)")
+    hooks = data.setdefault("hooks", {})
+    command = f"{_portable_py()} -m covasant_partyline.genie_hook"
+    for event in ("SessionStart", "UserPromptSubmit", "Stop"):
+        entries = hooks.setdefault(event, [])
+        if not isinstance(entries, list) or any(not isinstance(e, dict) for e in entries):
+            raise ValueError(f"genie-pl: invalid {event} hooks in {path}")
+        for entry in entries:
+            if not isinstance(entry.get("hooks"), list):
+                raise ValueError(f"genie-pl: invalid {event} hook entry in {path}")
+            entry["hooks"] = [h for h in entry["hooks"]
+                              if not (isinstance(h, dict) and str(h.get("command", "")).endswith(
+                                  " -m covasant_partyline.genie_hook"))]
+        entries[:] = [entry for entry in entries if entry["hooks"]]
+        entries.append({"matcher": "", "hooks": [{"type": "command", "command": command,
+                                                  "timeout": HOOK_TIMEOUT_S}]})
+    return _write_json(path, data)
+
+
 # harness -> (executable names to look for, hook installer)
 HARNESSES = {
     "grok": (("grok",), install_grok_hooks),
@@ -264,6 +304,7 @@ HARNESSES = {
     "cmdc": (("cmdc", "command-code"), install_cmdc_hooks),
     "cursor": (("cursor-agent", "agent"), install_cursor_hooks),
     "devin": (("devin",), install_devin_hooks),
+    "genie": (("genie",), install_genie_hooks),
 }
 
 
@@ -305,6 +346,10 @@ def launch_cursor(argv: list[str] | None = None) -> None:
 
 def launch_devin(argv: list[str] | None = None) -> None:
     launch("devin", argv)
+
+
+def launch_genie(argv: list[str] | None = None) -> None:
+    launch("genie", argv)
 
 
 if __name__ == "__main__":

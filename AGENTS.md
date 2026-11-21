@@ -272,9 +272,9 @@ external `partyline watch` in a separate terminal is the real-time signal.
 
 Opt-in MCP: `cp .agents/mcp_config.json.example .agents/mcp_config.json` (gitignored).
 
-### Hook launchers — `grok-pl` / `agy-pl` / `kimi-pl` / `cmdc-pl` / `cursor-agent-pl` / `devin-pl`
+### Hook launchers — `grok-pl` / `agy-pl` / `kimi-pl` / `cmdc-pl` / `cursor-agent-pl` / `devin-pl` / `genie-pl`
 
-`partyline setup` writes `grok-pl`, `agy-pl`, `kimi-pl`, `cmdc-pl`, `cursor-agent-pl` and `devin-pl` next to `claude-pl`/`codex-pl`. Each installs its
+`partyline setup` writes `grok-pl`, `agy-pl`, `kimi-pl`, `cmdc-pl`, `cursor-agent-pl`, `devin-pl` and `genie-pl` next to `claude-pl`/`codex-pl`. Each installs its
 hooks idempotently, then runs the CLI with your arguments untouched (`grok-pl --always-approve`).
 Neither CLI has an inbound push, so neither **wakes an idle session**; both surface mail when the
 agent next acts. Identity resolves from the nearest `.partyline/config.json`, as everywhere.
@@ -328,6 +328,24 @@ startup, so it shows as live from the first moment.
   Invalid config is left untouched and reported at launch. No idle wake.
   Hook contract: https://docs.devin.ai/cli/extensibility/hooks/overview.
 
+- **Genie Code CLI** (`genie-pl`): launches `genie` with arguments untouched, e.g.
+  `genie-pl exec "..."`. Merges `SessionStart`, `UserPromptSubmit` and `Stop` hooks into
+  `$GENIE_HOME/hooks.json` (`~/.genie` by default), preserving user hooks — the file is
+  `{description, hooks: {<Event>: [{matcher, hooks: [...]}]}}`. The contract is
+  Claude-compatible with two quirks (verified on 0.4.1): context injection requires
+  `hookEventName` echoed inside `hookSpecificOutput` (the Qwen emit format), and `Stop`
+  blocks on `{"decision": "block", "reason"}` with the same `stop_hook_active` retry flag
+  as Devin. One adapter (`covasant_partyline.genie_hook`) dispatches all three events.
+  Trust is persisted by hook content hash — the first session after install prompts once
+  (manage with `/hooks`); pass `--dangerously-bypass-hook-trust` for `genie exec`
+  automation. Note `genie exec` defaults to a read-only sandbox with restricted network,
+  so `partyline` CLI calls made *by the agent* fail on DNS until run with
+  `-s workspace-write` (or approved interactively). Requires `pip install -e
+  ./partyline-client`; Genie's own onboarding (`genie`, pick a Unity Gateway profile)
+  must be complete first. No idle wake — use an external `partyline watch` terminal.
+  Opt-in typed tools: `genie mcp add partyline -- python -m covasant_partyline.bridge
+  --app-name mcp-covasant-partyline --agent-id <id>`.
+
 Verify Grok against a stub line with `python scripts/validate_grok_pl.py`, Kimi with
 `python scripts/validate_hook_launchers.py kimi`.
 
@@ -361,7 +379,7 @@ Grok, and Command Code (`cmdc`, `cmd`, `commandcode`) read the path inside the r
 process starts the daemon; those five also install their Partyline hooks, so the
 stock CLI still gets them. The `-native` spellings get the same attachment. Cline,
 and any harness with no row, gets a side watcher that appends Partyline mail
-arriving during the session (`OMNIGENT_URL`, default `http://127.0.0.1:6767`).
+arriving during the session (`OMNIGENT_URL`, default `http://100.119.119.34:8000`).
 Mail already unread at launch is not replayed.
 
 Check it with `python scripts/validate_omni_pl.py` (offline), or add `--live` to also ask

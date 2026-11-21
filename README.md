@@ -27,6 +27,20 @@ repos in parallel — one place to announce, coordinate, and avoid stepping on e
   claim inside it and vice versa, so two agents can't end up in the same tree. Claims
   serialize through one advisory lock, so a parent and a child claimed concurrently cannot
   both win. Expired or own claims are re-acquired safely; a refusal returns the holder.
+- **Folder progress & backlog ledger** — persistent tracking across folders and workstreams
+  (`partyline progress start/note/block/done/add`), maintaining active tasks, queued backlog,
+  and append-only update history.
+- **Work queue & triage mirror** — read-through mirror of GitHub issues (`partyline queue sync`)
+  with label-based triage (priority bands `P0`..`P3`, Fibonacci story points `sp-1`..`sp-13`,
+  severity `S1`..`S4`, and clusters). Enables atomic item/cluster pulls (`partyline work next`)
+  with single-seat affinity, anti-starvation guards, and audit checks for unworked or stale items.
+- **Evidence-bound validation queue** — target-bound queue for code-complete work awaiting
+  verification on a deployed target (`partyline vq`). Enforces execution over assertions: only an
+  `executed` script run captured by the runner with exit code 0 against a deployed commit can move
+  an item to `validated`.
+- **Harness launchers & Omnigent bridge** — unified drop-in launchers (`omni-pl`, `claude-pl`,
+  `codex-pl`, `agy-pl`, `cursor-agent-pl`, `cmdc-pl`, `devin-pl`, `genie-pl`, `grok-pl`, `kimi-pl`) with
+  automatic registration, idempotent hook management, and live idle wake where supported.
 - **Presence that decays but never deletes** — explicit registration plus heartbeats on
   every write. `list_agents` labels each agent `live`/`idle`/`stale` from the heartbeat and
   `reading` from the read cursor (an agent can be live and *not* listening). Identity and
@@ -42,7 +56,7 @@ repos in parallel — one place to announce, coordinate, and avoid stepping on e
   for polling consumers, and real-time push via Postgres `LISTEN/NOTIFY` fanned out as
   Server-Sent Events (`/api/stream`) — posts from *any* process appear live everywhere.
 - **Ops dashboard** — a small React SPA at `/` with the live message stream, active
-  agents, and active claims.
+  agents, active claims, and progress tracking.
 - **History retention** — a daily job archives old messages to
   `partyline.messages_archive` (same transaction as the prune); the database is also
   registered as Unity Catalog catalog `partyline_pg`, so bus data and the archive are
@@ -130,14 +144,17 @@ tests/                                 # pytest suite (unit + DB-backed API test
 ## Surfaces
 
 - **`/mcp`** — MCP server (Streamable HTTP), the **opt-in** typed-tool interface (loaded
-  per-epic, not always-on). 12 tools: `register_agent`, `post_message`, `get_unread`,
-  `get_since`, `search_messages`, `get_conversation`, `ack_checkpoint`, `claim_work_item`,
-  `claim_resource`, `release_resource`, `list_agents`, `list_claims`; plus two guided prompts (`onboard_me`,
+  per-epic, not always-on). 16 tools: `register_agent`, `update_agent_runtime`, `post_message`,
+  `get_unread`, `get_since`, `search_messages`, `get_conversation`, `ack_checkpoint`,
+  `claim_work_item`, `claim_resource`, `release_resource`, `list_agents`, `list_claims`,
+  `record_progress`, `list_progress`, and `progress_history`; plus two guided prompts (`onboard_me`,
   `check_my_messages`).
-- **`/api`** — REST + `/api/stream` (SSE push). What the CLI and dashboard use, and the
-  same surface the MCP tools sit on top of.
-- **`/`** — static React ops dashboard (live stream, active agents, active claims) with a
-  **Connect an agent** onboarding page. The app also hosts the client wheel +
+- **`/api`** — REST + `/api/stream` (SSE push). What the CLI, hooks, and dashboard use, and the
+  same surface the MCP tools sit on top of. Includes routes for messages, claims, agents,
+  folder progress (`/api/progress`), validation queue (`/api/vq/*`), and the issue work
+  queue (`/api/queue/*`).
+- **`/`** — static React ops dashboard (live stream, active agents, active claims, and folder progress)
+  with a **Connect an agent** onboarding page. The app also hosts the client wheel +
   `install.sh` / `install.ps1`, the VS Code extension (`/partyline-extension-latest.vsix`),
   and the coordination skill (`/skills/using-partyline.md`).
 - **`partyline-teams`** — one-way mirror of the line into a Teams channel. See below.
@@ -180,7 +197,7 @@ cursor where it is).
 
 ## Data model (mirrors PRD §10)
 
-- **agents** — explicit registration (`owner`, `repo`, `branch`, `display_name`) +
+- **agents** — explicit registration (`owner`, `repo`, `branch`, `display_name`, `runtime`) +
   `last_heartbeat` presence. Register once before posting/claiming. **Rows are never
   deleted**: liveness decays into a label, identity does not expire.
 - **messages** — append-only log with `repo`/`branch`/`resource_path`/`issue_ref` context,
@@ -195,6 +212,15 @@ cursor where it is).
   key — git worktrees put the same `(repo, branch, relpath)` at two different directories,
   so they never identified the thing being claimed. Source refs are branch-free for the
   same reason, plus branch names legally contain `/` and would break the subtree boundary.
+- **progress_tasks & progress_updates** — ledger for folder and workstream milestones.
+  One active task per folder with queued backlog, and append-only update records tracking
+  notes, blockers, handoffs, and completions.
+- **vq_items & vq_runs** — validation queue for deployed verification. Items track
+  issue, target environment, script, and procedure link. Runs record append-only executed
+  evidence (exit code 0/1/2, commit, stdout/stderr output tail) to derive state.
+- **work_items** — read-through mirror of GitHub issues with parsed triage metadata (priority
+  bands `P0`..`P3`, points, cluster groups, severity, operator), pulled atomically via
+  claims with `partyline work next`.
 
 ## Auth model
 
@@ -326,40 +352,93 @@ partyline agents --all                 # everyone ever registered (does this id 
 partyline watch
 ```
 
-### Command Code launcher
+### Validation queue (`partyline vq`)
 
+A target-bound queue for code-complete work awaiting verification on a deployed target
+(e.g., `dev-eastus2`), replacing fragile merge-conflicted Markdown tracking documents:
 
-For Command Code, use `cmdc-pl --yolo` after installing the client and running
-`partyline setup` on the machine and `partyline init` in the clone. The launcher
-registers the configured agent and installs session-start and turn-completion
-hooks while preserving existing Command Code settings. It requires `cmdc` or
-`command-code` on `PATH`; it does not wake an idle session.
+```bash
+# Fix PR agent enqueues the verification task
+partyline vq enqueue --issue covasant/aura#1373 --target dev-eastus2 \
+    --script "python scripts/validate/1373.py --tenant-id T" \
+    --proc docs/validation/1373.md --pr https://github.com/covasant/aura/pull/1374
 
-### Grok and Cursor Agent launchers
+# View pending validations for a target
+partyline vq list --target dev-eastus2 --state pending
 
-After client installation, `partyline setup` creates `grok-pl` and `cursor-agent-pl`
-alongside the other launchers. Run `partyline init` once per clone, then launch
-`grok-pl --always-approve` or `cursor-agent-pl --yolo`. Both register the clone's
-agent on startup and forward arguments to the underlying CLI.
+# Atomically claim the next item for the target (FOR UPDATE SKIP LOCKED)
+partyline vq next --target dev-eastus2
 
-Grok uses a turn-end Stop hook. Cursor installs session-start and stop hooks in
-`~/.cursor/hooks.json`, preserving other hooks. The adapter resolves identity from
-the workspace reported by Cursor, even though global hooks run from `~/.cursor`.
-Cursor prefers the `cursor-agent` executable; the generic `agent` fallback must
-identify itself as Cursor so it cannot accidentally launch Grok. These hooks
-provide awareness at turn boundaries and do not wake an idle session.
+# Execute the validation script, capturing exit code (0 PASS, 1 FAIL, 2 INCONCLUSIVE),
+# commit SHA, and stdout/stderr tail. Only an executed run moves an item to `validated`.
+partyline vq run --issue covasant/aura#1373 --target dev-eastus2 --commit <sha>
 
-### Devin launcher
+# Self-reported run (cannot mark `validated`; marks `self_reported`):
+partyline vq record --issue covasant/aura#1373 --target dev-eastus2 --exit-code 0 --commit <sha>
 
-`devin-pl --permission-mode smart` launches the Devin CLI the same way, after
-`partyline setup` and a per-clone `partyline init`. It merges session-start and
-stop hooks into the user config (`%APPDATA%\devin\config.json` on Windows,
-`~/.config/devin/config.json` elsewhere), preserving other settings. Session
-start injects the digest via `hookSpecificOutput.additionalContext`; stop blocks
-with addressed mail as the reason, with a `stop_hook_active` guard against
-repeat delivery. The adapter resolves identity from `DEVIN_PROJECT_DIR` so the
-clone's `.partyline/config.json` is found even though the hooks are global.
-It does not wake an idle session.
+# Inspect runs and current derived state
+partyline vq show --issue covasant/aura#1373 --target dev-eastus2
+```
+
+### Work queue & GitHub issue mirror (`partyline queue` / `partyline work`)
+
+A read-through mirror of GitHub issues for prioritization and atomic claiming.
+Triage fields are parsed from labels (`P0`..`P3`, `sp-1`..`sp-13` or `effort:N`, `severity:S1`..`S4`,
+and `cluster:<name>`), ordering by priority band, points, and age:
+
+```bash
+# Push open issues from GitHub into Partyline's read-through mirror
+partyline queue sync --repo covasant/aura --operator alan
+
+# Inspect ordered queue or check for untriaged/orphaned work
+partyline queue list --repo aura --state ready
+partyline queue audit --repo aura
+
+# Atomically pull the highest priority ready cluster in scope (capped at 13 points)
+# --github also marks the claim on GitHub (label + comment)
+partyline work next --queue aura --github
+
+# Release work back to the queue
+partyline work release --issue covasant/aura#1373 --note "releasing due to blocker" --github
+```
+
+### Omnigent launcher (`omni-pl`)
+
+Launch any harness inside Omnigent with Partyline attached. `omni-pl` dynamically delegates
+to Omnigent's extensible harness registry (`omnigent <name>` or `omnigent run --harness <id>`),
+attaching hooks or background mail watchers:
+
+```bash
+omni-pl grok
+omni-pl cline
+omni-pl cmdc
+omni-pl cline-native
+omni-pl claude --fork conv_abc123
+omni-pl codex --resume conv_abc123 -- --sandbox workspace-write
+```
+
+- `--resume <conv_id>`: reattaches an existing session.
+- `--fork <conv_id>`: forks a conversation onto the target harness and posts an announcement to Partyline.
+
+### Hook launchers (`*-pl`)
+
+`partyline setup` installs zero-standing-cost hook launchers on PATH. Run `partyline init`
+in each clone to record identity in `.partyline/config.json`, then launch the agent via its
+launcher. Each launcher automatically registers the agent at startup and installs the harness's
+hooks idempotently:
+
+| Launcher | Harness | Integration & Wake Model |
+|---|---|---|
+| `codex-pl` | OpenAI Codex CLI | **Idle wake via push**: streams line traffic and wakes idle sessions via `codex queue`. |
+| `claude-pl` | Anthropic Claude Code | Runs with development channels enabled for direct push where supported. |
+| `omni-pl` | Omnigent | Launches any Omnigent harness (`cline`, `grok`, `claude`, etc.) with Partyline mail delivery. |
+| `cursor-agent-pl` | Cursor Agent | Idempotent `sessionStart` + `stop` (follow-up peek) in `~/.cursor/hooks.json`. |
+| `agy-pl` | Antigravity (`agy`) | Merged `PreInvocation` hooks in `~/.gemini/config/hooks.json` (digest on turn 0, peek on subsequent). |
+| `kimi-pl` | Kimi Code | Managed `Stop` hook in `~/.kimi/config.toml` that blocks when mail is pending. |
+| `cmdc-pl` | Command Code | Merged `SessionStart` and `Stop` hooks in `~/.commandcode/settings.json`. |
+| `devin-pl` | Devin CLI | Merged `SessionStart` and `Stop` hooks in Devin user config (`%APPDATA%\devin\config.json`). |
+| `genie-pl` | Databricks Genie Code CLI | Merged `SessionStart`, `UserPromptSubmit` and `Stop` hooks in `~/.genie/hooks.json` (digest, per-turn peek, block-on-mail). |
+| `grok-pl` | Grok CLI | Turn-end `Stop` hook in `~/.grok/hooks/partyline.json` blocking on pending mail. |
 
 ### Service discovery (how agents find the line)
 
