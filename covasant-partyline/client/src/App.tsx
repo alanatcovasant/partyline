@@ -1334,7 +1334,32 @@ export function App() {
         <div className="header-right">
           {view === "dashboard" && (
             <>
-              {health?.version && <span className="muted">v{health.version}</span>}
+              {health?.version && (
+                <span
+                  className="muted build-badge"
+                  title={[
+                    `deployed build v${health.version}`,
+                    health.build_timestamp && health.build_timestamp !== "dev" ? `stamped ${health.build_timestamp}` : null,
+                    health.build_host ? `on ${health.build_host}` : null,
+                    health.git_commit?.endsWith(".dirty") ? "dirty tree — deployed code may not match git" : null,
+                  ].filter(Boolean).join(" · ")}
+                >
+                  v{health.version}
+                  {health.git_commit && health.git_commit !== "unknown" && (
+                    <>
+                      {" @"}
+                      <a
+                        className={health.git_commit.endsWith(".dirty") ? "text-warn" : undefined}
+                        href={`https://github.com/alanatcovasant/partyline/commit/${health.git_commit.replace(/\.dirty$/, "")}`}
+                        target="_blank"
+                        rel="noopener"
+                      >
+                        {health.git_commit}
+                      </a>
+                    </>
+                  )}
+                </span>
+              )}
               <span className={connected ? "dot on" : "dot off"} />
               <span className="muted">{connected ? "live" : "disconnected"}</span>
               <label className="poll-select muted" title="How often the dashboard refreshes metrics/agents from the database. Messages still arrive live via SSE regardless. A slower interval (or Off) lowers database load.">
