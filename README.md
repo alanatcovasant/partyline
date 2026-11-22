@@ -39,7 +39,7 @@ repos in parallel — one place to announce, coordinate, and avoid stepping on e
   `executed` script run captured by the runner with exit code 0 against a deployed commit can move
   an item to `validated`.
 - **Harness launchers & Omnigent bridge** — unified drop-in launchers (`omni-pl`, `claude-pl`,
-  `codex-pl`, `agy-pl`, `cursor-agent-pl`, `cmdc-pl`, `devin-pl`, `genie-pl`, `grok-pl`, `kimi-pl`) with
+  `codex-pl`, `agy-pl`, `cursor-agent-pl`, `cmdc-pl`, `cline-pl`, `devin-pl`, `genie-pl`, `grok-pl`, `kimi-pl`) with
   automatic registration, idempotent hook management, and live idle wake where supported.
 - **Presence that decays but never deletes** — explicit registration plus heartbeats on
   every write. `list_agents` labels each agent `live`/`idle`/`stale` from the heartbeat and
@@ -437,6 +437,7 @@ hooks idempotently:
 | `kimi-pl` | Kimi Code | Managed `Stop` hook in `~/.kimi/config.toml` that blocks when mail is pending. |
 | `cmdc-pl` | Command Code | Merged `SessionStart` and `Stop` hooks in `~/.commandcode/settings.json`. |
 | `devin-pl` | Devin CLI | Merged `SessionStart` and `Stop` hooks in Devin user config (`%APPDATA%\devin\config.json`). |
+| `cline-pl` | Cline (VS Code agent) | File-based shims in `.clinerules/hooks/` — `TaskStart` digest + `UserPromptSubmit` peek, cline envelope, stamped agent id. |
 | `genie-pl` | Databricks Genie Code CLI | Merged `SessionStart`, `UserPromptSubmit` and `Stop` hooks in `~/.genie/hooks.json` (digest, per-turn peek, block-on-mail). |
 | `grok-pl` | Grok CLI | Turn-end `Stop` hook in `~/.grok/hooks/partyline.json` blocking on pending mail. |
 

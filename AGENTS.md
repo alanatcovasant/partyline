@@ -272,9 +272,9 @@ external `partyline watch` in a separate terminal is the real-time signal.
 
 Opt-in MCP: `cp .agents/mcp_config.json.example .agents/mcp_config.json` (gitignored).
 
-### Hook launchers — `grok-pl` / `agy-pl` / `kimi-pl` / `cmdc-pl` / `cursor-agent-pl` / `devin-pl` / `genie-pl`
+### Hook launchers — `grok-pl` / `agy-pl` / `kimi-pl` / `cmdc-pl` / `cursor-agent-pl` / `devin-pl` / `genie-pl` / `cline-pl`
 
-`partyline setup` writes `grok-pl`, `agy-pl`, `kimi-pl`, `cmdc-pl`, `cursor-agent-pl`, `devin-pl` and `genie-pl` next to `claude-pl`/`codex-pl`. Each installs its
+`partyline setup` writes `grok-pl`, `agy-pl`, `kimi-pl`, `cmdc-pl`, `cursor-agent-pl`, `devin-pl`, `genie-pl` and `cline-pl` next to `claude-pl`/`codex-pl`. Each installs its
 hooks idempotently, then runs the CLI with your arguments untouched (`grok-pl --always-approve`).
 Neither CLI has an inbound push, so neither **wakes an idle session**; both surface mail when the
 agent next acts. Identity resolves from the nearest `.partyline/config.json`, as everywhere.
@@ -346,8 +346,18 @@ startup, so it shows as live from the first moment.
   Opt-in typed tools: `genie mcp add partyline -- python -m covasant_partyline.bridge
   --app-name mcp-covasant-partyline --agent-id <id>`.
 
+- **Cline** (`cline-pl`): launches `cline` with arguments untouched. Cline discovers
+  hooks **by filename** under the clone's `.clinerules/hooks/` — there is no JSON
+  config and no `SessionStart` event — so the launcher writes `TaskStart` +
+  `UserPromptSubmit` shims (Unix extensionless + Windows `.ps1`) into the launch
+  directory on each run. Each shim stamps the resolved agent id and
+  `PARTYLINE_HOOK_FORMAT=cline`, delegating to the shared `hook` / `check_unread`
+  modules. Launching outside a clone (no `.partyline/config.json`) warns on stderr
+  and writes nothing. See § "Cline (this agent) — file-based hooks" for the wake model.
+
 Verify Grok against a stub line with `python scripts/validate_grok_pl.py`, Kimi with
-`python scripts/validate_hook_launchers.py kimi`.
+`python scripts/validate_hook_launchers.py kimi`, Cline with
+`python scripts/validate_cline_pl.py`.
 
 ### Omnigent — `omni-pl`
 

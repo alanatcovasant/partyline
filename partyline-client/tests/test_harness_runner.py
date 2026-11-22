@@ -332,3 +332,59 @@ def test_genie_hook_ignores_other_events(monkeypatch):
     monkeypatch.setattr(check_unread, "main", lambda: pytest.fail("check_unread.main ran"))
     monkeypatch.setattr(genie_hook.sys, "stdin", io.StringIO(json.dumps({"hook_event_name": "PreToolUse"})))
     genie_hook.main()
+
+
+def _cline_clone(tmp_path, agent_id="alan_partyline_cline_1"):
+    (tmp_path / ".partyline").mkdir()
+    (tmp_path / ".partyline" / "config.json").write_text(
+        json.dumps({"agentId": agent_id, "url": "http://localhost:8000"}))
+    return tmp_path
+
+
+def test_install_cline_hooks_writes_all_shims_stamped(tmp_path, monkeypatch):
+    monkeypatch.delenv("PARTYLINE_AGENT_ID", raising=False)
+    clone = _cline_clone(tmp_path)
+    assert hr.install_cline_hooks(clone) is True
+    hooks = clone / ".clinerules" / "hooks"
+    task = (hooks / "TaskStart").read_text()
+    peek = (hooks / "UserPromptSubmit").read_text()
+    assert "PARTYLINE_HOOK_FORMAT=cline" in task
+    assert "PARTYLINE_AGENT_ID=alan_partyline_cline_1" in task
+    assert "-m covasant_partyline.hook" in task
+    assert "-m covasant_partyline.check_unread" in peek
+    for name in ("TaskStart", "UserPromptSubmit"):
+        assert os.access(hooks / name, os.X_OK), name
+    ps1 = (hooks / "TaskStart.ps1").read_text()
+    assert '$env:PARTYLINE_HOOK_FORMAT = "cline"' in ps1
+    assert '$env:PARTYLINE_AGENT_ID = "alan_partyline_cline_1"' in ps1
+
+
+def test_install_cline_hooks_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.delenv("PARTYLINE_AGENT_ID", raising=False)
+    clone = _cline_clone(tmp_path)
+    assert hr.install_cline_hooks(clone) is True
+    assert hr.install_cline_hooks(clone) is False
+
+
+def test_install_cline_hooks_without_identity_writes_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("PARTYLINE_AGENT_ID", raising=False)
+    assert hr.install_cline_hooks(tmp_path) is False
+    assert not (tmp_path / ".clinerules").exists()
+    assert "partyline init" in capsys.readouterr().err
+
+
+def test_launch_cline_installs_registers_then_execs(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(hr.shutil, "which", lambda n: "/bin/cline")
+    monkeypatch.setitem(hr.HARNESSES, "cline", (("cline",), lambda: calls.append("install")))
+    monkeypatch.setattr(hr, "register_self", lambda h: calls.append(f"register:{h}"))
+
+    class R:
+        returncode = 0
+
+    monkeypatch.setattr(hr.subprocess, "run", lambda cmd: calls.append(cmd) or R())
+    try:
+        hr.launch("cline", ["--help"])
+    except SystemExit as e:
+        assert e.code == 0
+    assert calls == ["install", "register:cline", ["/bin/cline", "--help"]]

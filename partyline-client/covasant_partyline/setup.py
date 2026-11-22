@@ -141,6 +141,7 @@ def _launchers(bin_dir: Path) -> list[Path]:
         ("cursor-agent-pl", "covasant_partyline.harness_runner", " cursor"),
         ("devin-pl", "covasant_partyline.harness_runner", " devin"),
         ("genie-pl", "covasant_partyline.harness_runner", " genie"),
+        ("cline-pl", "covasant_partyline.harness_runner", " cline"),
         ("omni-pl", "covasant_partyline.omni_runner", ""),
     ):
         bat, script = bin_dir / f"{name}.cmd", bin_dir / name
@@ -286,7 +287,7 @@ def cmd_setup(a: argparse.Namespace) -> None:
     install_wsl_launchers(strict=False)
     print(
         "\nNext: in each clone run `partyline init`, then start Claude with `claude-pl` "
-        "(or `codex-pl` / `grok-pl` / `agy-pl` / `kimi-pl` / `cmdc-pl` / `cursor-agent-pl` / `devin-pl` / `omni-pl`). "
+        "(or `codex-pl` / `grok-pl` / `agy-pl` / `kimi-pl` / `cmdc-pl` / `cursor-agent-pl` / `devin-pl` / `genie-pl` / `cline-pl` / `omni-pl`). "
         "From WSL those commands are the Linux copies on ~/.local/bin."
     )
 

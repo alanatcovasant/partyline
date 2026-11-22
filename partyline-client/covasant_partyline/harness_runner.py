@@ -1,4 +1,4 @@
-"""`grok-pl`, `agy-pl`, `kimi-pl`, `cmdc-pl`, `cursor-agent-pl`, `devin-pl`: Partyline launchers.
+"""`grok-pl`, `agy-pl`, `kimi-pl`, `cmdc-pl`, `cursor-agent-pl`, `devin-pl`, `cline-pl`: Partyline launchers.
 
 None of these CLIs has an inbound push into a live session (Codex's `queue --thread`, Claude Code's
 `claude/channel`), so awareness comes from hooks, and a hook only runs when the agent does:
@@ -23,6 +23,11 @@ None of these CLIs has an inbound push into a live session (Codex's `queue --thr
   and `Stop` blocks on `{"decision": "block"}` — all verified on genie 0.4.1. Genie
   persists hook trust by content hash, so the first session after install asks once
   (`/hooks` manages it; `--dangerously-bypass-hook-trust` for `genie exec` automation).
+- **Cline**: file-based hooks — no JSON config, discovered by filename under the
+  clone's `.clinerules/hooks/`. `TaskStart` (the SessionStart analog) injects the
+  digest and `UserPromptSubmit` peeks unread; both stamp the clone's agent id and
+  emit the `{"cancel": false, "contextModification": ...}` envelope. Written per
+  launch (gitignored) because they hardcode the agent id.
 
 None of them wakes an idle session. For that, watch the line in another terminal.
 
@@ -296,6 +301,62 @@ def install_genie_hooks(path: Path = GENIE_HOOKS) -> bool:
     return _write_json(path, data)
 
 
+def _cline_shim(module: str, agent_id: str, *, ps1: bool) -> str:
+    py = sys.executable
+    head = (f"# Partyline {module.rsplit('.', 1)[-1]} for Cline — managed by cline-pl; "
+            "per-clone, gitignored. Regenerate by launching via cline-pl.\n")
+    if ps1:
+        return (head + '$env:PARTYLINE_HOOK_FORMAT = "cline"\n'
+                f'$env:PARTYLINE_AGENT_ID = "{agent_id}"\n'
+                f'& "{py}" -m {module} @args\n')
+    return ("#!/bin/sh\n" + head + "export PARTYLINE_HOOK_FORMAT=cline\n"
+            f"export PARTYLINE_AGENT_ID={agent_id}\n"
+            f'exec "{py}" -m {module} "$@"\n')
+
+
+def install_cline_hooks(cwd: Path | None = None) -> bool:
+    """Write Cline's file-based hooks into ``<cwd>/.clinerules/hooks/`` (per-clone).
+
+    Cline has no SessionStart event and discovers hooks **by filename**, not a JSON
+    config, so the shims live in the clone being launched from: ``TaskStart`` is the
+    session-digest analog and ``UserPromptSubmit`` the per-turn unread peek. Each shim
+    stamps the clone's resolved agent id and ``PARTYLINE_HOOK_FORMAT=cline`` (the
+    ``{"cancel": false, "contextModification": ...}`` envelope the shared modules
+    already emit). Like every hook here they fire around a turn, not while idle — the
+    VS Code extension's SSE toast is the idle signal. Returns False without writing
+    when no identity resolves.
+    """
+    from . import cli
+
+    root = Path(cwd) if cwd else Path.cwd()
+    cfg: dict = {}
+    cfg_path = root / ".partyline" / "config.json"
+    if cfg_path.is_file():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cfg = {}
+    agent_id = cli.resolve_agent_id(cfg=cfg)
+    if not agent_id:
+        print("cline-pl: no partyline identity resolves — run `partyline init` in the clone "
+              "(skipping .clinerules/hooks)", file=sys.stderr)
+        return False
+    hooks_dir = root / ".clinerules" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    changed = False
+    for name, module in (("TaskStart", "covasant_partyline.hook"),
+                         ("UserPromptSubmit", "covasant_partyline.check_unread")):
+        for suffix, ps1 in (("", False), (".ps1", True)):
+            p = hooks_dir / (name + suffix)
+            content = _cline_shim(module, agent_id, ps1=ps1)
+            if not p.is_file() or p.read_text(encoding="utf-8") != content:
+                p.write_text(content, encoding="utf-8")
+                changed = True
+            if not ps1:
+                p.chmod(p.stat().st_mode | 0o111)
+    return changed
+
+
 # harness -> (executable names to look for, hook installer)
 HARNESSES = {
     "grok": (("grok",), install_grok_hooks),
@@ -305,6 +366,7 @@ HARNESSES = {
     "cursor": (("cursor-agent", "agent"), install_cursor_hooks),
     "devin": (("devin",), install_devin_hooks),
     "genie": (("genie",), install_genie_hooks),
+    "cline": (("cline",), install_cline_hooks),
 }
 
 
@@ -350,6 +412,10 @@ def launch_devin(argv: list[str] | None = None) -> None:
 
 def launch_genie(argv: list[str] | None = None) -> None:
     launch("genie", argv)
+
+
+def launch_cline(argv: list[str] | None = None) -> None:
+    launch("cline", argv)
 
 
 if __name__ == "__main__":
