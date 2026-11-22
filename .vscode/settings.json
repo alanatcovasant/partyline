@@ -37,9 +37,9 @@
         "editor.formatOnSave": true,
     },
 
-    // Covasant Partyline extension
-    "partyline.url": "https://mcp-covasant-partyline-7405607474919121.1.azure.databricksapps.com",
-    "partyline.agentId": "alan_partyline_1",
+    // Covasant Partyline extension — partyline.url and partyline.agentId are per-clone
+    // and deliberately NOT set here: `partyline init` writes them to gitignored
+    // .partyline/config.json (precedence: env → .partyline/config.json → settings.json → derived).
     "partyline.notifyBroadcast": true,
     "partyline.autoRespond": true,
     "partyline.autoOpenChat": true,
