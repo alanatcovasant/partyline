@@ -37,6 +37,8 @@ type Agent = {
   last_heartbeat: string;
   last_status?: string | null;
   last_status_at?: string | null;
+  reading?: boolean;
+  read_age_seconds?: number | null;
 };
 
 // An agent counts as "online" if it has heartbeat within this window (every partyline
@@ -1616,6 +1618,14 @@ export function App() {
                         </td>
                         <td>
                           <b>{a.agent_id}</b>
+                          {a.reading && (
+                            <span
+                              className="chip-reading"
+                              title={`reading — read cursor moved ${a.read_age_seconds != null ? fmtAge(a.read_age_seconds) + " ago" : "recently"}`}
+                            >
+                              reading
+                            </span>
+                          )}
                           {a.repo && (
                             <span className="muted"> {a.repo}{a.branch ? `@${a.branch}` : ""}</span>
                           )}
