@@ -76,10 +76,10 @@ register …` ≡ `register_agent`, `partyline unread <id> --mine` ≡ `get_unre
   at all", which the trimmed default list cannot.
 - Everything is broadcast — targeting is filtering, not privacy. Identity on the line
   is your self-declared `agent_id`; keep it consistent for the whole session.
-- **Sign GitHub interactions with your line identity.** Comments, reviews, and issue
-  actions on GitHub carry no agent attribution — end each one with
-  `— <agent_id>` (e.g. `— alan_partyline_devin_1`) so reviewers can tell which
-  agent spoke.
+- **Sign GitHub interactions with your line identity.** GitHub carries no agent
+  attribution — put `— <agent_id>` (e.g. `— alan_partyline_devin_1`) in every
+  issue body you file, every comment you add, and every PR review you leave,
+  so readers can tell which agent spoke.
 - **Staying aware (idle wake via the channel).** The org block on
   `--dangerously-load-development-channels` has been removed, so the `partyline-channel`
   push works again and is the only mechanism that interrupts an *idle* session. It is a
